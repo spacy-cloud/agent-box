@@ -8,7 +8,13 @@ export const LABEL = {
   owner: 'abox.owner',
   template: 'abox.template',
   templateHash: 'abox.template-hash',
+  /** Backend kind that created the object (`docker` | `podman` | `python`). */
   backend: 'abox.backend',
+  /**
+   * Id of the abox installation (data dir) that owns the object. Every object of an instance
+   * carries it; objects without it (older versions, other tools) are never touched.
+   */
+  instance: 'abox.instance',
   isolation: 'abox.isolation',
   created: 'abox.created',
   expires: 'abox.expires',
@@ -43,9 +49,13 @@ export const CA_CERT_PATH = `${CA_DIR}/ca.crt`;
 export const TMP_STASH = `${CA_DIR}/tmpfiles`;
 export const CA_BUNDLE_PATH = `${CA_DIR}/ca-bundle.crt`;
 
+const INSTANCE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const HOST_RE = /^[a-z0-9][a-z0-9-]*$/;
 const SHORT_RE = /^[a-z0-9][a-z0-9_-]{0,47}$/;
 
+export function isValidInstanceId(id: string): boolean {
+  return INSTANCE_RE.test(id);
+}
 export function isValidHost(host: string): boolean {
   return HOST_RE.test(host);
 }

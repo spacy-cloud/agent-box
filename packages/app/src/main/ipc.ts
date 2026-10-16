@@ -2,30 +2,60 @@ import { createWriteStream } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { dialog, clipboard, ipcMain } from 'electron';
 import type { BrowserWindow } from 'electron';
+import type { AboxRuntime } from '@abox/runtime';
 import type { z } from 'zod';
 import { IPC } from '../shared/ipc';
 import type { IpcChannel, IpcErrorData, IpcResult, Locale } from '../shared/ipc';
 import type { AppInfo, Outputs, SaveResult } from '../shared/types';
 import { toIpcError } from './errors';
 import { senderAllowed } from './guard';
+import { createHostsService } from './hosts';
+import type { HostsService } from './hosts';
 import { createManagerHandlers } from './service';
-import type { ManagerChannel, ManagerHandlers, ServiceRuntime } from './service';
+import type { ManagerChannel, ManagerHandlers } from './service';
+import { createTemplateHandlers } from './templates';
+import type { TemplateChannel } from './templates';
+import type { TtyManager } from './tty';
 
 type Input<C extends IpcChannel> = z.output<(typeof IPC)[C]>;
 
 export interface IpcDeps {
   getWindow(): BrowserWindow | null;
   allowedOrigins: string[];
-  getRuntime(): (ServiceRuntime & { abox: ServiceRuntime['abox'] }) | null;
+  getRuntime(): AboxRuntime | null;
   runtimeError(): string | null;
   appInfo(): Omit<AppInfo, 'managerError' | 'paths'>;
   setLocale(l: Locale): void;
+  setCloseToTray(on: boolean): void;
+  /** Terminal sessions (sandbox shells and ssh) of this window. */
+  tty: TtyManager;
   /** The GUI changed something itself: refresh now. */
   poke(): void;
   progress(key: string, line: string): void;
 }
 
+type HostChannel = Extract<IpcChannel, `hosts:${string}`>;
+
+/** Channels served by the Electron main process itself (dialogs, clipboard, terminals, settings). */
+type LocalChannel = Exclude<IpcChannel, ManagerChannel | TemplateChannel | HostChannel>;
+
+const TEMPLATE_CHANNELS = new Set<string>([
+  'templates:catalog',
+  'templates:source',
+  'templates:validate',
+  'templates:save',
+  'templates:build',
+  'templates:test',
+] satisfies TemplateChannel[]);
+
 const WRITE_CHANNELS = new Set<IpcChannel>([
+  'templates:save',
+  'templates:build',
+  'templates:test',
+  'hosts:add',
+  'hosts:update',
+  'hosts:remove',
+  'hosts:importApply',
   'sandboxes:start',
   'sandboxes:stop',
   'sandboxes:remove',
@@ -41,10 +71,14 @@ const WRITE_CHANNELS = new Set<IpcChannel>([
   'tokens:revoke',
 ]);
 
-export function registerIpc(d: IpcDeps): () => void {
-  let handlers: ManagerHandlers | null = null;
-  let handlersFor: object | null = null;
-  const managerHandlers = (): ManagerHandlers => {
+export interface IpcHandle {
+  dispose(): void;
+  /** Stops port forwards, removes scratch files. Called once on quit. */
+  shutdown(): Promise<void>;
+}
+
+export function registerIpc(d: IpcDeps): IpcHandle {
+  const need = (): AboxRuntime => {
     const rt = d.getRuntime();
     if (!rt) {
       const err = d.runtimeError();
@@ -55,18 +89,53 @@ export function registerIpc(d: IpcDeps): () => void {
         } satisfies IpcErrorData,
       });
     }
-    if (!handlers || handlersFor !== rt) {
-      handlers = createManagerHandlers(rt);
-      handlersFor = rt;
-    }
-    return handlers;
+    return rt;
+  };
+  let handlers: ManagerHandlers | null = null;
+  let tpl: ReturnType<typeof createTemplateHandlers> | null = null;
+  let hosts: HostsService | null = null;
+  let handlersFor: object | null = null;
+  const bind = (): void => {
+    const rt = need();
+    if (handlersFor === rt) return;
+    handlers = createManagerHandlers(rt);
+    tpl = createTemplateHandlers(rt);
+    hosts?.shutdown();
+    hosts = createHostsService(rt);
+    handlersFor = rt;
+  };
+  const managerHandlers = (): ManagerHandlers => {
+    bind();
+    return handlers!;
+  };
+  const templateHandlers = (): NonNullable<typeof tpl> => {
+    bind();
+    return tpl!;
+  };
+  const hostsService = (): HostsService => {
+    bind();
+    return hosts!;
   };
 
   const electronHandlers: {
-    [C in Exclude<IpcChannel, ManagerChannel>]: (
-      input: Input<C>,
-    ) => Promise<Outputs[C]> | Outputs[C];
+    [C in LocalChannel]: (input: Input<C>) => Promise<Outputs[C]> | Outputs[C];
   } = {
+    'app:settings': (i) => {
+      d.setCloseToTray(i.closeToTray);
+      return { closeToTray: i.closeToTray };
+    },
+    'tty:open': (i) => d.tty.open(i),
+    'tty:input': (i) => d.tty.input(i.sessionId, i.data),
+    'tty:resize': (i) => d.tty.resize(i.sessionId, i.cols, i.rows),
+    'tty:close': (i) => d.tty.close(i.sessionId),
+    'templates:export': async (i): Promise<SaveResult> => {
+      const win = d.getWindow();
+      const opts = { defaultPath: `${i.name.replace(/[^A-Za-z0-9._-]/g, '_')}.yaml` };
+      const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+      if (r.canceled || !r.filePath) return { saved: null };
+      await writeFile(r.filePath, i.yaml.endsWith('\n') ? i.yaml : `${i.yaml}\n`, { mode: 0o600 });
+      return { saved: r.filePath };
+    },
     'app:info': () => {
       const rt = d.getRuntime();
       return {
@@ -101,8 +170,7 @@ export function registerIpc(d: IpcDeps): () => void {
       return { saved: r.filePath, count: res.files.length };
     },
     'audit:exportSave': async (filter): Promise<SaveResult> => {
-      const rt = d.getRuntime();
-      if (!rt) throw new Error('manager not available');
+      const rt = need();
       const win = d.getWindow();
       const opts = { defaultPath: 'abox-audit.jsonl' };
       const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
@@ -155,16 +223,29 @@ export function registerIpc(d: IpcDeps): () => void {
         }
         const input: unknown = parsed.data;
         const ctx = { onProgress: d.progress };
-        const eh = electronHandlers as Record<string, ((i: unknown) => unknown) | undefined>;
-        const local = eh[channel];
-        const data = local
-          ? await local(input)
-          : await (
-              managerHandlers() as unknown as Record<
-                string,
-                (i: unknown, c: typeof ctx) => Promise<unknown>
-              >
-            )[channel]!(input, ctx);
+        const local = (electronHandlers as Record<string, ((i: unknown) => unknown) | undefined>)[
+          channel
+        ];
+        let data: unknown;
+        if (local) {
+          data = await local(input);
+        } else if (TEMPLATE_CHANNELS.has(channel)) {
+          data = await (
+            templateHandlers() as unknown as Record<
+              string,
+              (i: unknown, c: typeof ctx) => Promise<unknown>
+            >
+          )[channel]!(input, ctx);
+        } else if (channel.startsWith('hosts:')) {
+          data = await hostCall(hostsService(), channel as HostChannel, input);
+        } else {
+          data = await (
+            managerHandlers() as unknown as Record<
+              string,
+              (i: unknown, c: typeof ctx) => Promise<unknown>
+            >
+          )[channel]!(input, ctx);
+        }
         if (WRITE_CHANNELS.has(channel)) d.poke();
         return { ok: true, data };
       } catch (e) {
@@ -173,7 +254,54 @@ export function registerIpc(d: IpcDeps): () => void {
       }
     });
   }
-  return () => {
-    for (const c of channels) ipcMain.removeHandler(c);
+  return {
+    dispose: () => {
+      for (const c of channels) ipcMain.removeHandler(c);
+    },
+    shutdown: async () => {
+      hosts?.shutdown();
+      await tpl?.cleanup();
+    },
   };
+}
+
+/** Maps a hosts channel to the service call (input is already validated by the channel's Zod schema). */
+function hostCall(svc: HostsService, channel: HostChannel, input: unknown): unknown {
+  type In<C extends HostChannel> = z.output<(typeof IPC)[C]>;
+  switch (channel) {
+    case 'hosts:list':
+      return svc.list();
+    case 'hosts:add':
+      return svc.add(input as In<'hosts:add'>);
+    case 'hosts:update': {
+      const i = input as In<'hosts:update'>;
+      return svc.update(i.id, i.patch as Parameters<HostsService['update']>[1]);
+    }
+    case 'hosts:remove':
+      return svc.remove((input as In<'hosts:remove'>).id);
+    case 'hosts:test':
+      return svc.test((input as In<'hosts:test'>).id);
+    case 'hosts:importPreview':
+      return svc.importPreview();
+    case 'hosts:importApply':
+      return svc.importApply((input as In<'hosts:importApply'>).ids);
+    case 'hosts:keyCheck':
+      return svc.keyCheck((input as In<'hosts:keyCheck'>).id);
+    case 'hosts:keyTrust': {
+      const i = input as In<'hosts:keyTrust'>;
+      return svc.keyTrust(i.id, i.fingerprint);
+    }
+    case 'hosts:keyForget':
+      return svc.keyForget((input as In<'hosts:keyForget'>).id);
+    case 'hosts:forwards':
+      return svc.forwards();
+    case 'hosts:forwardStart': {
+      const i = input as In<'hosts:forwardStart'>;
+      return svc.forwardStart(i.id, i.name);
+    }
+    case 'hosts:forwardStop': {
+      const i = input as In<'hosts:forwardStop'>;
+      return svc.forwardStop(i.id, i.name);
+    }
+  }
 }

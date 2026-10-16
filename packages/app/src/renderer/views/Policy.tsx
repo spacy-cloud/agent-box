@@ -3,12 +3,14 @@ import type { ResolvedProfile } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
 import { useQuery } from '../hooks';
-import { Banner, ErrorBox, Loading, Badge } from '../components/ui';
+import { Banner, Dialog, ErrorBox, Loading, Badge } from '../components/ui';
 import { diffLines, hasChanges } from '../../shared/line-diff';
 import { formatTimestamp } from '../../shared/format';
 import type { PolicyValidation } from '../../shared/types';
 
 type Mode = 'view' | 'edit' | 'review';
+
+const KNOWN_ACTORS = ['human', 'external-edit', 'system'];
 
 export function PolicyView() {
   const { t, route, notify } = useApp();
@@ -21,6 +23,7 @@ export function PolicyView() {
   const [validation, setValidation] = useState<PolicyValidation | null>(null);
   const [saveError, setSaveError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
+  const [viewRev, setViewRev] = useState<number | null>(null);
 
   // live validation while editing (the manager's own validator; the GUI has no policy rules)
   useEffect(() => {
@@ -43,9 +46,9 @@ export function PolicyView() {
   const externallyChanged =
     mode !== 'view' && doc.data && doc.data.view.policy.contentHash !== baseHash;
 
-  function startEdit() {
+  function startEdit(text?: string) {
     if (!doc.data) return;
-    setDraft(doc.data.text);
+    setDraft(text ?? doc.data.text);
     setBaseText(doc.data.text);
     setBaseHash(doc.data.view.policy.contentHash);
     setValidation(null);
@@ -75,7 +78,7 @@ export function PolicyView() {
         <h1 id="h-policy">{t('policy.title')}</h1>
         <div className="actions">
           {mode === 'view' ? (
-            <button type="button" className="primary" onClick={startEdit} disabled={!doc.data}>
+            <button type="button" className="primary" onClick={() => startEdit()} disabled={!doc.data}>
               {t('policy.edit')}
             </button>
           ) : null}
@@ -243,6 +246,7 @@ export function PolicyView() {
           ) : null}
 
           <h2>{t('policy.history')}</h2>
+          {revs.error ? <ErrorBox error={revs.error} /> : null}
           {revs.data && revs.data.length === 0 ? (
             <p className="muted">{t('policy.historyEmpty')}</p>
           ) : null}
@@ -255,31 +259,125 @@ export function PolicyView() {
                     <th scope="col">{t('policy.rev')}</th>
                     <th scope="col">{t('audit.col.time')}</th>
                     <th scope="col">{t('audit.col.actor')}</th>
-                    <th scope="col">{t('audit.col.action')}</th>
                     <th scope="col">Hash</th>
+                    <th scope="col">{t('sandboxes.col.actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {revs.data.map((r) => (
-                    <tr key={r.seq}>
-                      <td>{r.revision ?? '—'}</td>
-                      <td className="mono">{formatTimestamp(r.ts)}</td>
-                      <td className="plain">{r.actor}</td>
+                    <tr key={r.rev}>
                       <td>
-                        {r.action === 'policy.set'
-                          ? t('policy.hist.set')
-                          : t('policy.hist.external')}
+                        {r.rev}
+                        {r.contentHash === view.policy.contentHash ? (
+                          <>
+                            {' '}
+                            <Badge tone="ok">{t('policy.hist.current')}</Badge>
+                          </>
+                        ) : null}
                       </td>
-                      <td className="mono">{r.newHash?.slice(0, 12) ?? '—'}</td>
+                      <td className="mono">{formatTimestamp(r.ts)}</td>
+                      <td className="plain">
+                        {KNOWN_ACTORS.includes(r.actor) ? t(`policy.actor.${r.actor}`) : r.actor}
+                      </td>
+                      <td className="mono" title={r.contentHash}>
+                        {r.contentHash.slice(0, 12)}
+                      </td>
+                      <td>
+                        <button type="button" onClick={() => setViewRev(r.rev)}>
+                          {t('policy.hist.view')}
+                          <span className="sr-only"> {r.rev}</span>
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : null}
+          {viewRev !== null ? (
+            <RevisionDialog
+              rev={viewRev}
+              currentText={doc.data.text}
+              canEdit={mode === 'view'}
+              onUse={(text) => {
+                setViewRev(null);
+                startEdit(text);
+              }}
+              onClose={() => setViewRev(null)}
+            />
+          ) : null}
         </>
       ) : null}
     </section>
+  );
+}
+
+function RevisionDialog(props: {
+  rev: number;
+  currentText: string;
+  canEdit: boolean;
+  onUse(text: string): void;
+  onClose(): void;
+}) {
+  const { t } = useApp();
+  const q = useQuery('policy:revision', { rev: props.rev }, { live: false });
+  const diff = useMemo(
+    () => (q.data ? diffLines(q.data.content, props.currentText) : []),
+    [q.data, props.currentText],
+  );
+  const differs = hasChanges(diff);
+  return (
+    <Dialog
+      title={t('policy.rev.title', { rev: props.rev })}
+      onClose={props.onClose}
+      wide
+      footer={
+        <>
+          <button type="button" onClick={props.onClose} autoFocus>
+            {t('common.close')}
+          </button>
+          {props.canEdit && q.data && differs ? (
+            <button type="button" className="primary" onClick={() => props.onUse(q.data!.content)}>
+              {t('policy.rev.use')}
+            </button>
+          ) : null}
+        </>
+      }
+    >
+      {q.error ? <ErrorBox error={q.error} /> : null}
+      {!q.data && q.loading ? <Loading /> : null}
+      {q.data ? (
+        <>
+          <p className="muted plain">
+            {formatTimestamp(q.data.ts)} · {q.data.actor} ·{' '}
+            <code title={q.data.contentHash}>{q.data.contentHash.slice(0, 12)}</code>
+          </p>
+          <p className="muted">{t('policy.rev.useHint')}</p>
+          <h3 className="h-small">{differs ? t('policy.rev.diff') : t('policy.rev.same')}</h3>
+          {differs ? (
+            <pre className="diff plain" tabIndex={0} aria-label={t('policy.rev.diffLabel')}>
+              {diff
+                .map((l, i) => ({ l, i }))
+                .filter(({ l, i }) => l.kind !== 'same' || nearChange(diff, i, 2))
+                .map(({ l, i }) => (
+                  <span
+                    key={i}
+                    className={l.kind === 'add' ? 'diff-add' : l.kind === 'del' ? 'diff-del' : ''}
+                  >
+                    {l.kind === 'add' ? '+ ' : l.kind === 'del' ? '- ' : '  '}
+                    {l.text}
+                    {'\n'}
+                  </span>
+                ))}
+            </pre>
+          ) : null}
+          <h3 className="h-small">{t('policy.rev.content')}</h3>
+          <pre className="code plain" tabIndex={0} aria-label={t('policy.rev.contentLabel', { rev: props.rev })}>
+            {q.data.content}
+          </pre>
+        </>
+      ) : null}
+    </Dialog>
   );
 }
 

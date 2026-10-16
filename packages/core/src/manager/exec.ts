@@ -13,6 +13,7 @@ import type { DirEntry, ExecRequest } from '../types.js';
 import { exportWorkspace } from '../workspace/index.js';
 import type { WorkspaceRecord } from '../workspace/index.js';
 import { confirmationRequired, consumeApproval, gate } from './approvals.js';
+import { NET_POLL_THROTTLE_MS, collectNetworkEvents } from './network-audit.js';
 import type { Internals } from './internals.js';
 import { SNAPSHOT_NAME_RE, execSchema, exportSchema, processStartSchema } from './schemas.js';
 import type {
@@ -54,7 +55,7 @@ type Gated =
   | { ok: true; approval?: Approval; approvalId?: string }
   | { ok: false; result: PendingApproval | ConfirmationRequired };
 
-function requireRunning(I: Internals, rec: SandboxRecord): void {
+export function requireRunning(I: Internals, rec: SandboxRecord): void {
   if (rec.state === 'expired' || (rec.expiresAt <= I.now() && rec.state !== 'removed')) {
     throw new AboxError('conflict', `sandbox ${rec.id} has expired`, {
       hint: 'Create a new sandbox; expired sandboxes are stopped and removed by gc.',
@@ -215,6 +216,7 @@ export async function execCommand(
       decision: 'error',
       details: { command: display, message: errMessage(e), approvalId: auth.approvalId },
     });
+    await collectNetworkEvents(I, rec);
     throw e;
   }
   const durationMs = res.durationMs ?? Date.now() - started;
@@ -263,6 +265,7 @@ export async function execCommand(
       approvalId: auth.approvalId,
     },
   });
+  await collectNetworkEvents(I, rec);
   return {
     status: 'completed',
     exitCode: res.exitCode,
@@ -454,6 +457,7 @@ export async function startProcess(
       approvalId: auth.approvalId,
     },
   });
+  await collectNetworkEvents(I, rec);
   return { status: 'started', process: procView(rec2) };
 }
 
@@ -587,6 +591,7 @@ export async function processLogs(
     decision: 'allow',
     details: { processId, bytes: Buffer.byteLength(t.text), since, tail },
   });
+  await collectNetworkEvents(I, rec, { throttleMs: NET_POLL_THROTTLE_MS });
   return { process: view, content: t.text, nextOffset, size, truncated: truncated || t.truncated };
 }
 
@@ -613,6 +618,7 @@ export async function stopProcess(
     decision: 'allow',
     details: { processId },
   });
+  await collectNetworkEvents(I, rec);
   return procView(I.state.processes.get(proc.id)!);
 }
 
@@ -620,7 +626,7 @@ export async function stopProcess(
 // files
 // ---------------------------------------------------------------------------
 
-function sandboxPath(rec: SandboxRecord, p: unknown): string {
+export function sandboxPath(rec: SandboxRecord, p: unknown): string {
   if (typeof p !== 'string' || p.length === 0 || p.length > 4096 || p.includes('\0')) {
     throw new AboxError(
       'invalid_input',
@@ -666,6 +672,7 @@ export async function readSandboxFile(
     decision: 'allow',
     details: { path: p, size: r.size, returnedBytes: r.data.length, truncated: r.truncated },
   });
+  await collectNetworkEvents(I, rec, { throttleMs: NET_POLL_THROTTLE_MS });
   return {
     path: p,
     size: r.size,
@@ -707,6 +714,7 @@ export async function writeSandboxFile(
     decision: 'allow',
     details: { path: p, size: data.length, mode },
   });
+  await collectNetworkEvents(I, rec, { throttleMs: NET_POLL_THROTTLE_MS });
   return { path: p, size: data.length };
 }
 
@@ -731,6 +739,7 @@ export async function listSandboxDir(
     decision: 'allow',
     details: { path: p, entries: entries.length },
   });
+  await collectNetworkEvents(I, rec, { throttleMs: NET_POLL_THROTTLE_MS });
   return entries;
 }
 
@@ -756,6 +765,7 @@ export async function snapshotSandbox(
     });
   }
   const snapshotId = await provider.snapshot(id, name);
+  I.state.snapshots.add({ sandboxId: id, snapshotId, name });
   I.audit(ctx.owner, 'sandbox.snapshot', {
     sandboxId: id,
     decision: 'allow',

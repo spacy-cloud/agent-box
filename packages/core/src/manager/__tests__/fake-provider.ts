@@ -1,3 +1,6 @@
+import { mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { AboxError } from '../../errors.js';
 import type { SandboxProvider } from '../../provider.js';
 import type {
@@ -7,6 +10,7 @@ import type {
   ExecRequest,
   ExecResult,
   HostConnection,
+  NetworkEvent,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
@@ -34,6 +38,10 @@ export interface FakeOptions {
     id: SandboxId,
     req: ExecRequest,
   ) => Partial<ExecResult> | Promise<Partial<ExecResult>>;
+  /** Provide `networkEvents` (the proxy's egress decisions): push events to `fake.netEvents`. */
+  networkEvents?: boolean;
+  /** Provide `logs`; the handler returns the sandbox's main process output. */
+  logs?: (id: SandboxId, opts: { tail?: number; sinceTs?: number }) => string;
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -51,6 +59,14 @@ export class FakeProvider implements SandboxProvider {
   readonly prepareCalls: Array<{ hash: string; opts: PrepareOptions }> = [];
   readonly networkUpdates: Array<{ id: SandboxId; allow: string[]; injections: number }> = [];
   readonly gcCalls: string[][] = [];
+  /** Egress events the fake proxy "recorded" per sandbox (`networkEvents` returns those with `ts >= since`). */
+  readonly netEvents = new Map<SandboxId, NetworkEvent[]>();
+  readonly networkEventCalls: Array<{ id: SandboxId; sinceTs: number | undefined }> = [];
+  readonly copyCalls: Array<{ dir: 'in' | 'out'; id: SandboxId; host: string; sandbox: string }> =
+    [];
+  readonly ttyCalls: Array<{ id: SandboxId; cols: number; rows: number; argv?: string[] }> = [];
+  /** Exit handlers of the open fake terminals (call to end the session with a code). */
+  readonly ttyExits: Array<(code: number) => void> = [];
   private readonly seenHashes = new Set<string>();
   private pinCounter = 0;
   readonly opts: FakeOptions;
@@ -58,6 +74,8 @@ export class FakeProvider implements SandboxProvider {
   updateNetwork?: SandboxProvider['updateNetwork'];
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
+  networkEvents?: SandboxProvider['networkEvents'];
+  logs?: SandboxProvider['logs'];
 
   constructor(host: HostConnection, opts: FakeOptions = {}) {
     this.host = host;
@@ -89,6 +107,22 @@ export class FakeProvider implements SandboxProvider {
         return Promise.resolve();
       };
     }
+    if (opts.networkEvents) {
+      this.networkEvents = (id, sinceTs) => {
+        this.get(id);
+        this.networkEventCalls.push({ id, sinceTs });
+        return Promise.resolve(
+          (this.netEvents.get(id) ?? []).filter((e) => e.ts >= (sinceTs ?? 0)),
+        );
+      };
+    }
+    if (opts.logs) {
+      const h = opts.logs;
+      this.logs = (id, o) => {
+        this.get(id);
+        return Promise.resolve(h(id, o ?? {}));
+      };
+    }
     if (this.caps.snapshots) {
       this.snapshot = (id, name) => {
         const sb = this.get(id);
@@ -103,6 +137,10 @@ export class FakeProvider implements SandboxProvider {
         return Promise.resolve();
       };
     }
+  }
+
+  addNetEvents(id: SandboxId, ...events: NetworkEvent[]): void {
+    this.netEvents.set(id, [...(this.netEvents.get(id) ?? []), ...events]);
   }
 
   private now(): number {
@@ -198,14 +236,48 @@ export class FakeProvider implements SandboxProvider {
     throw new AboxError('unsupported', 'spawn not supported by the fake');
   }
 
-  attach(): Promise<TtySession> {
-    return Promise.reject(new AboxError('unsupported', 'tty not supported by the fake'));
+  attach(id: SandboxId, tty: { cols: number; rows: number; argv?: string[] }): Promise<TtySession> {
+    this.get(id);
+    if (!this.caps.tty)
+      return Promise.reject(new AboxError('unsupported', 'tty not supported by the fake'));
+    this.ttyCalls.push({
+      id,
+      cols: tty.cols,
+      rows: tty.rows,
+      ...(tty.argv ? { argv: tty.argv } : {}),
+    });
+    const stream = new PassThrough();
+    let exit!: (code: number) => void;
+    const done = new Promise<number>((r) => (exit = r));
+    this.ttyExits.push(exit);
+    return Promise.resolve({
+      stream,
+      resize: () => Promise.resolve(),
+      wait: () => done,
+      close: () => {
+        exit(130);
+        return Promise.resolve();
+      },
+    });
   }
 
-  copyIn(): Promise<void> {
+  copyIn(id: SandboxId, hostPath: string, sandboxPath: string): Promise<void> {
+    this.get(id);
+    this.copyCalls.push({ dir: 'in', id, host: hostPath, sandbox: sandboxPath });
     return Promise.resolve();
   }
-  copyOut(): Promise<void> {
+  /** Writes a small file at the destination (like a real copy) and records the call. */
+  copyOut(id: SandboxId, sandboxPath: string, hostPath: string): Promise<void> {
+    this.get(id);
+    this.copyCalls.push({ dir: 'out', id, host: hostPath, sandbox: sandboxPath });
+    let target = hostPath;
+    try {
+      if (statSync(hostPath).isDirectory()) target = join(hostPath, 'copied-out.txt');
+    } catch {
+      /* destination does not exist yet */
+    }
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, 'copied out of the sandbox\n');
     return Promise.resolve();
   }
 

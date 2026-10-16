@@ -2,8 +2,9 @@
  * Hardening of the app itself: strict CSP, own protocol for the renderer files (no `file://`, no remote
  * content), blocked navigation / new windows / webviews / permissions.
  */
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { app, protocol, session } from 'electron';
 import type { Session, WebContents } from 'electron';
 import { isAllowedUrl, resolveAppFile } from './guard';
@@ -30,6 +31,18 @@ export const PRODUCTION_CSP = [
   "form-action 'none'",
   "frame-ancestors 'none'",
 ].join('; ');
+
+/** Placeholder in `index.html` (`<meta name="abox-style-nonce">`) that the protocol handler replaces per load. */
+export const NONCE_PLACEHOLDER = '__ABOX_STYLE_NONCE__';
+
+/**
+ * CSP for the page itself. The terminal emulator (xterm.js) creates `<style>` elements at run time, which a plain
+ * `style-src 'self'` would block. Instead of `unsafe-inline`, the page gets a random nonce per load; the renderer
+ * stamps it onto the style elements it creates (see `renderer/csp-nonce.ts`). Scripts stay `'self'` only.
+ */
+export function cspWithStyleNonce(nonce: string): string {
+  return PRODUCTION_CSP.replace("style-src 'self'", `style-src 'self' 'nonce-${nonce}'`);
+}
 
 /** Dev server needs inline preamble scripts, websockets and eval-free HMR; used only with `electron-vite dev`. */
 const DEV_CSP = [
@@ -78,12 +91,22 @@ export function registerAppProtocol(root: string): void {
     if (!file) return new Response('forbidden', { status: 403 });
     try {
       const body = await readFile(file);
+      const type = MIME[extname(file)] ?? 'application/octet-stream';
+      if (basename(file) === 'index.html') {
+        const nonce = randomBytes(16).toString('base64');
+        const html = body.toString('utf8').replaceAll(NONCE_PLACEHOLDER, nonce);
+        return new Response(html, {
+          status: 200,
+          headers: {
+            ...SECURITY_HEADERS,
+            'Content-Security-Policy': cspWithStyleNonce(nonce),
+            'Content-Type': type,
+          },
+        });
+      }
       return new Response(new Uint8Array(body), {
         status: 200,
-        headers: {
-          ...SECURITY_HEADERS,
-          'Content-Type': MIME[extname(file)] ?? 'application/octet-stream',
-        },
+        headers: { ...SECURITY_HEADERS, 'Content-Type': type },
       });
     } catch {
       return new Response('not found', { status: 404, headers: SECURITY_HEADERS });

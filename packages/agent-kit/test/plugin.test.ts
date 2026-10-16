@@ -14,6 +14,7 @@ const TOOLS = [
   'sandbox_create',
   'sandbox_list',
   'sandbox_inspect',
+  'sandbox_start',
   'sandbox_exec',
   'sandbox_process_start',
   'sandbox_process_logs',

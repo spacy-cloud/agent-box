@@ -54,6 +54,12 @@ export interface ContractOptions {
    * (default false).
    */
   gc?: boolean;
+  /**
+   * Time in ms a `create` + `start` may take on this backend (default 0). The "running sandbox
+   * becomes expired" test sets the TTL to `startBudgetMs + 2500` so that slow-booting backends
+   * (a cold VM needs 3-6 s) are still running when they have started.
+   */
+  startBudgetMs?: number;
   /** Called once after the suite, e.g. to delete a temp data directory. */
   dispose?(provider: SandboxProvider): Promise<void> | void;
 }
@@ -440,12 +446,12 @@ export function defineProviderContract(opts: ContractOptions): void {
       });
 
       test('a running sandbox becomes expired when expiresAt passes', async () => {
-        const spec = await mk({ expiresAt: Date.now() + 2500 });
+        const spec = await mk({ expiresAt: Date.now() + (opts.startBudgetMs ?? 0) + 2500 });
         await provider.create(spec);
         try {
           await provider.start(spec.id);
           expect((await provider.inspect(spec.id)).state).toBe('running');
-          await sleep(3000);
+          await sleep(Math.max(0, spec.expiresAt - Date.now()) + 500);
           expect((await provider.inspect(spec.id)).state).toBe('expired');
           expect((await provider.list({ state: 'expired' })).map((s) => s.id)).toContain(spec.id);
         } finally {

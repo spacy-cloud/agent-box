@@ -247,6 +247,24 @@ export class SandboxRegistry {
     this.ctx.db.prepare('UPDATE sandboxes SET request_id = NULL WHERE id = ?').run(id);
   }
 
+  /**
+   * Proxy egress events already written to the audit log: all events with `ts < ts` plus the first
+   * `seen` events at exactly `ts` (providers return events with `ts >= since`). `undefined` = none yet.
+   */
+  getNetCursor(id: SandboxId): { ts: number; seen: number } | undefined {
+    const row = this.ctx.db
+      .prepare('SELECT net_cursor_ts, net_cursor_seen FROM sandboxes WHERE id = ?')
+      .get(id);
+    const ts = row ? numOrNull(row['net_cursor_ts']) : null;
+    return ts === null ? undefined : { ts, seen: num(row?.['net_cursor_seen']) };
+  }
+
+  setNetCursor(id: SandboxId, cursor: { ts: number; seen: number }): void {
+    this.ctx.db
+      .prepare('UPDATE sandboxes SET net_cursor_ts = ?, net_cursor_seen = ? WHERE id = ?')
+      .run(cursor.ts, cursor.seen, id);
+  }
+
   setExpiresAt(id: SandboxId, expiresAt: number): void {
     this.ctx.db.prepare('UPDATE sandboxes SET expires_at = ? WHERE id = ?').run(expiresAt, id);
   }

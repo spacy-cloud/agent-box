@@ -11,9 +11,14 @@ import { DetailView } from './views/Detail';
 import { AuditView } from './views/Audit';
 import { PolicyView } from './views/Policy';
 import { SettingsView } from './views/Settings';
+import { TemplatesView } from './views/Templates';
+import { HostsView } from './views/Hosts';
+import { SshPanel, SshTabsProvider, useSshTabs } from './views/ssh-tabs';
 
 const NAV: Array<{ view: Exclude<ViewName, 'detail'>; key: string }> = [
   { view: 'sandboxes', key: 'nav.sandboxes' },
+  { view: 'templates', key: 'nav.templates' },
+  { view: 'hosts', key: 'nav.hosts' },
   { view: 'approvals', key: 'nav.approvals' },
   { view: 'audit', key: 'nav.audit' },
   { view: 'policy', key: 'nav.policy' },
@@ -56,13 +61,16 @@ export function App(props: { info: AppInfo }) {
       tick={tick}
       pendingApprovals={pending}
     >
-      <Shell />
+      <SshTabsProvider>
+        <Shell />
+      </SshTabsProvider>
     </AppProvider>
   );
 }
 
 function Shell() {
   const { t, route, navigate, pendingApprovals, info } = useApp();
+  const ssh = useSshTabs();
   const mainRef = useRef<HTMLElement>(null);
 
   // After a view change move focus to the view heading's container so keyboard/screen reader users
@@ -95,6 +103,11 @@ function Shell() {
                 onClick={() => navigate({ view: n.view })}
               >
                 <span>{t(n.key)}</span>
+                {n.view === 'hosts' && ssh.tabs.length > 0 ? (
+                  <span className="count" aria-label={t('hosts.openTerminals', { count: ssh.tabs.length })}>
+                    {ssh.tabs.length}
+                  </span>
+                ) : null}
                 {n.view === 'approvals' && pendingApprovals > 0 ? (
                   <span
                     className="count"
@@ -120,6 +133,9 @@ function Shell() {
           </Banner>
         ) : null}
         {active === 'sandboxes' ? <SandboxesView /> : null}
+        {active === 'templates' ? <TemplatesView /> : null}
+        {active === 'hosts' ? <HostsView /> : null}
+        <SshPanel visible={active === 'hosts'} />
         {active === 'approvals' ? <ApprovalsView /> : null}
         {active === 'detail' && route.sandboxId ? (
           <DetailView key={route.sandboxId} id={route.sandboxId} />

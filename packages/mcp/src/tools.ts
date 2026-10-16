@@ -447,6 +447,24 @@ export function registerTools(register: Register): void {
   });
 
   register({
+    name: 'sandbox_start',
+    title: 'Start sandbox',
+    description:
+      'Resume one of your stopped sandboxes (its workspace and files are kept). Expired sandboxes cannot be started: extend the TTL before it ends (access_request kind ttl) or create a new one.',
+    input: { id: sandboxId },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async handler(args, rt) {
+      const s = await rt.abox.startSandbox(rt.caller, args.id);
+      return ok(`Sandbox ${s.id} is ${s.state}`, { sandbox: briefSandbox(s) }, sandboxLine(s));
+    },
+  });
+
+  register({
     name: 'sandbox_stop',
     title: 'Stop sandbox',
     description:

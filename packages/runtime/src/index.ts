@@ -8,3 +8,4 @@ export {
   type ProviderContext,
   type ProviderFactoryMaker,
 } from './providers.js';
+export { loadInstanceId, INSTANCE_ID_FILE } from './instance.js';

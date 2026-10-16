@@ -106,3 +106,43 @@ describe('abox mcp serve (real @abox/mcp)', () => {
     expect(await exited).toBe(0);
   }, 60_000);
 });
+
+describe('abox mcp serve without a policy.yaml (built-in agent contexts)', () => {
+  it.each(['claude-code', 'codex', 'cursor', 'orca', 'default'])(
+    'stdio: --agent %s works with the built-in default policy',
+    async (agent) => {
+      const bare = makeEnv(); // no policy.yaml, no config
+      try {
+        const { child, res, exited } = spawnBin(bare, ['mcp', 'serve', '--agent', agent]);
+        child.stdin.write(`${rpc(1, 'initialize', INIT)}\n`);
+        child.stdin.write(`${rpc(undefined, 'notifications/initialized')}\n`);
+        child.stdin.write(`${rpc(2, 'tools/call', { name: 'template_list', arguments: {} })}\n`);
+        const until = Date.now() + 20_000;
+        while (!res.stdout.includes('"id":2') && Date.now() < until) await sleep(100);
+        child.stdin.end();
+        expect(await exited, res.stderr).toBe(0);
+        const reply = res.stdout
+          .trim()
+          .split('\n')
+          .map((l) => JSON.parse(l))
+          .find((m) => m.id === 2);
+        expect(reply.result.isError).not.toBe(true);
+        expect(JSON.stringify(reply.result)).toContain('alpine-min');
+      } finally {
+        bare.cleanup();
+      }
+    },
+    60_000,
+  );
+
+  it('an agent context nobody defined is still refused', async () => {
+    const bare = makeEnv();
+    try {
+      const r = await runBin(bare, ['mcp', 'serve', '--agent', 'some-other-agent']);
+      expect(r.code).toBe(3);
+      expect(r.stderr).toContain('policy_denied');
+    } finally {
+      bare.cleanup();
+    }
+  });
+});

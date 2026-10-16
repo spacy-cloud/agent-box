@@ -521,7 +521,7 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
         expect(local).toMatchObject({
           connection: { host: 'local', kind: 'local' },
           zone: 'workstation',
-          backends: ['docker', 'process'],
+          backends: ['docker', 'podman', 'process', 'python', 'vm'],
         });
         await expect(resolve('nope')).rejects.toMatchObject({ code: 'not_found' });
 

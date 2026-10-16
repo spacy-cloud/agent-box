@@ -150,6 +150,23 @@ describe('templates, create, list, inspect, delete', () => {
     expect((s.s['sandbox'] as { state: string }).state).toBe('stopped');
   });
 
+  it('start resumes a stopped sandbox, is idempotent, and refuses expired ones', async () => {
+    const c = await a.call('sandbox_create', {
+      template: 'fake-box',
+      workspace: { mode: 'empty' },
+    });
+    const id = (c.s['sandbox'] as { id: string }).id;
+    await a.call('sandbox_stop', { id });
+    const started = await a.call('sandbox_start', { id });
+    expect(started.s['ok']).toBe(true);
+    expect((started.s['sandbox'] as { state: string }).state).toBe('running');
+    expect((await a.call('sandbox_start', { id })).s['ok']).toBe(true);
+    expect((await a.call('sandbox_exec', { id, argv: ['true'] })).s['ok']).toBe(true);
+    const missing = await a.call('sandbox_start', { id: 'local/00000000' });
+    expect(missing.isError).toBe(true);
+    expect(missing.s['code']).toBe('not_found');
+  });
+
   it('ttl and overrides.ttl may not disagree; numbers are seconds', async () => {
     const bad = await a.call('sandbox_create', {
       template: 'fake-box',

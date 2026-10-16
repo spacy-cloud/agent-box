@@ -337,7 +337,8 @@ export function rawToProfile(id: string, raw: RawHost): HostProfile {
     id,
     kind,
     zone: raw.zone ?? (kind === 'local' ? 'workstation' : 'shared'),
-    backends: raw.backends ?? (kind === 'local' ? ['docker', 'process'] : []),
+    // local: every backend there is (the manager only uses those that are registered and usable)
+    backends: raw.backends ?? (kind === 'local' ? [...HOST_BACKEND_KINDS] : []),
     tags: raw.tags ?? [],
     favorite: raw.favorite ?? false,
     portForwards: (raw.port_forwards ?? []).map((f) => ({

@@ -15,7 +15,8 @@ export const HOST_KINDS = ['local', 'ssh'] as const;
 export type HostKind = (typeof HOST_KINDS)[number];
 
 /** Backends that can be declared on a host profile. */
-export const HOST_BACKEND_KINDS = ['docker', 'podman', 'process', 'vm'] as const;
+/** Every backend a host profile may list (same set as `BACKEND_KINDS`). */
+export const HOST_BACKEND_KINDS = ['docker', 'podman', 'process', 'python', 'vm'] as const;
 export type HostBackendKind = (typeof HOST_BACKEND_KINDS)[number];
 
 export const FORWARD_KINDS = ['local', 'remote', 'dynamic'] as const;

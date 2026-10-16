@@ -21,7 +21,9 @@ host `local`, approval `medium`, built-in limits (never unlimited).
 Built-in profiles: `human` (always present; approval `open`, broad rights; a `human`
 profile in the file is merged on top of it unless it uses `extends`) and, without a
 policy file, `default` (workspace roots `['~']` - the forbidden list still applies) plus
-the agent context `default`. Every other context id is unknown -> `policy_denied`.
+the agent contexts `default`, `claude-code`, `codex`, `cursor` and `orca` (`BUILTIN_AGENT_CONTEXTS`), all using
+profile `default`, so `abox mcp serve --agent claude-code` works without a policy.yaml. A policy.yaml replaces the
+built-in policy completely and defines its own contexts. Every other context id is unknown -> `policy_denied`.
 Context `human` is built in and cannot be redefined. Agent owners are `agent:<id>`.
 
 ## Forbidden host paths (workspace and mounts, for everyone incl. humans)
@@ -58,7 +60,7 @@ Deny rules are evaluated first and all reasons are collected; **deny always wins
 | mounts with `mounts: deny`                                                                                                                                                                        | deny                                                                      |
 | mount forbidden, outside `mounts.roots`, `rw` while only `ro`, bad/duplicate/system target                                                                                                        | deny                                                                      |
 | network mode not in `network.modes`                                                                                                                                                               | deny                                                                      |
-| allowlist destination invalid (`*`, `*.com`, URLs)                                                                                                                                                | deny                                                                      |
+| allowlist destination invalid (`*`, `*.com`, URLs, port outside 1..65535)                                                                                                                         | deny                                                                      |
 | allowlist destination beyond `allow_presets` + `allow`                                                                                                                                            | approval (all modes); deny if the profile has no allowlist at all         |
 | private-address exception                                                                                                                                                                         | approval (all modes); deny with mode `none` or malformed                  |
 | secret ref not in `secrets.allowed` (`*` = any); inject kind not in `secrets.inject`                                                                                                              | deny                                                                      |
@@ -78,6 +80,14 @@ show `items`/`risks`, then re-evaluate with it. `requestDigest` is the canonical
 to hash (`hashRequestDigest`) for approval binding; it contains no secret values and
 excludes counts and the confirmation flag. Bind the policy `contentHash` separately if
 approvals should expire on policy change.
+
+## Network destinations and ports
+
+Patterns are `example.org`, `*.example.org` (subdomains, not the apex) and either with `:port`. Ports follow the
+egress proxy (`docs/internal/proxy-contract.md`): a pattern without port allows 80 and 443 only, `host:port`
+allows exactly that port. `domainCovered(requested, allowed)`: a request without port means 80 and 443 and is
+covered when both ports are (by `host`, or by `host:80` + `host:443`); `host:8443` is covered by `host:8443`, by
+`*.parent:8443` or by `*`, not by `host`; `*` covers everything.
 
 ## Exec and access requests
 

@@ -8,6 +8,37 @@ needed to list sandboxes).
 Isolation level: `container` (`hardened` when a hardened OCI runtime such as gVisor is configured
 with `hardenedRuntime` and installed in the engine).
 
+## Instances: several abox installations on one engine
+
+A container engine is shared: another `ABOX_HOME`, another user in the `docker` group, CI or a test
+run use the same daemon. Without separation a second installation would see the first one's
+sandboxes as orphans, and `reconcile --remove-orphans` or `gcImages` could delete them. The
+`instanceId` option of the provider prevents that:
+
+- Every container (sandbox and proxy sidecar), per-sandbox network, built environment image and
+  snapshot image carries the label `abox.instance=<id>`.
+- `list()`, `inspect()` and every operation by sandbox id, `remove()`, `gcImages()` and the network
+  cleanup only see objects with the same id. A foreign sandbox answers `not_found` (also for
+  `remove`, which stays idempotent for ids that do not exist at all). `gcImages` only deletes images
+  stamped with its own id; environment images are a shared cache (the same template hash gives the
+  same tag, a second instance reuses the image), but only the instance that built one may delete it.
+- Objects **without** the label (created by an older version or by another tool) belong to nobody:
+  they are never listed, removed or garbage-collected. `status()` only reports them as a warning
+  ("N abox resources (sandboxes) of another or unknown instance present"). A provider without an
+  `instanceId` is the mirror image: it only sees unlabelled objects. Consequence of upgrading:
+  sandboxes created before instance ids existed are no longer managed (remove them with `docker`).
+- Shared infrastructure carries no instance id and is never removed by a provider: the `abox-open`
+  and `abox-egress` networks and the `abox/proxy:<hash>` image.
+- `@abox/runtime` generates one random id per abox data directory (`<dataDir>/instance-id`, mode 0600) and passes it to the docker, podman and python providers.
+
+## Backend kind
+
+`backendKind` (`docker` | `podman` | `python`, default: the engine `kind`) is what the provider
+reports as `SandboxInfo.backend` and stamps as `abox.backend`; `list()`, `inspect()` and `remove()`
+only see sandboxes of that kind. `@abox/backend-python` wraps this provider with
+`backendKind: 'python'`, so the plain docker provider does not list python sandboxes of the same
+instance and vice versa.
+
 ## Hardening (mandatory, never relaxed)
 
 Assembled in one place (`src/hostconfig.ts`): not privileged, `CapDrop: ALL`,
@@ -28,6 +59,15 @@ TTL sleeper, the container exits at `abox.expires` (also after a restart).
   per-start CA; the CA certificate and a bundle (system roots + abox CA) are installed root-owned in
   `/usr/local/share/abox` and referenced by `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, ... Secret
   values only exist in the sidecar's config file, never in env vars or labels.
+- `updateNetwork(id, network)` changes the rules of an `allowlist` sandbox (allow list, private
+  exceptions, header injections) without recreating it: the new `config.json` is written into the
+  sidecar and the sidecar is restarted (open connections through the proxy are cut, the sandbox and
+  its networks stay). With injections the restarted proxy issues a new CA, which is installed in a
+  running sandbox together with a fresh bundle (a stopped sandbox gets it on its next `start`).
+  If the proxy rejects the rules the previous config is restored and the call fails with
+  `invalid_input`. `none` and `open` sandboxes have no rules (`unsupported`), the mode cannot
+  change (`invalid_input`), and injections cannot be _added_ to a sandbox created without them
+  (`unsupported`: the CA environment is fixed at creation); removing or changing them is fine.
 
 ## Workspace delivery
 
@@ -89,6 +129,8 @@ Copy delivery and `none` delivery always keep files owned by the template (sandb
   re-owned for a host-mapped user.
 - Remote engines support only `none` and `copy` delivery and no extra mounts.
 - Disk quota requires xfs+pquota, btrfs or zfs; otherwise creation with `resources.disk` fails.
+- Sandboxes created before instance ids existed (no `abox.instance` label) are not managed any more
+  (see "Instances").
 - Snapshots are not available with a read-only root filesystem; volumes, tmpfs and bind mounts are
   never part of a snapshot.
 

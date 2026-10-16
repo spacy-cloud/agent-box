@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { _electron as electron } from '@playwright/test';
@@ -36,7 +37,15 @@ contexts:
 `;
 }
 
-export function makeHome(): TestHome {
+export interface HomeOptions {
+  /** Use the real docker engine of the machine (tests guarded by `ABOX_TEST_DOCKER=1`). */
+  docker?: boolean;
+}
+
+/** True when the docker-backed tests should run. */
+export const DOCKER = process.env['ABOX_TEST_DOCKER'] === '1';
+
+export function makeHome(opts: HomeOptions = {}): TestHome {
   const base = mkdtempSync(join(tmpdir(), 'abox-gui-e2e-'));
   const home = join(base, 'home');
   const project = join(base, 'project');
@@ -49,8 +58,14 @@ export function makeHome(): TestHome {
     ABOX_HOME: home,
     HOME: base,
     WAYLAND_DISPLAY: '',
-    DOCKER_HOST: 'unix:///nonexistent/abox-e2e-docker.sock',
-    CONTAINER_HOST: 'unix:///nonexistent/abox-e2e-podman.sock',
+    ...(opts.docker
+      ? {}
+      : {
+          DOCKER_HOST: 'unix:///nonexistent/abox-e2e-docker.sock',
+          CONTAINER_HOST: 'unix:///nonexistent/abox-e2e-podman.sock',
+        }),
+    // Never use the real ssh agent or the real ~/.ssh in tests (HOME is a temp dir; ssh-agent is switched off).
+    SSH_AUTH_SOCK: '',
     ABOX_GUI_LOCALE: 'de',
     ABOX_GUI_POLL_MS: '500',
   };
@@ -90,4 +105,40 @@ export const SHELL_REQ = (project: string, name = 'agent-box') => ({
 export async function shot(page: Page, name: string): Promise<void> {
   const dir = process.env['ABOX_E2E_SHOTS'];
   if (dir) await page.screenshot({ path: join(dir, `${name}.png`) });
+}
+
+const axeSource = readFileSync(
+  createRequire(import.meta.url).resolve('axe-core/axe.min.js'),
+  'utf8',
+);
+
+interface AxeViolation {
+  id: string;
+  impact: string | null;
+  nodes: Array<{ target: unknown[] }>;
+}
+
+/** Runs axe-core inside the page (Playwright's AxeBuilder opens extra pages, which Electron does not support). */
+export async function axeViolations(page: Page): Promise<string[]> {
+  await page.evaluate(axeSource);
+  const res = await page.evaluate(async () => {
+    const axe = (
+      globalThis as unknown as {
+        axe: { run(ctx: unknown, opts: unknown): Promise<{ violations: AxeViolation[] }> };
+      }
+    ).axe;
+    return axe.run(document, {
+      runOnly: {
+        type: 'tag',
+        values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'],
+      },
+    });
+  });
+  return res.violations.map(
+    (v) =>
+      `${v.id} (${v.impact}): ${v.nodes
+        .slice(0, 3)
+        .map((n) => n.target.join(' '))
+        .join(' | ')}`,
+  );
 }

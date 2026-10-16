@@ -22,7 +22,7 @@ import {
   safe,
 } from '../format.js';
 import { resolveSandboxId } from '../ids.js';
-import { commaList, durationMs, positiveNumber, sizeBytes } from '../parse.js';
+import { commaList, durationMs, invalid, positiveNumber, sizeBytes } from '../parse.js';
 
 function ttlText(s: SandboxView): string {
   if (s.state === 'removed' || s.state === 'failed') return '-';
@@ -44,11 +44,17 @@ export function registerSandbox(program: Command, cli: Cli): void {
     .description('Create a sandbox from a template')
     .argument('<template>', 'template name (see "abox template ls")')
     .option('--name <name>', 'sandbox name')
-    .option('-w, --workspace <path>', 'host project directory to give the sandbox (e.g. .)')
-    .addOption(
-      new Option('--mode <mode>', 'how the workspace is delivered').choices([...WORKSPACE_MODES]),
+    .option(
+      '-w, --workspace <path>',
+      'host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared',
     )
-    .option('--ref <ref>', 'git ref for clone/worktree workspaces')
+    .addOption(
+      new Option(
+        '--mode <mode>',
+        'how the workspace is delivered (default: the template\'s mode with --workspace, "empty" without)',
+      ).choices([...WORKSPACE_MODES]),
+    )
+    .option('--ref <ref>', 'git ref for clone/worktree workspaces (needs --workspace)')
     .addOption(new Option('--net <mode>', 'network mode').choices([...NETWORK_MODES]))
     .option(
       '--allow <domains>',
@@ -89,15 +95,26 @@ export function registerSandbox(program: Command, cli: Cli): void {
           sizeBytes(o.memory, '--memory');
           overrides.memory = o.memory;
         }
+        // Never fall back to the current directory silently: sharing a project is an explicit choice.
         const workspace: NonNullable<CreateSandboxRequest['workspace']> = {};
-        if (o.workspace) workspace.path = cli.resolvePath(o.workspace);
-        if (o.mode) workspace.mode = o.mode;
+        if (o.workspace) {
+          workspace.path = cli.resolvePath(o.workspace);
+          if (o.mode) workspace.mode = o.mode;
+        } else {
+          if ((o.mode && o.mode !== 'empty') || o.ref) {
+            throw invalid(
+              `${o.ref ? '--ref' : `--mode ${o.mode}`} needs a project directory`,
+              'Add --workspace <path> (for example "-w ."), or leave both out for an empty workspace.',
+            );
+          }
+          workspace.mode = 'empty';
+        }
         if (o.ref) workspace.ref = o.ref;
         const req: CreateSandboxRequest = {
           template,
           ...(o.name ? { name: o.name } : {}),
           ...(cli.globals.host ? { host: cli.globals.host } : {}),
-          ...(Object.keys(workspace).length > 0 ? { workspace } : {}),
+          workspace,
           ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
           ...(o.requestId ? { requestId: o.requestId } : {}),
           projectDir: cli.projectDir(),

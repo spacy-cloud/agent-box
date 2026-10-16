@@ -109,6 +109,62 @@ describe.runIf(DOCKER)('CLI against Docker (acceptance criteria Phase 1/3)', () 
     expect(net.stdout.trim()).toBe('blocked');
   }, 120_000);
 
+  it('network allowlist: a denied egress is in the audit log (F4), entries with a port are accepted (F5)', async () => {
+    const r = await runBin(
+      t,
+      [
+        'create',
+        'alpine-min',
+        '--net',
+        'allowlist',
+        '--allow',
+        'allowed.example.org,ported.example.org:8443',
+        '--name',
+        'egress',
+        '--yes',
+        '--json',
+      ],
+      { timeoutMs: 300_000 },
+    );
+    expect(r.code, r.stderr).toBe(0);
+    const sid = r.json.data.sandbox.id as string;
+    created.push(sid);
+    expect(r.json.data.sandbox.network.allow).toEqual(
+      expect.arrayContaining(['allowed.example.org', 'ported.example.org:8443']),
+    );
+    // busybox wget honours the sandbox's http_proxy: the proxy answers 403 and records the decision
+    const w = await runBin(t, [
+      'exec',
+      sid,
+      '--timeout',
+      '30s',
+      '--',
+      'sh',
+      '-c',
+      'wget -q -T 8 -O- http://denied-egress-probe.example.org/ >/dev/null 2>&1; echo wget-exit=$?',
+    ]);
+    expect(w.stdout).toMatch(/wget-exit=[1-9]/);
+    const audit = await runBin(t, [
+      'audit',
+      '--sandbox',
+      sid,
+      '--action',
+      'network.egress',
+      '--limit',
+      '100',
+      '--json',
+    ]);
+    const hits = (
+      audit.json.data.entries as Array<{
+        decision: string;
+        details: { host: string; port: number };
+      }>
+    ).filter((e) => e.details.host === 'denied-egress-probe.example.org');
+    expect(hits.length, audit.stdout).toBeGreaterThan(0);
+    expect(hits[0]).toMatchObject({ decision: 'deny', details: { port: 80 } });
+    await runBin(t, ['rm', '--force', sid]);
+  }, 400_000);
+
   it('ls --json has a stable shape', async () => {
     const r = await runBin(t, ['ls', '--json']);
     expect(r.code).toBe(0);
@@ -226,6 +282,16 @@ describe.runIf(DOCKER)('CLI against Docker (acceptance criteria Phase 1/3)', () 
         },
       );
       expect(script.stdout).toContain('shell-works-42');
+      // opened and closed through the manager: audit entries with duration and exit code, never content
+      const audit = await runBin(t, ['audit', '--sandbox', id, '--limit', '200', '--json']);
+      const entries = audit.json.data.entries as Array<{
+        action: string;
+        details: Record<string, unknown> | null;
+      }>;
+      expect(entries.some((e) => e.action === 'sandbox.attach')).toBe(true);
+      const end = entries.find((e) => e.action === 'sandbox.attach.end');
+      expect(end?.details).toMatchObject({ exitCode: 3 });
+      expect(JSON.stringify(entries)).not.toContain('shell-works');
     },
     90_000,
   );

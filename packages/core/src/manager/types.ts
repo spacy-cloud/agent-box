@@ -399,6 +399,40 @@ export interface ReadLogOptions {
   maxBytes?: number;
 }
 
+/** `attach` options (same shape as the provider's `TtyOptions` minus `env`, which the manager never passes). */
+export interface AttachOptions {
+  cols: number;
+  rows: number;
+  /** Program to run instead of the default login shell. */
+  argv?: string[];
+}
+
+export interface SandboxLogsOptions {
+  /** Last N lines. */
+  tail?: number;
+  /** Only output since this time (epoch ms). */
+  sinceTs?: number;
+}
+
+export interface SnapshotView {
+  /** What `restore` takes. */
+  id: string;
+  name: string;
+  createdAt: number;
+}
+
+export interface PolicyRevisionSummary {
+  rev: number;
+  ts: number;
+  /** Who changed the file: `human`, `external-edit`, `system` (first import). */
+  actor: string;
+  contentHash: string;
+}
+
+export interface PolicyRevisionDetail extends PolicyRevisionSummary {
+  content: string;
+}
+
 export interface ExportParams {
   format: ExportFormat;
   paths?: string[];

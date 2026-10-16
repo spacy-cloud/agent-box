@@ -1,7 +1,7 @@
 import { posix as posixPath, basename, join as joinPath } from 'node:path';
 import { stat } from 'node:fs/promises';
 import type { Command } from 'commander';
-import { AboxError, type ExecParams, type SandboxProvider } from '@abox/core';
+import { AboxError, type Abox, type Caller, type ExecParams } from '@abox/core';
 import type { Cli } from '../cli.js';
 import { CliError, CliExit } from '../errors.js';
 import { formatDuration, formatTime, renderTable } from '../format.js';
@@ -97,34 +97,17 @@ export function registerRun(program: Command, cli: Cli): void {
       }
       const id = await resolveSandboxId(cli, ref);
       const rt = await cli.rt();
-      const info = await rt.abox.inspectSandbox(cli.caller(), id);
-      if (info.state !== 'running') {
-        throw new AboxError('conflict', `${id} is ${info.state}, not running`, {
-          hint: info.state === 'stopped' ? `Start it with "abox start ${id}".` : undefined,
-        });
-      }
-      const provider = await rt.providerFor(info.host, info.backend);
-      if (!provider.capabilities().tty) {
-        throw new AboxError(
-          'unsupported',
-          `backend "${info.backend}" has no interactive terminal`,
-          {
-            hint: 'Use "abox exec" instead.',
-          },
-        );
-      }
-      const session = await provider.attach(id, {
-        cols: stdout.columns ?? 80,
-        rows: stdout.rows ?? 24,
+      // The manager checks state, backend support and the human-only rule, and audits open and close.
+      const session = await rt.abox.attach(cli.caller(), id, {
+        cols: stdout.columns || 80,
+        rows: stdout.rows || 24,
         ...(o.cmd ? { argv: [o.cmd] } : {}),
       });
-      rt.audit('sandbox.shell', { sandboxId: id, backend: info.backend }, id);
-      const started = Date.now();
       const onData = (d: Buffer | string): void => {
         session.stream.write(d);
       };
       const onResize = (): void => {
-        void session.resize(stdout.columns ?? 80, stdout.rows ?? 24).catch(() => undefined);
+        void session.resize(stdout.columns || 80, stdout.rows || 24).catch(() => undefined);
       };
       const restore = (): void => {
         try {
@@ -149,7 +132,6 @@ export function registerRun(program: Command, cli: Cli): void {
         process.off('exit', restore);
         stdin.pause();
         await session.close().catch(() => undefined);
-        rt.audit('sandbox.shell_end', { sandboxId: id, durationMs: Date.now() - started }, id);
       }
       if (code !== 0) throw new CliExit(code);
     });
@@ -172,20 +154,20 @@ export function registerRun(program: Command, cli: Cli): void {
       const ref = (src.sandbox ?? dst.sandbox)!;
       const id = await resolveSandboxId(cli, ref);
       const rt = await cli.rt();
-      const info = await rt.abox.inspectSandbox(cli.caller(), id);
-      const provider = await rt.providerFor(info.host, info.backend);
+      const caller = cli.caller();
       let from: string;
       let to: string;
       let direction: 'in' | 'out';
       const started = Date.now();
+      // The manager canonicalizes host paths, refuses protected ones and audits the copy.
       if (dst.sandbox) {
         direction = 'in';
         from = cli.resolvePath(src.path);
         await stat(from).catch(() => {
           throw new AboxError('not_found', `no such file or directory: ${from}`);
         });
-        to = await sandboxTarget(provider, id, dst.path, basename(from));
-        await provider.copyIn(id, from, to);
+        to = await sandboxTarget(rt.abox, caller, id, dst.path, basename(from));
+        await rt.abox.copyIn(caller, id, from, to);
       } else {
         direction = 'out';
         from = src.path;
@@ -193,18 +175,8 @@ export function registerRun(program: Command, cli: Cli): void {
           cli.resolvePath(dst.path),
           posixPath.basename(from.replace(/\/+$/, '')) || 'root',
         );
-        await provider.copyOut(id, from, to);
+        await rt.abox.copyOut(caller, id, from, to);
       }
-      rt.audit(
-        'sandbox.copy',
-        {
-          sandboxId: id,
-          direction,
-          sandboxPath: direction === 'in' ? to : from,
-          durationMs: Date.now() - started,
-        },
-        id,
-      );
       cli.success({ id, direction, from, to, durationMs: Date.now() - started }, () =>
         direction === 'in' ? `copied ${from} -> ${id}:${to}` : `copied ${id}:${from} -> ${to}`,
       );
@@ -219,15 +191,10 @@ export function registerRun(program: Command, cli: Cli): void {
     .action(async (ref: string, o: { follow?: boolean; tail?: string }) => {
       const id = await resolveSandboxId(cli, ref);
       const rt = await cli.rt();
-      const info = await rt.abox.inspectSandbox(cli.caller(), id);
-      const provider = await rt.providerFor(info.host, info.backend);
-      if (!provider.logs) {
-        throw new AboxError('unsupported', `backend "${info.backend}" does not provide logs`, {
-          hint: 'Use "abox process logs" for background processes started with "abox process start".',
-        });
-      }
       const tail = o.tail ? positiveInt(o.tail, '--tail') : undefined;
-      const first = await provider.logs(id, tail ? { tail } : {});
+      const read = (): Promise<string> =>
+        rt.abox.sandboxLogs(cli.caller(), id, tail ? { tail } : {});
+      const first = await read();
       if (!o.follow) {
         cli.success(
           { id, logs: first },
@@ -249,7 +216,7 @@ export function registerRun(program: Command, cli: Cli): void {
         if (signal.aborted) break;
         let now: string;
         try {
-          now = await provider.logs(id, tail ? { tail } : {});
+          now = await read();
         } catch (e) {
           if (e instanceof AboxError && e.code === 'not_found') break;
           throw e;
@@ -411,9 +378,14 @@ export function parseCopyArg(arg: string): CopyArg {
   return { path: arg };
 }
 
-async function isSandboxDir(provider: SandboxProvider, id: string, path: string): Promise<boolean> {
+async function isSandboxDir(
+  abox: Abox,
+  caller: Caller,
+  id: string,
+  path: string,
+): Promise<boolean> {
   try {
-    await provider.listDir(id, path);
+    await abox.listDir(caller, id, path);
     return true;
   } catch {
     return false;
@@ -422,13 +394,14 @@ async function isSandboxDir(provider: SandboxProvider, id: string, path: string)
 
 /** Like `cp`: into the directory when the destination is one (or ends with `/`), else onto the path. */
 async function sandboxTarget(
-  provider: SandboxProvider,
+  abox: Abox,
+  caller: Caller,
   id: string,
   dest: string,
   name: string,
 ): Promise<string> {
   if (dest.endsWith('/')) return posixPath.join(dest, name);
-  if (await isSandboxDir(provider, id, dest)) return posixPath.join(dest, name);
+  if (await isSandboxDir(abox, caller, id, dest)) return posixPath.join(dest, name);
   return dest;
 }
 

@@ -15,6 +15,7 @@ import type {
   HostConnection,
   IsolationLevel,
   NetworkEvent,
+  NetworkSpec,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
@@ -48,6 +49,7 @@ import {
   imageRepoName,
   internalNetName,
   isValidHost,
+  isValidInstanceId,
   isValidShort,
   proxyName,
   snapshotRepo,
@@ -55,6 +57,7 @@ import {
 import {
   PROXY_CA_PATH,
   PROXY_CONFIG_DIR,
+  PROXY_CONFIG_PATH,
   PROXY_RUN_DIR,
   PROXY_USER,
   PROXY_USER_UID,
@@ -70,8 +73,26 @@ const MiB = 1024 * 1024;
 const DEFAULT_MAX_OUTPUT = 16 * MiB;
 
 export interface DockerProviderOptions {
-  /** `docker` (default) or `podman`. */
+  /** The container engine: `docker` (default) or `podman`. Decides the default socket and the wording. */
   kind?: 'docker' | 'podman';
+  /**
+   * Backend kind that is reported (`SandboxInfo.backend`), stamped as label `abox.backend` and used to
+   * filter `list()` / `inspect()`: a provider only sees the sandboxes of its own backend kind, so the
+   * plain docker provider does not list the sandboxes of the python backend (which is built on this
+   * provider) and vice versa. Default: the engine `kind`.
+   */
+  backendKind?: 'docker' | 'podman' | 'python';
+  /**
+   * Id of the abox installation that uses this provider. It is stamped as label `abox.instance` on
+   * every container, network, proxy sidecar, built image and snapshot image, and `list`, `inspect`,
+   * `remove`, `gcImages` and the network cleanup only see objects carrying the same id. Two
+   * installations (another `ABOX_HOME`, another user in the docker group, CI) on one engine therefore
+   * never treat each other's sandboxes as orphans. Objects without the label (older versions, other
+   * tools) belong to nobody: they are never listed, removed or garbage-collected, `status()` only
+   * reports how many exist. Without an id the provider only sees objects that carry no instance
+   * label either. `@abox/runtime` generates and persists one id per data directory.
+   */
+  instanceId?: string;
   /** Engine socket; overrides `host.engineSocket`. */
   socketPath?: string;
   /** Inject a pre-built client (tests). */
@@ -136,6 +157,10 @@ function sleep(ms: number): Promise<void> {
 
 export class DockerProvider implements SandboxProvider {
   readonly kind: BackendKind;
+  /** The container engine behind this provider (not the reported backend kind). */
+  readonly engine: 'docker' | 'podman';
+  /** Instance id stamped on and required of every engine object; `undefined` = unlabelled objects only. */
+  readonly instanceId: string | undefined;
   readonly host: HostConnection;
   private currentIsolation: IsolationLevel = 'container';
   private readonly docker: Docker;
@@ -146,10 +171,17 @@ export class DockerProvider implements SandboxProvider {
   private readonly inflight = new Map<string, Promise<PreparedImage>>();
 
   constructor(host: HostConnection, opts: DockerProviderOptions = {}) {
-    this.kind = opts.kind ?? 'docker';
+    this.engine = opts.kind ?? 'docker';
+    this.kind = opts.backendKind ?? this.engine;
     this.host = host;
     this.opts = opts;
-    this.socketPath = opts.socketPath ?? host.engineSocket ?? defaultSocketPath(this.kind);
+    if (opts.instanceId !== undefined && !isValidInstanceId(opts.instanceId))
+      throw new AboxError(
+        'invalid_input',
+        `Invalid instance id "${opts.instanceId}" (use 1-64 characters of [A-Za-z0-9_.-])`,
+      );
+    this.instanceId = opts.instanceId;
+    this.socketPath = opts.socketPath ?? host.engineSocket ?? defaultSocketPath(this.engine);
     this.docker = opts.docker ?? new Docker({ socketPath: this.socketPath });
     this.proxyAssets = opts.proxy === false ? undefined : (opts.proxy ?? defaultProxyAssets);
     if (!isValidHost(host.host))
@@ -164,8 +196,23 @@ export class DockerProvider implements SandboxProvider {
     return this.host.kind === 'ssh';
   }
 
+  /** Labels for every engine object abox creates: the extra labels and the instance id. */
   private get extra(): Record<string, string> {
-    return this.opts.extraLabels ?? {};
+    return {
+      ...(this.opts.extraLabels ?? {}),
+      ...(this.instanceId !== undefined ? { [LABEL.instance]: this.instanceId } : {}),
+    };
+  }
+
+  /** Does an engine object (by its labels) belong to this provider's instance? */
+  private ownsInstance(labels: Record<string, string> | null | undefined): boolean {
+    const v = labels?.[LABEL.instance];
+    return (v === undefined || v === '' ? undefined : v) === this.instanceId;
+  }
+
+  /** Does a sandbox (by its labels) belong to this provider: same instance and same backend kind. */
+  private ownsSandbox(labels: Record<string, string> | null | undefined): boolean {
+    return this.ownsInstance(labels) && (labels?.[LABEL.backend] ?? this.kind) === this.kind;
   }
 
   // -------------------------------------------------------------------------
@@ -249,7 +296,7 @@ export class DockerProvider implements SandboxProvider {
       return {
         ok: false,
         details: [
-          `${this.kind} engine unreachable at ${this.socketPath}: ${err.message}`,
+          `${this.engine} engine unreachable at ${this.socketPath}: ${err.message}`,
           ...(err.hint ? [err.hint] : []),
         ],
         warnings,
@@ -258,7 +305,7 @@ export class DockerProvider implements SandboxProvider {
     try {
       this.facts = undefined;
       const f = await this.engineFacts();
-      details.push(`${this.kind} ${f.version} (API ${f.apiVersion}) at ${this.socketPath}`);
+      details.push(`${this.engine} ${f.version} (API ${f.apiVersion}) at ${this.socketPath}`);
       details.push(`storage driver: ${f.storageDriver}${f.backingFs ? ` on ${f.backingFs}` : ''}`);
       details.push(`runtimes: ${f.runtimes.join(', ') || 'default'}`);
       if (f.cgroupVersion) details.push(`cgroup v${f.cgroupVersion}`);
@@ -271,7 +318,7 @@ export class DockerProvider implements SandboxProvider {
       }
       if (!f.rootless) {
         warnings.push(
-          `The ${this.kind} daemon is rootful: access to its socket (e.g. membership of the docker group) is root-equivalent on the host. Prefer a rootless engine.`,
+          `The ${this.engine} daemon is rootful: access to its socket (e.g. membership of the docker group) is root-equivalent on the host. Prefer a rootless engine.`,
         );
       }
       if (!this.proxyAssets)
@@ -279,11 +326,31 @@ export class DockerProvider implements SandboxProvider {
           'Egress proxy runtime not available: network mode "allowlist" is unsupported',
         );
       details.push(`internal networks: ${await this.probeInternalNetwork()}`);
+      details.push(
+        this.instanceId !== undefined
+          ? `instance: ${this.instanceId}`
+          : 'instance: none (only sees objects without an instance label)',
+      );
+      const foreign = await this.countForeignSandboxes().catch(() => 0);
+      if (foreign > 0) {
+        warnings.push(
+          `${foreign} abox resource${foreign === 1 ? '' : 's'} (sandboxes) of another or unknown instance present on this engine: not listed and never touched by this installation`,
+        );
+      }
       return { ok: true, version: f.version, rootless: f.rootless, details, warnings };
     } catch (e) {
       const err = mapEngineError(e, this.socketPath);
       return { ok: false, details: [...details, err.message], warnings };
     }
+  }
+
+  /** Sandbox containers of the engine that belong to another or no instance (or another backend kind's instance). */
+  private async countForeignSandboxes(): Promise<number> {
+    const items = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`${LABEL.managed}=1`, `${LABEL.role}=sandbox`] },
+    });
+    return items.filter((i) => !this.ownsInstance(i.Labels)).length;
   }
 
   private async probeInternalNetwork(): Promise<string> {
@@ -449,7 +516,7 @@ export class DockerProvider implements SandboxProvider {
       ...(progress ? { onProgress: progress } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
-    if (existing) {
+    if (existing && this.ownsInstance(existing.Config?.Labels)) {
       const fresh = await this.imageInspect(tag);
       if (fresh && fresh.Id !== existing.Id)
         await this.docker
@@ -500,6 +567,8 @@ export class DockerProvider implements SandboxProvider {
       for (const img of images) {
         const labels = img.Labels ?? {};
         if (labels[LABEL.role] === 'proxy') continue;
+        // Base/environment images are shared caches: only delete what this instance built.
+        if (!this.ownsInstance(labels)) continue;
         const hash = labels[LABEL.templateHash];
         if (!hash || keepSet.has(hash)) continue;
         const tags = (img.RepoTags ?? []).filter(
@@ -547,7 +616,12 @@ export class DockerProvider implements SandboxProvider {
       throw e;
     }
     const l = c.Config.Labels ?? {};
-    if (l[LABEL.managed] !== '1' || l[LABEL.role] !== 'sandbox' || l[LABEL.id] !== id) {
+    if (
+      l[LABEL.managed] !== '1' ||
+      l[LABEL.role] !== 'sandbox' ||
+      l[LABEL.id] !== id ||
+      !this.ownsSandbox(l)
+    ) {
       throw new AboxError('not_found', `Unknown sandbox ${id}`);
     }
     return c;
@@ -582,9 +656,11 @@ export class DockerProvider implements SandboxProvider {
       ];
       if (filter.owner) label.push(`${LABEL.owner}=${filter.owner}`);
       if (filter.template) label.push(`${LABEL.template}=${filter.template}`);
+      if (this.instanceId !== undefined) label.push(`${LABEL.instance}=${this.instanceId}`);
       const items = await this.docker.listContainers({ all: true, filters: { label } });
       const now = Date.now();
       return items
+        .filter((i) => this.ownsSandbox(i.Labels))
         .map((i) => infoFromLabels(i.Labels ?? {}, i.State, i.Id, this.kind, now))
         .filter((i) => i.id !== '' && (!filter.state || i.state === filter.state))
         .sort((a, b) => a.createdAt - b.createdAt);
@@ -716,7 +792,7 @@ export class DockerProvider implements SandboxProvider {
         Name: name,
         Driver: 'bridge',
         CheckDuplicate: true,
-        Labels: { [LABEL.managed]: '1', [LABEL.role]: role, ...this.extra },
+        Labels: { [LABEL.managed]: '1', [LABEL.role]: role },
       });
     } catch (e) {
       if (statusOf(e) !== 409) throw e; // created concurrently
@@ -1062,7 +1138,10 @@ export class DockerProvider implements SandboxProvider {
   ): Promise<{ network: string; proxyId: string }> {
     const assets = this.proxyAssets;
     if (!assets) throw new AboxError('unsupported', 'Egress proxy runtime is not available');
-    const image = await ensureProxyImage(this.docker, assets, this.extra);
+    // The proxy image and the `abox-open` / `abox-egress` networks are infrastructure that every
+    // instance on this engine shares: they carry no instance id (and no extra labels), and are never
+    // removed by a provider.
+    const image = await ensureProxyImage(this.docker, assets, {});
     await this.ensureNetwork(EGRESS_NETWORK, 'network');
 
     const intName = internalNetName(short);
@@ -1113,13 +1192,29 @@ export class DockerProvider implements SandboxProvider {
     cleanup.push(() => created.remove({ force: true, v: true }));
     await this.docker.getNetwork(EGRESS_NETWORK).connect({ Container: created.id });
 
-    const pc = this.docker.getContainer(created.id);
     // Config contains secret header values: placed as a file before start, never env/labels.
-    await pc.putArchive(
+    await this.writeProxyConfig(created.id, Buffer.from(proxyConfigJson(spec.network)));
+    await this.startProxy(created.id);
+    return { network: intName, proxyId: created.id };
+  }
+
+  /** Does the proxy's current config contain header injections (i.e. does it generate a CA)? */
+  private async proxyInjects(proxyId: string): Promise<boolean> {
+    const cfg = JSON.parse(
+      (await getFile(this.docker.getContainer(proxyId), PROXY_CONFIG_PATH, MiB)).data.toString(
+        'utf8',
+      ),
+    ) as { injections?: unknown[] };
+    return (cfg.injections?.length ?? 0) > 0;
+  }
+
+  /** Put `config.json` into the proxy's config volume (owned by the proxy user, mode 0600). */
+  private async writeProxyConfig(proxyId: string, json: Buffer): Promise<void> {
+    await this.docker.getContainer(proxyId).putArchive(
       await tarFromEntries([
         {
           name: 'config.json',
-          data: Buffer.from(proxyConfigJson(spec.network)),
+          data: json,
           mode: 0o600,
           uid: PROXY_USER_UID,
           gid: PROXY_USER_UID,
@@ -1127,8 +1222,85 @@ export class DockerProvider implements SandboxProvider {
       ]),
       { path: PROXY_CONFIG_DIR },
     );
-    await this.startProxy(created.id);
-    return { network: intName, proxyId: created.id };
+  }
+
+  private async stopContainer(containerId: string, t: number): Promise<void> {
+    try {
+      await this.docker.getContainer(containerId).stop({ t });
+    } catch (e) {
+      if (statusOf(e) !== 304) throw e;
+    }
+  }
+
+  /**
+   * Replace the egress rules (allowlist, private exceptions, header injections) of an allowlist
+   * sandbox. The proxy reads its config at startup, so the new `config.json` is written into the
+   * sidecar and the sidecar is restarted; the sandbox container and its networks stay as they are
+   * (open connections through the proxy are cut). When the proxy comes up with a new CA
+   * (injections), the CA and the CA bundle of a running sandbox are replaced; a stopped sandbox gets
+   * them on its next `start`. If the new config does not start, the old one is restored.
+   * Other modes have no rules: `none`/`open` sandboxes answer `unsupported`.
+   */
+  async updateNetwork(id: SandboxId, network: NetworkSpec): Promise<void> {
+    return this.guard(async () => {
+      const c = await this.load(id);
+      const labels = c.Config.Labels ?? {};
+      const current = labels[LABEL.networkMode] ?? 'none';
+      if (current !== 'allowlist') {
+        throw new AboxError(
+          'unsupported',
+          `Sandbox ${id} has network mode "${current}": only the rules of an allowlist sandbox can be changed`,
+          { hint: 'Create a new sandbox with the network mode you need.' },
+        );
+      }
+      if (network.mode !== 'allowlist') {
+        throw new AboxError(
+          'invalid_input',
+          `The network mode of a sandbox cannot change (allowlist -> ${network.mode})`,
+        );
+      }
+      const hadInjections = labels['abox.injections'] === '1';
+      if (network.injections.length > 0 && !hadInjections) {
+        throw new AboxError(
+          'unsupported',
+          'Header injections cannot be added to a sandbox that was created without them',
+          {
+            hint: 'The CA environment of the sandbox is fixed at creation. Create a new sandbox with the injection.',
+          },
+        );
+      }
+      const { short } = this.parseId(id);
+      const pid = await this.proxyContainerId(short);
+      if (!pid) {
+        throw new AboxError('backend_error', `Egress proxy of ${id} is missing`, {
+          hint: 'Remove and recreate the sandbox.',
+        });
+      }
+      const pc = this.docker.getContainer(pid);
+      const old = (await getFile(pc, PROXY_CONFIG_PATH, MiB)).data;
+      const next = Buffer.from(proxyConfigJson(network));
+      await this.writeProxyConfig(pid, next);
+      if (!(await pc.inspect()).State.Running) return; // `start` brings it up with the new config
+      try {
+        await this.stopContainer(pid, 2);
+        await this.startProxy(pid);
+      } catch (e) {
+        // The new config did not start (invalid rules): put the old one back and bring the proxy up again.
+        await this.stopContainer(pid, 1).catch(() => undefined);
+        await this.writeProxyConfig(pid, old).catch(() => undefined);
+        await this.startProxy(pid).catch(() => undefined);
+        if (e instanceof AboxError && e.code === 'backend_error') {
+          throw new AboxError(
+            'invalid_input',
+            'The egress proxy rejected the new network rules; the previous rules are active again',
+            { ...(e.details ? { details: e.details } : {}), cause: e },
+          );
+        }
+        throw e;
+      }
+      // A restarted proxy generated a new CA.
+      if (network.injections.length > 0 && c.State.Running) await this.installCa(pid, c.Id);
+    });
   }
 
   /** Start the proxy container (if needed) and wait for its ready line. */
@@ -1234,7 +1406,8 @@ export class DockerProvider implements SandboxProvider {
   private async proxyContainerId(short: string): Promise<string | undefined> {
     try {
       const p = await this.docker.getContainer(proxyName(short)).inspect();
-      return p.Config.Labels?.[LABEL.managed] === '1' ? p.Id : undefined;
+      const l = p.Config.Labels ?? {};
+      return l[LABEL.managed] === '1' && this.ownsInstance(l) ? p.Id : undefined;
     } catch (e) {
       if (statusOf(e) === 404) return undefined;
       throw e;
@@ -1260,7 +1433,9 @@ export class DockerProvider implements SandboxProvider {
           });
         const restarted = await this.startProxy(pid);
         // A restarted proxy generates a new CA.
-        if (restarted && labels['abox.injections'] === '1') await this.installCa(pid, c.Id);
+        // (`updateNetwork` may have removed the injections: then there is no CA to install.)
+        if (restarted && labels['abox.injections'] === '1' && (await this.proxyInjects(pid)))
+          await this.installCa(pid, c.Id);
       }
       if (c.State.Running) return;
       try {
@@ -1274,11 +1449,14 @@ export class DockerProvider implements SandboxProvider {
 
   /** Copy the spec files destined for the /tmp tmpfs into it (it is empty after every start). */
   private async restoreTmpFiles(containerId: string): Promise<void> {
+    // Entry by entry: `cp -pR dir/. /tmp/` also tries to set the times of /tmp itself, which GNU cp
+    // (Debian-based images) reports as an error because /tmp is not owned by the sandbox user.
     const res = await simpleExec(this.docker, containerId, [
-      'cp',
-      '-pR',
-      `${TMP_STASH}/.`,
-      '/tmp/',
+      '/bin/sh',
+      '-c',
+      'cd -- "$1" && find . -mindepth 1 -maxdepth 1 -exec cp -pR {} /tmp/ \\;',
+      'abox-restore-tmp',
+      TMP_STASH,
     ]);
     if (res.exitCode !== 0) {
       await this.docker
@@ -1321,19 +1499,24 @@ export class DockerProvider implements SandboxProvider {
         const s = statusOf(e);
         if (s !== 404 && s !== 409) throw e;
       };
-      // Sandbox container (only if it really is one of ours).
+      // Sandbox container (only if it really is one of ours: same instance, same backend kind).
+      // A sandbox of another instance is refused, nothing of it is touched.
       try {
         const c = await this.docker.getContainer(containerName(host, short)).inspect();
-        if (c.Config.Labels?.[LABEL.managed] === '1' && c.Config.Labels[LABEL.id] === id) {
+        const l = c.Config.Labels ?? {};
+        if (l[LABEL.managed] === '1' && l[LABEL.id] === id) {
+          if (!this.ownsSandbox(l)) throw new AboxError('not_found', `Unknown sandbox ${id}`);
           await this.docker.getContainer(c.Id).remove({ force: true, v: true });
         }
       } catch (e) {
+        if (e instanceof AboxError) throw e;
         ignore(e);
       }
       // Proxy sidecar.
       try {
         const p = await this.docker.getContainer(proxyName(short)).inspect();
-        if (p.Config.Labels?.[LABEL.managed] === '1' && p.Config.Labels[LABEL.id] === id) {
+        const l = p.Config.Labels ?? {};
+        if (l[LABEL.managed] === '1' && l[LABEL.id] === id && this.ownsInstance(l)) {
           await this.docker.getContainer(p.Id).remove({ force: true, v: true });
         }
       } catch (e) {
@@ -1343,7 +1526,9 @@ export class DockerProvider implements SandboxProvider {
       try {
         const n = this.docker.getNetwork(internalNetName(short));
         const info = await n.inspect();
-        if (info.Labels?.[LABEL.managed] === '1' && info.Labels[LABEL.id] === id) await n.remove();
+        const l = info.Labels ?? {};
+        if (l[LABEL.managed] === '1' && l[LABEL.id] === id && this.ownsInstance(l))
+          await n.remove();
       } catch (e) {
         ignore(e);
       }
@@ -1353,6 +1538,8 @@ export class DockerProvider implements SandboxProvider {
           filters: { reference: [`${snapshotRepo(short)}:*`] },
         });
         for (const i of imgs) {
+          const l = i.Labels ?? {};
+          if (l[LABEL.snapshotOf] !== id || !this.ownsInstance(l)) continue;
           for (const t of i.RepoTags ?? []) await this.docker.getImage(t).remove().catch(ignore);
         }
       } catch (e) {
@@ -1692,7 +1879,11 @@ export class DockerProvider implements SandboxProvider {
         throw new AboxError('not_found', `Snapshot ${snapshotId} does not belong to ${id}`);
       }
       const img = await this.imageInspect(snapshotId);
-      if (!img || img.Config.Labels?.[LABEL.snapshotOf] !== id) {
+      if (
+        !img ||
+        img.Config.Labels?.[LABEL.snapshotOf] !== id ||
+        !this.ownsInstance(img.Config.Labels)
+      ) {
         throw new AboxError('not_found', `Unknown snapshot ${snapshotId}`);
       }
       const wasRunning = c.State.Running;

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import Docker from 'dockerode';
 import {
   createDockerProvider,
@@ -6,21 +7,34 @@ import {
 } from '../provider.js';
 import type { SandboxSpec } from '@abox/core';
 
-export const TEST_LABEL = 'abox.test';
+/**
+ * The engine is shared with other developers' test runs (core, python, e2e sweep `abox.test=1`), so
+ * this package labels its objects with a key of its own and a value that is unique per process.
+ */
+export const TEST_LABEL = 'abox.dtest';
+export const TEST_RUN = randomBytes(4).toString('hex');
+
+/** Instance id of the providers of this process: they only see and delete their own objects. */
+export const TEST_INSTANCE = `dtest${TEST_RUN}`;
 
 export const dockerEnabled = process.env['ABOX_TEST_DOCKER'] === '1';
 
 export function newProvider(opts: DockerProviderOptions = {}): DockerProvider {
   return createDockerProvider(
     { host: 'local', kind: 'local' },
-    { extraLabels: { [TEST_LABEL]: '1' }, stopTimeoutSec: 1, ...opts },
+    {
+      instanceId: TEST_INSTANCE,
+      stopTimeoutSec: 1,
+      ...opts,
+      extraLabels: { [TEST_LABEL]: TEST_RUN, ...opts.extraLabels },
+    },
   );
 }
 
-/** Remove everything labelled abox.test=1 (containers, networks, images). */
+/** Remove everything this process created (label `abox.dtest=<run>`): containers, networks, images. */
 export async function sweepTestObjects(socketPath = '/var/run/docker.sock'): Promise<void> {
   const docker = new Docker({ socketPath });
-  const filters = { label: [`${TEST_LABEL}=1`] };
+  const filters = { label: [`${TEST_LABEL}=${TEST_RUN}`] };
   for (const c of await docker.listContainers({ all: true, filters })) {
     await docker
       .getContainer(c.Id)

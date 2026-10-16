@@ -1,46 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
-import { createRequire } from 'node:module';
-import type { Page } from '@playwright/test';
-import { launchGui, makeHome, openAgent, shot, SHELL_REQ } from './helpers';
+import { axeViolations, launchGui, makeHome, openAgent, shot, SHELL_REQ } from './helpers';
 import type { TestHome } from './helpers';
-
-const axeSource = readFileSync(
-  createRequire(import.meta.url).resolve('axe-core/axe.min.js'),
-  'utf8',
-);
-
-interface AxeViolation {
-  id: string;
-  impact: string | null;
-  nodes: Array<{ target: unknown[] }>;
-}
-
-/** Runs axe-core inside the page (Playwright's AxeBuilder opens extra pages, which Electron does not support). */
-async function axeViolations(page: Page): Promise<string[]> {
-  await page.evaluate(axeSource);
-  const res = await page.evaluate(async () => {
-    const axe = (
-      globalThis as unknown as {
-        axe: { run(ctx: unknown, opts: unknown): Promise<{ violations: AxeViolation[] }> };
-      }
-    ).axe;
-    return axe.run(document, {
-      runOnly: {
-        type: 'tag',
-        values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice'],
-      },
-    });
-  });
-  return res.violations.map(
-    (v) =>
-      `${v.id} (${v.impact}): ${v.nodes
-        .slice(0, 3)
-        .map((n) => n.target.join(' '))
-        .join(' | ')}`,
-  );
-}
 
 let h: TestHome;
 test.beforeEach(() => {
@@ -81,9 +43,23 @@ test('policy: read-only profiles, edit with live validation, diff and confirmati
     await expect(page.getByText(/Policy gespeichert/)).toBeVisible();
     expect(readFileSync(join(h.home, 'config', 'policy.yaml'), 'utf8')).toContain('ttl: 3h');
     await expect(page.locator('pre.code')).toContainText('ttl: 3h');
-    await expect(page.getByRole('table', { name: 'Verlauf der Revisionen' })).toContainText(
-      'Geändert (CLI/GUI)',
+    // revision history from the manager (listPolicyRevisions / getPolicyRevision), newest first
+    const history = page.getByRole('table', { name: 'Verlauf der Revisionen' });
+    const rows = history.locator('tbody tr');
+    await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(2);
+    await expect(rows.first()).toContainText('aktuell');
+    await expect(rows.first()).toContainText('Mensch (GUI/CLI)');
+    // the older revision shows the old content and the difference to the current policy
+    await rows.last().getByRole('button', { name: /Ansehen/ }).click();
+    const dlg = page.getByRole('dialog', { name: /Policy-Revision/ });
+    await expect(dlg.locator('pre.code')).toContainText('ttl: 4h');
+    await expect(dlg.getByLabel('Diff zwischen Revision und aktueller Policy')).toContainText(
+      'ttl: 3h',
     );
+    // "edit as draft" never restores directly: it opens the editor, the file stays untouched
+    await dlg.getByRole('button', { name: 'Als Entwurf bearbeiten' }).click();
+    await expect(page.getByLabel('policy.yaml')).toHaveValue(/ttl: 4h/);
+    expect(readFileSync(join(h.home, 'config', 'policy.yaml'), 'utf8')).toContain('ttl: 3h');
   } finally {
     await app.close();
   }

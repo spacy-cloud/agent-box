@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { AboxError } from '../errors.js';
+import { resolveContext } from './context.js';
 import {
+  BUILTIN_AGENT_CONTEXTS,
   defaultPolicy,
   defaultPolicyPath,
   loadPolicy,
@@ -29,11 +31,34 @@ function fail(text: string): AboxError {
   throw new Error('expected parse to fail');
 }
 
+describe('agent contexts of a user policy', () => {
+  it('a policy.yaml replaces the built-in contexts (override or drop)', () => {
+    const p = parse(
+      'profiles:\n  strict-one: { approval: strict, templates: [alpine-min] }\ncontexts:\n  claude-code: { profile: strict-one }\n',
+    );
+    expect(p.contexts['claude-code']).toEqual({ profile: 'strict-one' });
+    expect(p.contexts['codex']).toBeUndefined();
+    expect(resolveContext(p, 'claude-code', { home: '/home/u' }).profileName).toBe('strict-one');
+    expect(() => resolveContext(p, 'codex', { home: '/home/u' })).toThrow(/unknown agent context/);
+  });
+});
+
 describe('defaultPolicy', () => {
   const p = defaultPolicy();
   it('has default and human profiles and the default + human contexts', () => {
     expect(Object.keys(p.profiles).sort()).toEqual(['default', 'human']);
-    expect(Object.keys(p.contexts).sort()).toEqual(['default', 'human']);
+    expect(Object.keys(p.contexts).sort()).toEqual([
+      'claude-code',
+      'codex',
+      'cursor',
+      'default',
+      'human',
+      'orca',
+    ]);
+    for (const id of BUILTIN_AGENT_CONTEXTS) {
+      if (id !== 'human') expect(p.contexts[id]).toEqual({ profile: 'default' });
+    }
+    expect(resolveContext(p, 'claude-code', { home: '/home/u' }).owner).toBe('agent:claude-code');
     expect(p.source).toEqual({ kind: 'default' });
   });
   it('default profile matches the concept', () => {

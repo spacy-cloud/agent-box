@@ -271,6 +271,7 @@ describe('security', () => {
       ['sandbox_list_dir', {}],
       ['sandbox_snapshot', { name: 'n' }],
       ['sandbox_export', { format: 'diff' }],
+      ['sandbox_start', {}],
       ['sandbox_stop', {}],
       ['sandbox_delete', {}],
       ['access_request', { kind: 'ttl', details: { ttl: '1h' }, reason: 'x' }],

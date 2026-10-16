@@ -15,6 +15,8 @@ import type {
   DoctorReport,
   ExportSandboxResult,
   InspectResult,
+  PolicyRevisionDetail,
+  PolicyRevisionSummary,
   PolicyValidation,
   PolicyView,
   ProcessLogsResult,
@@ -22,8 +24,14 @@ import type {
   ReconcileReport,
   SandboxList,
   SandboxView,
+  SnapshotView,
   TemplateDetails,
   TemplateList,
+  TemplateValidation,
+  BuildResult,
+  HostProfile,
+  HostKeyStatus,
+  PortForward,
 } from '@abox/core';
 import type { EventChannel, EventPayloads, IpcChannel, IpcInput, IpcResult, Locale } from './ipc';
 
@@ -47,8 +55,16 @@ export type {
   ReconcileReport,
   SandboxList,
   SandboxView,
+  SnapshotView,
   TemplateDetails,
   TemplateList,
+  TemplateValidation,
+  BuildResult,
+  HostProfile,
+  HostKeyStatus,
+  PortForward,
+  PolicyRevisionDetail,
+  PolicyRevisionSummary,
 };
 
 export interface AppInfo {
@@ -61,6 +77,8 @@ export interface AppInfo {
   paths: { configDir: string; dataDir: string; stateDb: string; policyFile: string } | null;
   trayAvailable: boolean;
   notificationsAvailable: boolean;
+  /** Setting: closing the window hides it to the tray instead of quitting (default off). */
+  closeToTray: boolean;
   /** The manager could not be opened (message shown by the start screen). */
   managerError: string | null;
 }
@@ -71,16 +89,6 @@ export interface PolicyDocument {
   /** `default` = built-in policy (no policy.yaml yet). */
   source: 'default' | 'file';
   path: string | null;
-}
-
-export interface PolicyRevisionInfo {
-  seq: number;
-  ts: number;
-  actor: string;
-  action: string;
-  revision: number | null;
-  newHash: string | null;
-  oldHash: string | null;
 }
 
 export interface McpConfig {
@@ -103,10 +111,154 @@ export interface SaveResult {
   count?: number;
 }
 
+// -- terminals ------------------------------------------------------------------------------------------------
+
+export interface TtyOpened {
+  sessionId: string;
+  kind: 'sandbox' | 'ssh';
+  /** Short label for the tab / header, e.g. `abox@server.example.org:22`. */
+  label: string;
+  /** Initial size actually used. */
+  cols: number;
+  rows: number;
+}
+
+// -- templates ----------------------------------------------------------------------------------------------------
+
+export type OsFamily = 'debian' | 'alpine' | 'fedora' | 'arch' | 'unknown';
+
+export interface BaseImageInfo {
+  ref: string;
+  family: OsFamily;
+  /** Backends this base is meant for. */
+  backends: string[];
+  note?: string;
+}
+export interface ToolInfo {
+  name: string;
+  summary: string;
+  version: 'required' | 'optional' | 'none';
+  versionHint?: string;
+  /** OS families a preset exists for. */
+  os: OsFamily[];
+}
+export interface TemplateCatalogInfo {
+  baseImages: BaseImageInfo[];
+  tools: ToolInfo[];
+  networkPresets: Array<{ name: string; domains: string[] }>;
+  /** Where "save as user template" writes. */
+  userDir: string;
+}
+export interface TemplateSourceDoc {
+  name: string;
+  yaml: string;
+  source: { kind: 'builtin' | 'user' | 'project'; path: string | null };
+  /** Builtin and project templates are not edited in place (duplicate them). */
+  readOnly: boolean;
+}
+export interface TemplateSaved {
+  name: string;
+  path: string;
+  /** A template with the same name from a lower-precedence source is now hidden by this one. */
+  shadows: Array<'builtin'>;
+}
+export interface ToolCheckResult {
+  name: string;
+  version?: string;
+  check: string;
+  ok: boolean;
+  exitCode: number | null;
+  /** Combined stdout/stderr, truncated. Plain text only. */
+  output: string;
+  durationMs: number;
+}
+export type TemplateTestOutcome =
+  | { status: 'confirmation_required'; reasons: string[]; risks: string[] }
+  | { status: 'pending_approval'; message: string }
+  | {
+      status: 'done';
+      /** The sandbox could be created and started. */
+      created: boolean;
+      removed: boolean;
+      tools: ToolCheckResult[];
+      error?: string;
+      durationMs: number;
+    };
+
+// -- hosts and ssh --------------------------------------------------------------------------------------------------
+
+export interface HostBackendStatus {
+  name: 'docker' | 'podman';
+  ok: boolean;
+  version?: string;
+  rootless?: boolean;
+  error?: string;
+}
+export interface HostStatus {
+  /** `local` is always available; remote hosts are `unknown` until tested or used. */
+  state: 'local' | 'reachable' | 'unreachable' | 'unknown';
+  /** When this was observed (epoch ms). */
+  checkedAt: number | null;
+  lastOkAt: number | null;
+  latencyMs: number | null;
+  /** Older than five minutes: shown as "last known". */
+  stale: boolean;
+  error: string | null;
+  hostKey: HostKeyStatus | 'unavailable' | null;
+  authOk: boolean | null;
+  remoteUser: string | null;
+  backends: HostBackendStatus[];
+  warnings: string[];
+}
+export interface HostRow {
+  profile: HostProfile;
+  minIsolation: string;
+  requiresApproval: boolean;
+  status: HostStatus;
+  /** Number of port forwards currently running. */
+  forwardsRunning: number;
+}
+export interface HostTestOutcome {
+  row: HostRow;
+  fingerprints: string[];
+}
+export interface HostKeyView {
+  id: string;
+  status: HostKeyStatus;
+  hostSpec: string;
+  keys: Array<{ type: string; fingerprint: string }>;
+  trusted: Array<{ type: string; fingerprint: string }>;
+}
+export interface ImportCandidate {
+  id: string;
+  alias: string;
+  hostname: string | null;
+  user: string | null;
+  port: number | null;
+  proxyJump: string | null;
+  identityFile: string | null;
+  warnings: string[];
+}
+export interface ImportPreview {
+  path: string;
+  hosts: ImportCandidate[];
+  skipped: Array<{ pattern: string; reason: string }>;
+  warnings: string[];
+}
+export interface ForwardState {
+  host: string;
+  name: string;
+  state: 'running' | 'stopped' | 'failed';
+  pid: number | null;
+  /** Last line ssh printed when it failed. */
+  error: string | null;
+}
+
 export interface Outputs {
   'app:info': AppInfo;
   'app:setLocale': void;
   'app:copy': void;
+  'app:settings': { closeToTray: boolean };
   'dialog:pickDirectory': string | null;
   'sandboxes:list': SandboxList;
   'sandboxes:inspect': InspectResult;
@@ -122,6 +274,8 @@ export interface Outputs {
   'export:save': SaveResult;
   'processes:list': ProcessView[];
   'processes:logs': ProcessLogsResult;
+  'sandboxes:logs': { content: string };
+  'snapshots:list': SnapshotView[];
   'snapshots:create': { snapshotId: string };
   'snapshots:restore': { restored: string };
   'approvals:list': ApprovalView[];
@@ -133,13 +287,38 @@ export interface Outputs {
   'policy:get': PolicyDocument;
   'policy:validate': PolicyValidation;
   'policy:set': { revision: number; changed: boolean; contentHash: string };
-  'policy:revisions': PolicyRevisionInfo[];
+  'policy:revisions': PolicyRevisionSummary[];
+  'policy:revision': PolicyRevisionDetail;
   'doctor:run': DoctorReport;
   'reconcile:run': ReconcileReport;
   'tokens:list': AgentTokenView[];
   'tokens:create': TokenCreated;
   'tokens:revoke': boolean;
   'mcp:config': McpConfig;
+  'tty:open': TtyOpened;
+  'tty:input': void;
+  'tty:resize': void;
+  'tty:close': void;
+  'templates:catalog': TemplateCatalogInfo;
+  'templates:source': TemplateSourceDoc;
+  'templates:validate': TemplateValidation;
+  'templates:save': TemplateSaved;
+  'templates:build': BuildResult;
+  'templates:test': TemplateTestOutcome;
+  'templates:export': SaveResult;
+  'hosts:list': HostRow[];
+  'hosts:add': HostRow;
+  'hosts:update': HostRow;
+  'hosts:remove': { removed: boolean };
+  'hosts:test': HostTestOutcome;
+  'hosts:importPreview': ImportPreview;
+  'hosts:importApply': { added: string[] };
+  'hosts:keyCheck': HostKeyView;
+  'hosts:keyTrust': { added: boolean; fingerprint: string };
+  'hosts:keyForget': { removed: boolean };
+  'hosts:forwards': ForwardState[];
+  'hosts:forwardStart': ForwardState;
+  'hosts:forwardStop': ForwardState;
 }
 
 export type IpcOutput<C extends IpcChannel> = Outputs[C];

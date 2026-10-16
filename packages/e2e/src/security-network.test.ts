@@ -664,19 +664,60 @@ network: { mode: allowlist, allow: ['example.com:8443'] }
       await ctx.abox.removeSandbox(B, other.sandbox.id);
     }, 120_000);
 
-    it('docker backend: widening the allowlist of a running sandbox is clearly unsupported (no updateNetwork), nothing is queued or changed', async () => {
-      const err = (await errorOf(
-        ctx.abox.accessRequest(
-          A,
-          id,
-          { kind: 'network', details: { domains: ['example.org'] } },
-          { waitForApprovalMs: 0 },
+    it('docker backend: widening the allowlist of a running sandbox needs approval, is then applied to the proxy and takes effect', async () => {
+      const sb = await ctx.create(A, {
+        template: 'e2e-net',
+        workspace: { mode: 'empty' },
+        overrides: { network: { mode: 'allowlist', allow: ['example.com'] } },
+      });
+      const sid = sb.sandbox.id;
+      const short = sid.split('/')[1]!;
+      const proxyAllow = async (): Promise<string[]> =>
+        (
+          JSON.parse(
+            (await docker(['exec', `abox-proxy-${short}`, 'cat', '/etc/abox-proxy/config.json']))
+              .stdout,
+          ) as { allow: string[] }
+        ).allow;
+      expect(await proxyAllow()).toEqual(['example.com']);
+      if (exampleReachable) expect(denied(await probe(sid, 'https://example.org/'))).toBe(true);
+
+      const pending = await ctx.abox.accessRequest(
+        A,
+        sid,
+        { kind: 'network', details: { domains: ['example.org'] }, reason: 'e2e: need example.org' },
+        { waitForApprovalMs: 0 },
+      );
+      expect(pending.status).toBe('pending_approval');
+      if (pending.status !== 'pending_approval') return;
+      expect(await proxyAllow()).toEqual(['example.com']); // nothing applied before the human decided
+      const dec = await ctx.abox.approve(HUMAN, pending.approvalId, 'ok for e2e');
+      expect(dec.applied).toMatchObject({ ok: true });
+
+      expect((await proxyAllow()).sort()).toEqual(['example.com', 'example.org']);
+      // the sandbox itself was not recreated and keeps its wiring
+      expect((await ctx.docker.inspect(sid)).state).toBe('running');
+      expect(
+        Object.keys(
+          (JSON.parse(
+            (
+              await docker([
+                'inspect',
+                '--format',
+                '{{json .NetworkSettings.Networks}}',
+                `abox-local-${short}`,
+              ])
+            ).stdout,
+          ) as Record<string, unknown>) ?? {},
         ),
-      )) as { code: string; hint?: string };
-      expect(err.code).toBe('unsupported');
-      expect(err.hint ?? '').toMatch(/recreate|new sandbox|create/i);
-      expect(denied(await probe(id, 'https://example.org/'))).toBe(true);
-    });
+      ).toEqual([`abox-int-${short}`]);
+      if (exampleReachable) {
+        const p = await probe(sid, 'https://example.org/');
+        expect(p.exit, p.text).toBe(0);
+        expect(denied(await probe(sid, 'https://example.net/'))).toBe(true);
+      }
+      await ctx.abox.removeSandbox(A, sid);
+    }, 180_000);
 
     it('manager flow for network access requests (provider with updateNetwork): approval needed, applied after approve, deny sticks', async () => {
       const w = makeEnv();

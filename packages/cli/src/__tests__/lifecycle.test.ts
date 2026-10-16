@@ -206,6 +206,39 @@ describe('exec', () => {
   });
 });
 
+describe('workspace default', () => {
+  it('without --workspace the sandbox gets an empty workspace, never the current directory', async () => {
+    const r = await run(t, ['create', 'host-shell', '--yes', '--json']);
+    expect(r.code, r.stderr).toBe(0);
+    const nid = r.json.data.sandbox.id as string;
+    expect(r.json.data.sandbox.workspace).toMatchObject({ mode: 'empty' });
+    const ls = await run(t, ['exec', nid, '--', 'ls', '-A', '/workspace']);
+    expect(ls.stdout).not.toContain('hello.txt');
+    await run(t, ['rm', '--force', nid]);
+  });
+
+  it('--workspace without --mode uses the template mode; a mode or ref without a project is refused', async () => {
+    const withWs = await run(t, ['create', 'host-shell', '-w', '.', '--yes', '--json']);
+    expect(withWs.code, withWs.stderr).toBe(0);
+    expect(withWs.json.data.sandbox.workspace.mode).toBe('copy'); // template host-shell: copy
+    await run(t, ['rm', '--force', withWs.json.data.sandbox.id]);
+    const mode = await run(t, ['create', 'host-shell', '--mode', 'copy', '--yes', '--json']);
+    expect(mode.code).toBe(2);
+    expect(mode.json).toMatchObject({ ok: false, code: 'invalid_input' });
+    expect(mode.json.hint).toContain('--workspace');
+    const ref = await run(t, ['create', 'host-shell', '--ref', 'main', '--yes', '--json']);
+    expect(ref.code).toBe(2);
+    const emptyMode = await run(t, ['create', 'host-shell', '--mode', 'empty', '--yes', '--json']);
+    expect(emptyMode.code, emptyMode.stderr).toBe(0);
+    await run(t, ['rm', '--force', emptyMode.json.data.sandbox.id]);
+  });
+
+  it('the help says so', async () => {
+    const h = await run(t, ['help', 'create']);
+    expect(h.stdout).toMatch(/without it the workspace is empty/);
+  });
+});
+
 describe('files', () => {
   it('copies files and directories both ways', async () => {
     const up = join(t.root, 'upload.txt');
@@ -239,6 +272,35 @@ describe('files', () => {
     expect(d2.code, d2.stderr).toBe(0);
     expect(readFileSync(join(back, 'sub', 'f.txt'), 'utf8')).toBe('deep\n');
     expect(existsSync(join(back, 'tree'))).toBe(false);
+  });
+
+  it('cp goes through the manager: protected host paths are refused (exit 3) and audited', async () => {
+    const ssh = join(t.home, '.ssh');
+    mkdirSync(ssh, { recursive: true });
+    writeFileSync(join(ssh, 'id_ed25519'), 'FAKE KEY');
+    const inn = await run(t, ['cp', join(ssh, 'id_ed25519'), `${id}:/workspace/key`, '--json']);
+    expect(inn.code).toBe(3);
+    expect(inn.json).toMatchObject({ ok: false, code: 'policy_denied' });
+    expect(inn.json.hint).toBeTruthy();
+    const out = await run(t, [
+      'cp',
+      `${id}:/workspace/hello.txt`,
+      join(ssh, 'authorized_keys'),
+      '--json',
+    ]);
+    expect(out.code).toBe(3);
+    expect(existsSync(join(ssh, 'authorized_keys'))).toBe(false);
+    const audit = await run(t, ['audit', '--json', '--sandbox', id, '--limit', '200']);
+    const actions = (audit.json.data.entries ?? audit.json.data) as Array<{
+      action: string;
+      decision: string;
+    }>;
+    expect(actions.some((e) => e.action === 'sandbox.copy_in' && e.decision === 'deny')).toBe(true);
+    expect(actions.some((e) => e.action === 'sandbox.copy_out' && e.decision === 'deny')).toBe(
+      true,
+    );
+    // the old hand-written CLI audit entry is gone: the manager writes sandbox.copy_in / sandbox.copy_out
+    expect(actions.some((e) => e.action === 'sandbox.copy')).toBe(false);
   });
 
   it('validates cp arguments', async () => {

@@ -51,7 +51,7 @@ test('new sandbox flow (template -> options -> summary -> confirmation) and rest
   await app.close();
 });
 
-test('detail tabs: activity, files (directory + diff export), logs, snapshots, terminal placeholder', async () => {
+test('detail tabs: activity, files (directory + diff export), logs, snapshots, terminal without tty support', async () => {
   const { app, page } = await launchGui(h);
   const agent = await openAgent(h);
   try {
@@ -78,8 +78,10 @@ test('detail tabs: activity, files (directory + diff export), logs, snapshots, t
       .click();
     await expect(page.getByRole('heading', { name: 'tabs-box', level: 1 })).toBeVisible();
 
+    // the process backend has no terminal: the tab says so instead of showing a dead screen
     await page.getByRole('tab', { name: 'Terminal' }).click();
-    await expect(page.getByRole('tabpanel')).toContainText('Teil 2');
+    await expect(page.getByRole('tabpanel').getByRole('alert')).toBeVisible();
+    await expect(page.getByRole('tabpanel').getByRole('button', { name: 'Neu verbinden' })).toBeEnabled();
 
     await page.getByRole('tab', { name: 'Aktivität' }).click();
     await expect(page.getByRole('tabpanel')).toContainText('sandbox.create');
@@ -114,7 +116,7 @@ test('detail tabs: activity, files (directory + diff export), logs, snapshots, t
     await page.getByRole('tab', { name: 'Snapshots' }).click();
     await page.getByLabel('Name').fill('first');
     await page.getByRole('button', { name: 'Snapshot anlegen' }).click();
-    // the process backend can snapshot: the entry appears (taken from the audit log) and can be restored after a confirmation
+    // the process backend can snapshot: the entry appears (listSnapshots) and can be restored after a confirmation
     const snap = page
       .getByRole('table', { name: 'Snapshots' })
       .locator('tbody tr', { hasText: 'first' });

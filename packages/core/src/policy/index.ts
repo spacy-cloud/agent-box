@@ -12,6 +12,7 @@ export {
   mergeProfiles,
   BUILTIN_HUMAN_PROFILE,
   DEFAULT_POLICY_YAML,
+  BUILTIN_AGENT_CONTEXTS,
 } from './load.js';
 export * from './context.js';
 export * from './paths.js';

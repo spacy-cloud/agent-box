@@ -8,7 +8,15 @@ import type { ExecEvent, PreparedImage, ResolvedTemplate, SandboxSpec } from '@a
 import { defineProviderContract, makeTestTemplate } from '@abox/contract-tests';
 import { createDockerProvider, type DockerProvider } from './index.js';
 import { MiB, makeSpec, makeTemplate } from './__tests__/helpers.js';
-import { dockerEnabled, newProvider, sweepTestObjects, Tracker } from './__tests__/harness.js';
+import {
+  TEST_INSTANCE,
+  TEST_LABEL,
+  TEST_RUN,
+  dockerEnabled,
+  newProvider,
+  sweepTestObjects,
+  Tracker,
+} from './__tests__/harness.js';
 import { defaultProxyAssets } from './proxy.js';
 import { existsSync } from 'node:fs';
 
@@ -201,7 +209,7 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
         owner: 'human',
         createdAt: s.createdAt,
         expiresAt: s.expiresAt,
-        labels: { 'abox.test': '1', note: 'x' },
+        labels: { [TEST_LABEL]: TEST_RUN, note: 'x' },
       });
       expect(info.backendRef).toMatch(/^[0-9a-f]{64}$/);
       await provider.start(s.id);
@@ -387,7 +395,7 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       await expect(provider.create(iso)).rejects.toMatchObject({ code: 'unsupported' });
       const ssh = createDockerProvider(
         { host: 'local', kind: 'ssh', engineSocket: SOCK },
-        { extraLabels: { 'abox.test': '1' } },
+        { extraLabels: { [TEST_LABEL]: TEST_RUN } },
       );
       expect(ssh.capabilities().workspaceDelivery).toEqual(['none', 'copy']);
       expect(ssh.capabilities().mounts).toBe(false);
@@ -1352,13 +1360,14 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
 
 // ---------------------------------------------------------------------------
 // The shared provider contract, against real Docker. Declared in this file (not its own) so that
-// it runs after the suite above: both clean up by label and `gcImages` is engine-global.
+// it runs after the suite above: both clean up by label. The provider has an instance id of its own, so the
+// gc tests only ever delete images that this very suite built, however busy the shared engine is.
 defineProviderContract({
   name: 'docker',
   skip: !dockerEnabled,
-  gc: false, // gcImages would remove other templates' images on a shared engine
+  gc: true,
   timeoutMs: 120_000,
-  createProvider: () => newProvider(),
+  createProvider: () => newProvider({ instanceId: `${TEST_INSTANCE}c` }),
   template: () =>
     makeTestTemplate({
       name: 'abox-test-contract',

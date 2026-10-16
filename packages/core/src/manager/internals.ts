@@ -25,6 +25,7 @@ import type {
   SandboxView,
   SandboxWorkspaceView,
 } from './types.js';
+import { collectNetworkEvents } from './network-audit.js';
 import { errMessage, isPidAlive, SANDBOX_ID_RE } from './util.js';
 
 export interface AboxOptions {
@@ -90,6 +91,9 @@ export class Internals {
   private policyCheckedAt = 0;
   private readonly providerCache = new Map<string, SandboxProvider>();
   private readonly listeners = new Set<(e: AboxEvent) => void>();
+  /** Per sandbox: when this process last asked the backend for proxy egress events (throttling). */
+  readonly netPolledAt = new Map<string, number>();
+  private readonly coalesced = new Map<string, number>();
   private lastTtlSweep = -Infinity;
   private sweeping = false;
   private readonly ttlIntervalMs: number;
@@ -301,6 +305,19 @@ export class Internals {
         /* listeners must not break the manager */
       }
     }
+  }
+
+  /**
+   * True the first time `key` is seen within `windowMs`. Used for read-only operations that a surface
+   * may poll (`abox logs -f`, a GUI log view): the first read of a burst is audited, the polls after it are not.
+   */
+  firstWithin(key: string, windowMs: number): boolean {
+    const t = Date.now();
+    const last = this.coalesced.get(key);
+    if (last !== undefined && t - last < windowMs) return false;
+    if (this.coalesced.size > 1000) this.coalesced.clear();
+    this.coalesced.set(key, t);
+    return true;
   }
 
   // -- hosts & providers --------------------------------------------------------------------------
@@ -576,6 +593,7 @@ export class Internals {
           continue;
         done.push(rec.id);
         let stopError: string | undefined;
+        await collectNetworkEvents(this, rec);
         try {
           const p = await this.providerForRecord(rec);
           await p.stop(rec.id);

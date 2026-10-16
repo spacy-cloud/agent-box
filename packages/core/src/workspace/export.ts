@@ -51,6 +51,12 @@ export const DEFAULT_EXPORT_EXCLUDE: readonly string[] = [
  * via alternates and has all attributes disabled), and only tree/commit objects built from
  * those ids are diffed. Sandbox `.git` directories/files, hooks, attributes and filters are
  * ignored entirely; for tree-bound modes the recorded `.git` marker is verified first.
+ *
+ * This holds for workspace mode `mount` as well: its live tree is only ever read by abox itself, git
+ * is never run in it, so a `.gitattributes` the sandbox wrote cannot activate a filter, textconv or
+ * diff driver that the (trusted) repository config defines. The one host-side git call that does look
+ * at a mounted work tree, the status check when a mount workspace is created, switches those drivers
+ * off (`driverNeutralizingEnv` in git.ts).
  */
 export async function exportWorkspace(input: ExportInput): Promise<ExportResult> {
   const { record } = input;

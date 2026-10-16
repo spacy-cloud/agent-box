@@ -60,7 +60,7 @@ export interface PythonProviderOptions {
   /** Container engine behind the default (container) mode. Default `docker`. */
   engine?: 'docker' | 'podman';
   /** Options for the wrapped Docker/Podman provider (socket, extra labels, hardened runtime, proxy, ...). */
-  docker?: Omit<DockerProviderOptions, 'kind'>;
+  docker?: Omit<DockerProviderOptions, 'kind' | 'backendKind'>;
   /**
    * Data directory of the venv mode (sandbox roots, shared uv cache). Default: `host.dataDir`.
    * Without it venv mode is unavailable and templates with `isolation: none` are rejected.
@@ -85,14 +85,6 @@ interface Routed {
 
 function unsupported(message: string, hint?: string): AboxError {
   return new AboxError('unsupported', message, hint ? { hint } : {});
-}
-
-/** The engine messages name the "python" backend; show the engine instead. */
-function engineWording(line: string, engine: string): string {
-  return line
-    .replace(/^python engine unreachable/, `${engine} engine unreachable`)
-    .replace(/^python (\S+) \(API/, `${engine} $1 (API`)
-    .replace(/^The python daemon/, `The ${engine} daemon`);
 }
 
 /**
@@ -130,14 +122,14 @@ export class PythonProvider implements SandboxProvider {
     this.engine = opts.engine ?? 'docker';
     const socketPath =
       opts.docker?.socketPath ?? host.engineSocket ?? defaultSocketPath(this.engine);
-    // The wrapped provider labels sandboxes with `abox.backend=<its kind>`. Giving it our kind makes
-    // the labels (the source of truth for existence) say `python`, so `list()` can tell them apart
-    // from plain docker/podman sandboxes. Its only other uses of `kind` are log wording and the
-    // default socket path, which we pass explicitly.
+    // The wrapped provider labels sandboxes with `abox.backend=python` and only lists / inspects /
+    // removes sandboxes with that label, so python sandboxes and plain docker/podman sandboxes
+    // (same engine, same instance) never see each other.
     this.container = new DockerProvider(host, {
       ...opts.docker,
       socketPath,
-      kind: 'python' as unknown as 'docker',
+      kind: this.engine,
+      backendKind: 'python',
     });
     const dataDir = opts.dataDir ?? host.dataDir;
     if (dataDir && host.kind === 'local') {
@@ -154,6 +146,11 @@ export class PythonProvider implements SandboxProvider {
     this.uvBinary = opts.uvBinary ?? 'uv';
     this.projectOpts = opts.projectBase ? { projectBase: opts.projectBase } : {};
     this.syncTimeoutMs = opts.syncTimeoutMs ?? 15 * MINUTE;
+  }
+
+  /** Instance id stamped on the engine objects of the container mode (see `DockerProviderOptions.instanceId`). */
+  get instanceId(): string | undefined {
+    return this.container.instanceId;
   }
 
   /** Isolation of the default (container) mode. Venv sandboxes report `none` in their `SandboxInfo`. */
@@ -189,8 +186,8 @@ export class PythonProvider implements SandboxProvider {
    */
   async status(): Promise<BackendStatus> {
     const eng = await this.container.status();
-    const details = eng.details.map((l) => engineWording(l, this.engine));
-    const warnings = eng.warnings.map((l) => engineWording(l, this.engine));
+    const details = [...eng.details];
+    const warnings = [...eng.warnings];
     details.push(
       `container mode: sandboxes use a python image with uv ${PINNED_UV_VERSION} (pinned, sha256 verified), engine ${eng.ok ? 'reachable' : 'NOT reachable'}`,
     );

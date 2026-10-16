@@ -14,7 +14,13 @@ describe('IPC contract', () => {
   it('the dependency-free channel list used by the preload equals the schema table', () => {
     expect([...IPC_CHANNEL_NAMES].sort()).toEqual(Object.keys(IPC).sort());
     expect(IPC_CHANNELS.length).toBe(Object.keys(IPC).length);
-    expect(EVENT_CHANNELS).toEqual(['evt:changed', 'evt:progress', 'evt:navigate']);
+    expect(EVENT_CHANNELS).toEqual([
+      'evt:changed',
+      'evt:progress',
+      'evt:navigate',
+      'evt:tty-data',
+      'evt:tty-exit',
+    ]);
   });
 
   it('constants copied into the renderer-safe module match @abox/core', () => {
@@ -83,5 +89,63 @@ describe('IPC contract', () => {
   it('policy text is bounded', () => {
     expect(ok('policy:validate', { text: 'x'.repeat(1_000_001) })).toBe(false);
     expect(ok('policy:validate', { text: 'version: 1' })).toBe(true);
+  });
+
+  describe('terminals', () => {
+    const SID = '3f2b8a52-6c0e-4d7b-9a43-0d9f1d3c7a11';
+    it('open takes a target and a size, nothing that could name a command or a path', () => {
+      expect(ok('tty:open', { kind: 'sandbox', id: 'local/ab12cd34', cols: 80, rows: 24 })).toBe(true);
+      expect(ok('tty:open', { kind: 'ssh', host: 'my-server', cols: 120, rows: 40 })).toBe(true);
+      expect(ok('tty:open', { kind: 'ssh', host: 'my-server', cols: 80, rows: 24, argv: ['id'] })).toBe(false);
+      expect(ok('tty:open', { kind: 'sandbox', id: 'x', cols: 80, rows: 24, command: 'id' })).toBe(false);
+      expect(ok('tty:open', { kind: 'local', cols: 80, rows: 24 })).toBe(false);
+      expect(ok('tty:open', { kind: 'ssh', host: '-oProxyCommand=id', cols: 80, rows: 24 })).toBe(false);
+      expect(ok('tty:open', { kind: 'ssh', host: 'Bad Host', cols: 80, rows: 24 })).toBe(false);
+      expect(ok('tty:open', { kind: 'sandbox', id: 'x', cols: 0, rows: 24 })).toBe(false);
+      expect(ok('tty:open', { kind: 'sandbox', id: 'x', cols: 80, rows: 100000 })).toBe(false);
+    });
+    it('input, resize and close only accept a session id the main process created (UUID)', () => {
+      expect(ok('tty:input', { sessionId: SID, data: 'echo hi\r' })).toBe(true);
+      expect(ok('tty:input', { sessionId: 'abc', data: 'x' })).toBe(false);
+      expect(ok('tty:input', { sessionId: SID, data: '' })).toBe(false);
+      expect(ok('tty:input', { sessionId: SID, data: 'x'.repeat(65_537) })).toBe(false);
+      expect(ok('tty:resize', { sessionId: SID, cols: 100, rows: 30 })).toBe(true);
+      expect(ok('tty:resize', { sessionId: SID, cols: 100 })).toBe(false);
+      expect(ok('tty:close', { sessionId: SID })).toBe(true);
+      expect(ok('tty:close', { sessionId: SID, force: true })).toBe(false);
+    });
+  });
+
+  describe('hosts', () => {
+    it('profiles have no field for secrets', () => {
+      expect(ok('hosts:add', { id: 'srv', hostname: 'server.example.org', user: 'abox', zone: 'shared' })).toBe(
+        true,
+      );
+      for (const secret of ['password', 'passphrase', 'privateKey', 'token']) {
+        expect(ok('hosts:add', { id: 'srv', hostname: 'h.example.org', [secret]: 'x' }), secret).toBe(false);
+        expect(ok('hosts:update', { id: 'srv', patch: { [secret]: 'x' } }), secret).toBe(false);
+      }
+    });
+    it('ids and fingerprints are well-formed', () => {
+      expect(ok('hosts:add', { id: '../x' })).toBe(false);
+      expect(ok('hosts:remove', { id: 'UPPER' })).toBe(false);
+      const fp = 'SHA256:' + 'A'.repeat(43);
+      expect(ok('hosts:keyTrust', { id: 'srv', fingerprint: fp })).toBe(true);
+      expect(ok('hosts:keyTrust', { id: 'srv', fingerprint: 'MD5:aa:bb' })).toBe(false);
+      expect(ok('hosts:keyTrust', { id: 'srv', fingerprint: fp + '; rm' })).toBe(false);
+      expect(ok('hosts:update', { id: 'srv', patch: { user: null, favorite: true } })).toBe(true);
+      expect(ok('hosts:update', { id: 'srv', patch: { zone: 'public' } })).toBe(false);
+    });
+  });
+
+  describe('templates', () => {
+    it('are bounded and strict', () => {
+      expect(ok('templates:validate', { yaml: 'name: x' })).toBe(true);
+      expect(ok('templates:validate', { yaml: 'x'.repeat(300_001) })).toBe(false);
+      expect(ok('templates:save', { yaml: 'a', overwrite: true })).toBe(true);
+      expect(ok('templates:save', { yaml: 'a', path: '/etc/passwd' })).toBe(false);
+      expect(ok('templates:build', { name: 'node-dev', progressKey: 'k' })).toBe(true);
+      expect(ok('templates:build', { name: 'node-dev' })).toBe(false);
+    });
   });
 });

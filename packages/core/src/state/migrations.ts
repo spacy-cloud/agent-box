@@ -139,4 +139,20 @@ CREATE TABLE template_pins (
 );
 `,
   },
+  {
+    version: 3,
+    name: 'snapshots_and_network_cursor',
+    sql: `
+CREATE TABLE snapshots (
+  sandbox_id  TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (sandbox_id, snapshot_id)
+);
+CREATE INDEX snapshots_sandbox ON snapshots(sandbox_id, created_at);
+ALTER TABLE sandboxes ADD COLUMN net_cursor_ts INTEGER;
+ALTER TABLE sandboxes ADD COLUMN net_cursor_seen INTEGER NOT NULL DEFAULT 0;
+`,
+  },
 ];

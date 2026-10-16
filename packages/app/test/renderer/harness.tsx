@@ -13,6 +13,7 @@ export const INFO: AppInfo = {
   paths: null,
   trayAvailable: false,
   notificationsAvailable: false,
+  closeToTray: false,
   managerError: null,
 };
 

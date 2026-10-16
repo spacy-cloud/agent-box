@@ -1,9 +1,13 @@
 import { join } from 'node:path';
 import { BrowserWindow, app, nativeTheme } from 'electron';
+import { AboxError } from '@abox/core';
 import type { AboxRuntime } from '@abox/runtime';
 import type { ApprovalView } from '@abox/core';
 import type { EventPayloads, EventChannel, Locale } from '../shared/ipc';
 import { registerIpc } from './ipc';
+import type { IpcHandle } from './ipc';
+import { openSshPty } from './ssh-pty';
+import { TtyManager, backendFromTtySession } from './tty';
 import { drawIcon } from './icons';
 import { Monitor } from './monitor';
 import { originOf } from './guard';
@@ -40,6 +44,31 @@ let settings: GuiSettings;
 let locale: Locale = 'de';
 let quitting = false;
 let pendingApprovals = 0;
+let ipc: IpcHandle | null = null;
+
+const requireRuntime = (): AboxRuntime => {
+  if (!runtime) {
+    throw new AboxError('backend_unavailable', runtimeError ?? 'The manager is not available');
+  }
+  return runtime;
+};
+
+/** Terminals: sandbox shells through the manager, ssh through the system `ssh` in a pty. */
+const tty = new TtyManager({
+  send: (channel, payload) => send(channel, payload),
+  openSandbox: async (id, size) => {
+    const session = await requireRuntime().abox.attach({ contextId: 'human' }, id, size);
+    return backendFromTtySession(session, id);
+  },
+  openSsh: async (hostId, size) => {
+    const rt = requireRuntime();
+    const profile = rt.hostRegistry.require(hostId);
+    if (profile.kind !== 'ssh') {
+      throw new AboxError('invalid_input', `"${hostId}" is the local host, not an ssh host`);
+    }
+    return openSshPty({ profile, env: rt.hostsEnv, size });
+  },
+});
 
 function send<E extends EventChannel>(channel: E, payload: EventPayloads[E]): void {
   const w = mainWindow;
@@ -90,7 +119,18 @@ function createWindow(): void {
   mainWindow = win;
   win.setMenuBarVisibility(false);
   win.once('ready-to-show', () => win.show());
+  // Optional: the close button hides the window and the tray icon brings it back. Only with a tray icon,
+  // otherwise the window could not be restored (a second start of abox also shows it again).
+  win.on('close', (e) => {
+    if (!quitting && settings.closeToTray && tray?.trayAvailable) {
+      e.preventDefault();
+      win.hide();
+    }
+  });
+  // A reload or closing the window ends every terminal session that belongs to it.
+  win.webContents.on('did-start-loading', () => tty.closeAll());
   win.on('closed', () => {
+    tty.closeAll();
     if (mainWindow === win) mainWindow = null;
   });
   void win.loadURL(devUrl ?? APP_URL);
@@ -120,7 +160,8 @@ async function boot(): Promise<void> {
     quit: () => app.quit(),
   });
 
-  registerIpc({
+  ipc = registerIpc({
+    tty,
     getWindow: () => mainWindow,
     allowedOrigins,
     getRuntime: () => runtime,
@@ -132,7 +173,9 @@ async function boot(): Promise<void> {
       locale,
       trayAvailable: tray?.trayAvailable ?? false,
       notificationsAvailable: tray?.notificationsAvailable ?? false,
+      closeToTray: settings.closeToTray,
     }),
+    setCloseToTray: (on) => settings.setCloseToTray(on),
     setLocale: (l) => {
       locale = l;
       settings.setLocale(l);
@@ -167,7 +210,9 @@ if (!app.requestSingleInstanceLock()) {
     if (quitting) return;
     quitting = true;
     monitor?.stop();
+    tty.closeAll();
     tray?.destroy();
+    void ipc?.shutdown().catch(() => undefined);
     void runtime?.close().catch(() => undefined);
   });
 }

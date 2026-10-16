@@ -47,6 +47,8 @@ describe('domain patterns', () => {
     expect(normalizeDomainPattern(' PyPI.org. ')).toBe('pypi.org');
     expect(normalizeDomainPattern('*.Example.ORG')).toBe('*.example.org');
     expect(normalizeDomainPattern('m\u00fcnchen.de')).toBe('xn--mnchen-3ya.de');
+    expect(normalizeDomainPattern(' Example.ORG:8443 ')).toBe('example.org:8443');
+    expect(normalizeDomainPattern('*.Example.org:443')).toBe('*.example.org:443');
   });
   it.each([
     '',
@@ -57,13 +59,44 @@ describe('domain patterns', () => {
     'a b.org',
     'http://x.org',
     'x.org/path',
-    'x.org:443',
+    'x.org:',
+    'x.org:0',
+    'x.org:65536',
+    'x.org:0443',
+    'x.org:44a',
+    'x.org:1:2',
+    '*.com:443',
+    ':443',
+    '[::1]:443',
     'a*.org',
     '*.*.org',
     '-a.org',
     'a..org',
   ])('rejects %j', (s) => {
     expect(normalizeDomainPattern(s)).toBeUndefined();
+  });
+  it('handles ports like the proxy: host = 80/443, host:port = exactly that port', () => {
+    // entry without port covers default ports only
+    expect(domainCovered('example.org', ['example.org'])).toBe(true);
+    expect(domainCovered('example.org:443', ['example.org'])).toBe(true);
+    expect(domainCovered('example.org:80', ['example.org'])).toBe(true);
+    expect(domainCovered('example.org:8443', ['example.org'])).toBe(false);
+    // entry with port covers exactly that port
+    expect(domainCovered('example.org:8443', ['example.org:8443'])).toBe(true);
+    expect(domainCovered('example.org:9443', ['example.org:8443'])).toBe(false);
+    expect(domainCovered('example.org', ['example.org:8443'])).toBe(false);
+    expect(domainCovered('example.org:443', ['example.org:8443'])).toBe(false);
+    // a request without port needs both default ports
+    expect(domainCovered('example.org', ['example.org:443'])).toBe(false);
+    expect(domainCovered('example.org', ['example.org:80', 'example.org:443'])).toBe(true);
+    // wildcards combine with ports
+    expect(domainCovered('x.example.org:8443', ['*.example.org:8443'])).toBe(true);
+    expect(domainCovered('x.example.org:8443', ['*.example.org'])).toBe(false);
+    expect(domainCovered('x.example.org:443', ['*.example.org'])).toBe(true);
+    expect(domainCovered('*.a.example.org:8443', ['*.example.org:8443'])).toBe(true);
+    expect(domainCovered('example.org:8443', ['*.example.org:8443'])).toBe(false);
+    // `*` covers every port
+    expect(domainCovered('example.org:8443', ['*'])).toBe(true);
   });
   it('covers exact, wildcard and nested wildcard', () => {
     expect(domainCovered('pypi.org', ['pypi.org'])).toBe(true);

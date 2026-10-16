@@ -13,8 +13,9 @@ import { cleanupWorkspace } from '../workspace/index.js';
 import { expireApprovals as expireApprovalsOp } from './approvals.js';
 import type { Internals } from './internals.js';
 import { destroySandbox } from './lifecycle.js';
+import { collectAllNetworkEvents, collectNetworkEvents } from './network-audit.js';
 import { rotateLogs } from './exec.js';
-import { gcImagesInternal } from './templates.js';
+import { catalogFor, gcImagesInternal } from './templates.js';
 import type {
   AgentTokenView,
   AuditFilter,
@@ -162,6 +163,14 @@ export async function queryAudit(
     limit: Math.min(Math.max(1, Math.trunc(filter.limit ?? 100)), 5000),
     ...(filter.order ? { order: filter.order } : {}),
   };
+  // Proxy egress decisions reach the audit log lazily; pull in what is new before looking.
+  if (filter.sandboxId) {
+    const target = I.state.sandboxes.get(filter.sandboxId);
+    if (target && (ctx.kind === 'human' || target.owner === ctx.owner))
+      await collectNetworkEvents(I, target, { throttleMs: 1000 });
+  } else {
+    await collectAllNetworkEvents(I, ctx.kind === 'human' ? undefined : ctx.owner, 5000);
+  }
   if (ctx.kind === 'human') return I.state.audit.query(q);
 
   // Agents: their own actions, plus everything that happened to their own sandboxes.
@@ -451,6 +460,24 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   const backends: BackendReport[] = [];
   const add = (c: DoctorCheck): void => void checks.push(c);
 
+  // Backends nobody needs (not the configured default, no template and no sandbox uses them) only
+  // warn when they are unusable: a missing Podman must not make `abox doctor` fail for a Docker user.
+  const needed = new Set<BackendKind>([I.config.backends.default]);
+  try {
+    const { templates } = await catalogFor(I, I.projectDir).listAll();
+    // builtin templates exist for every backend; only the user's own templates say what is needed
+    for (const t of templates) if (t.source.kind !== 'builtin') needed.add(t.backend);
+  } catch {
+    /* an unreadable template directory is reported by the template commands */
+  }
+  for (const r of I.state.sandboxes.list()) needed.add(r.backend);
+  const unusableLevel = (kind: BackendKind): 'warn' | 'error' =>
+    needed.has(kind) ? 'error' : 'warn';
+  const optionalNote = (kind: BackendKind): string =>
+    needed.has(kind)
+      ? ''
+      : ' (optional: it is not the default backend and no template of yours or sandbox uses it)';
+
   // backends
   const hostIds = new Set<string>(['local']);
   for (const r of I.state.sandboxes.list()) hostIds.add(r.host);
@@ -487,16 +514,16 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
         });
         add({
           id: `backend.${hostId}.${kind}`,
-          level: status.ok ? (status.warnings.length > 0 ? 'warn' : 'ok') : 'error',
-          title: `backend ${kind} on ${hostId}: ${status.ok ? 'ok' : 'not usable'}`,
+          level: status.ok ? (status.warnings.length > 0 ? 'warn' : 'ok') : unusableLevel(kind),
+          title: `backend ${kind} on ${hostId}: ${status.ok ? 'ok' : `not usable${optionalNote(kind)}`}`,
           detail: [...status.details, ...status.warnings].join('; '),
         });
       } catch (e) {
         backends.push({ host: hostId, backend: kind, available: false, error: errMessage(e) });
         add({
           id: `backend.${hostId}.${kind}`,
-          level: 'error',
-          title: `backend ${kind} on ${hostId} failed`,
+          level: unusableLevel(kind),
+          title: `backend ${kind} on ${hostId} failed${optionalNote(kind)}`,
           detail: errMessage(e),
         });
       }

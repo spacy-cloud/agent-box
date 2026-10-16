@@ -2,7 +2,10 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { call } from './api';
+import { installStyleNonce } from './csp-nonce';
 import './styles.css';
+
+installStyleNonce();
 
 async function start(): Promise<void> {
   const root = createRoot(document.getElementById('root')!);

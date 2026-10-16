@@ -14,9 +14,16 @@ import {
   APPROVAL_STATUSES,
   AUDIT_DECISIONS,
   EXPORT_FORMATS,
+  FORWARD_KINDS,
+  HOST_BACKENDS,
+  HOST_ZONES,
+  ISOLATION_LEVELS,
   LOCALES,
   NETWORK_MODES,
   SANDBOX_STATES,
+  TTY_MAX_COLS,
+  TTY_MAX_INPUT,
+  TTY_MAX_ROWS,
   WORKSPACE_MODES,
 } from './constants';
 import { IPC_CHANNEL_NAMES } from './channels';
@@ -85,11 +92,99 @@ export const createRequestSchema = z
   })
   .strict();
 
+const ttySize = {
+  cols: z.number().int().min(1).max(TTY_MAX_COLS),
+  rows: z.number().int().min(1).max(TTY_MAX_ROWS),
+};
+/** Random session id handed out by the main process (UUID). */
+const sessionId = z.string().uuid();
+const hostId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'host id like my-server');
+const progressKey = z.string().min(1).max(64);
+const yamlText = z.string().max(300_000);
+
+const portForward = z
+  .object({
+    name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, 'name like web-ui'),
+    kind: z.enum(FORWARD_KINDS),
+    listen: z.string().min(1).max(300),
+    target: z.string().min(1).max(300).optional(),
+  })
+  .strict();
+
+/**
+ * Host profile fields. The shape is bounded here; the host module of @abox/core validates every value
+ * again against its strict grammars (no secrets exist in this model: `identityFile` is a path only).
+ */
+const hostFields = {
+  hostname: z.string().min(1).max(253),
+  port: z.number().int().min(1).max(65535),
+  user: z.string().min(1).max(64),
+  sshConfigAlias: z.string().min(1).max(128),
+  proxyJump: z.string().min(1).max(500),
+  identityFile: z.string().min(1).max(4096),
+  zone: z.enum(HOST_ZONES),
+  minIsolation: z.enum(ISOLATION_LEVELS),
+  backends: z.array(z.enum(HOST_BACKENDS)).max(8),
+  engineSocket: z.string().min(1).max(300),
+  dataDir: z.string().min(1).max(300),
+  tags: z.array(z.string().min(1).max(32)).max(20),
+  favorite: z.boolean(),
+  limits: z
+    .object({
+      cpus: z.number().positive().max(1024).optional(),
+      memory: z.string().regex(/^\d{1,6}(\.\d+)?[kmgt]?b?$/i).optional(),
+      sandboxes: z.number().int().min(1).max(10_000).optional(),
+    })
+    .strict(),
+  portForwards: z.array(portForward).max(30),
+};
+const hostPatch = z
+  .object({
+    hostname: hostFields.hostname.nullable().optional(),
+    port: hostFields.port.nullable().optional(),
+    user: hostFields.user.nullable().optional(),
+    sshConfigAlias: hostFields.sshConfigAlias.nullable().optional(),
+    proxyJump: hostFields.proxyJump.nullable().optional(),
+    identityFile: hostFields.identityFile.nullable().optional(),
+    zone: hostFields.zone.optional(),
+    minIsolation: hostFields.minIsolation.nullable().optional(),
+    backends: hostFields.backends.optional(),
+    engineSocket: hostFields.engineSocket.nullable().optional(),
+    dataDir: hostFields.dataDir.nullable().optional(),
+    tags: hostFields.tags.optional(),
+    favorite: hostFields.favorite.optional(),
+    limits: hostFields.limits.nullable().optional(),
+    portForwards: hostFields.portForwards.optional(),
+  })
+  .strict();
+
+const hostAdd = z
+  .object({
+    id: hostId,
+    hostname: hostFields.hostname.optional(),
+    port: hostFields.port.optional(),
+    user: hostFields.user.optional(),
+    sshConfigAlias: hostFields.sshConfigAlias.optional(),
+    proxyJump: hostFields.proxyJump.optional(),
+    identityFile: hostFields.identityFile.optional(),
+    zone: hostFields.zone.optional(),
+    minIsolation: hostFields.minIsolation.optional(),
+    backends: hostFields.backends.optional(),
+    engineSocket: hostFields.engineSocket.optional(),
+    dataDir: hostFields.dataDir.optional(),
+    tags: hostFields.tags.optional(),
+    favorite: hostFields.favorite.optional(),
+    limits: hostFields.limits.optional(),
+    portForwards: hostFields.portForwards.optional(),
+  })
+  .strict();
+
 /** channel -> input schema. */
 export const IPC = {
   'app:info': none,
   'app:setLocale': z.enum(LOCALES),
   'app:copy': z.string().max(20_000),
+  'app:settings': z.object({ closeToTray: z.boolean() }).strict(),
   'dialog:pickDirectory': none,
 
   'sandboxes:list': z
@@ -130,6 +225,14 @@ export const IPC = {
       tail: z.number().int().min(1).max(5000).optional(),
     })
     .strict(),
+  'sandboxes:logs': z
+    .object({
+      id,
+      tail: z.number().int().min(1).max(5000).optional(),
+      sinceTs: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  'snapshots:list': z.object({ id }).strict(),
   'snapshots:create': z
     .object({ id, name: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, 'letters, digits . _ -') })
     .strict(),
@@ -156,6 +259,7 @@ export const IPC = {
     .object({ text: z.string().max(1_000_000), baseHash: z.string().max(128).optional() })
     .strict(),
   'policy:revisions': none,
+  'policy:revision': z.object({ rev: z.number().int().nonnegative() }).strict(),
 
   'doctor:run': none,
   'reconcile:run': z
@@ -179,6 +283,47 @@ export const IPC = {
     })
     .strict()
     .optional(),
+
+  // -- terminals (sandbox shell and ssh sessions). The renderer never names a command or a path. ----------
+  'tty:open': z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('sandbox'), id, ...ttySize }).strict(),
+    z.object({ kind: z.literal('ssh'), host: hostId, ...ttySize }).strict(),
+  ]),
+  'tty:input': z
+    .object({ sessionId, data: z.string().min(1).max(TTY_MAX_INPUT) })
+    .strict(),
+  'tty:resize': z.object({ sessionId, ...ttySize }).strict(),
+  'tty:close': z.object({ sessionId }).strict(),
+
+  // -- template editor --------------------------------------------------------------------------------------
+  'templates:catalog': none,
+  'templates:source': z.object({ name: shortText }).strict(),
+  'templates:validate': z.object({ yaml: yamlText }).strict(),
+  'templates:save': z.object({ yaml: yamlText, overwrite: z.boolean().optional() }).strict(),
+  'templates:build': z
+    .object({ name: shortText, update: z.boolean().optional(), progressKey })
+    .strict(),
+  'templates:test': z
+    .object({ name: shortText, progressKey, confirmed: z.boolean().optional() })
+    .strict(),
+  'templates:export': z.object({ name: shortText, yaml: yamlText }).strict(),
+
+  // -- hosts and ssh (human only: these channels exist only in the GUI, never in MCP) ---------------------------
+  'hosts:list': none,
+  'hosts:add': hostAdd,
+  'hosts:update': z.object({ id: hostId, patch: hostPatch }).strict(),
+  'hosts:remove': z.object({ id: hostId }).strict(),
+  'hosts:test': z.object({ id: hostId }).strict(),
+  'hosts:importPreview': none,
+  'hosts:importApply': z.object({ ids: z.array(hostId).min(1).max(200) }).strict(),
+  'hosts:keyCheck': z.object({ id: hostId }).strict(),
+  'hosts:keyTrust': z
+    .object({ id: hostId, fingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/) })
+    .strict(),
+  'hosts:keyForget': z.object({ id: hostId }).strict(),
+  'hosts:forwards': none,
+  'hosts:forwardStart': z.object({ id: hostId, name: shortText }).strict(),
+  'hosts:forwardStop': z.object({ id: hostId, name: shortText }).strict(),
 } as const;
 
 export type IpcChannel = keyof typeof IPC;

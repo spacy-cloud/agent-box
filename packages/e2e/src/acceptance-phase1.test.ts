@@ -12,12 +12,14 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { makeTestSpec, makeTestTemplate } from '@abox/contract-tests';
 import { ERROR_CODES, isAboxError } from '@abox/core';
 import {
   A,
   DOCKER,
   HUMAN,
   HUMAN_YES,
+  MiB,
   RUN,
   createdOf,
   docker,
@@ -694,22 +696,77 @@ resources: { cpus: 1, memory: 256m, disk: 1g, ttl: 30m }
     }, 60_000);
   });
 
-  // -- instance scoping (found while writing 5) -----------------------------------------------------------------
-  describe('two abox instances on one container engine', () => {
-    it("do not report each other's sandboxes as orphans (a removeOrphans reconcile would delete them)", async () => {
+  // -- instance scoping (finding F3, fixed by the `instanceId` option of the Docker provider) --------------------
+  describe('two abox installations on one container engine', () => {
+    it("do not see each other's sandboxes: no orphans, and a removeOrphans reconcile / image gc of the second leaves the first alone", async () => {
       const mine = await ctx.create(A, { template: 'alpine-min', workspace: { mode: 'empty' } });
+      const short = mine.sandbox.id.split('/')[1]!;
       const other = makeEnv(); // an independent ABOX_HOME (think: a second user in the docker group, or CI) ...
-      const c2 = await openAbox(other, { unscoped: true }); // ... talking to the same daemon
+      const c2 = await openAbox(other); // ... with its own instance id, talking to the same daemon
+      const stillThere = async (): Promise<boolean> =>
+        (await docker(['ps', '-q', '--filter', `name=^abox-local-${short}$`])).stdout.trim() !== '';
       try {
         const rep = await c2.abox.reconcile(HUMAN, {});
         expect(
           rep.orphans.map((o) => o.id),
           'instance 2 sees the sandbox of instance 1 as an orphan',
         ).not.toContain(mine.sandbox.id);
+        // the destructive variants, exactly what an admin of the second installation would run
+        const applied = await c2.abox.reconcile(HUMAN, { apply: true, removeOrphans: true });
+        expect(applied.orphans.map((o) => o.id)).not.toContain(mine.sandbox.id);
+        await c2.abox.gcImages(HUMAN);
+        expect(await stillThere()).toBe(true);
+        expect((await sh(ctx, A, mine.sandbox.id, 'echo alive')).stdout).toBe('alive\n');
+        // its environment image survived the other installation's gc as well
+        const info = await ctx.docker.inspect(mine.sandbox.id);
+        expect(info.state).toBe('running');
+        // and the provider of the second installation does not even know the sandbox
+        expect(await errorOf(c2.docker.inspect(mine.sandbox.id))).toMatchObject({
+          code: 'not_found',
+        });
+        expect(await errorOf(c2.docker.remove(mine.sandbox.id))).toMatchObject({
+          code: 'not_found',
+        });
+        expect(await stillThere()).toBe(true);
       } finally {
         await c2.close();
         other.cleanup();
       }
-    });
+    }, 180_000);
+
+    it('objects without an instance label (from before instance ids) are never touched, only reported', async () => {
+      const legacy = dockerProvider(); // no instance id: stamps nothing, like an older version
+      const tpl = makeTestTemplate({
+        name: `e2e-legacy-${RUN}`,
+        backend: 'docker',
+        isolation: 'container',
+        base: { os: 'alpine:3.22', osFamily: 'alpine' },
+        user: { name: 'dev', uid: 1000, sudo: false },
+        workspace: { mode: 'empty', path: '/workspace', access: 'rw' },
+        resources: { cpus: 1, memoryBytes: 256 * MiB, pids: 128, ttlMs: 60 * 60 * 1000 },
+      });
+      const image = await legacy.prepare(tpl);
+      const spec = await makeTestSpec(legacy, tpl, { image });
+      await legacy.create(spec);
+      const short = spec.id.split('/')[1]!;
+      const exists = async (): Promise<boolean> =>
+        (
+          await docker(['ps', '-a', '-q', '--filter', `name=^abox-local-${short}$`])
+        ).stdout.trim() !== '';
+      try {
+        expect(await exists()).toBe(true);
+        const rep = await ctx.abox.reconcile(HUMAN, { apply: true, removeOrphans: true });
+        expect(rep.orphans.map((o) => o.id)).not.toContain(spec.id);
+        await ctx.abox.gcImages(HUMAN);
+        expect(await exists()).toBe(true);
+        expect((await docker(['image', 'inspect', image.ref])).code).toBe(0);
+        expect(await errorOf(ctx.docker.remove(spec.id))).toMatchObject({ code: 'not_found' });
+        expect(await exists()).toBe(true);
+        const st = await ctx.docker.status();
+        expect(st.warnings.join('\n')).toMatch(/of another or unknown instance present/);
+      } finally {
+        await legacy.remove(spec.id).catch(() => undefined);
+      }
+    }, 180_000);
   });
 });

@@ -136,6 +136,42 @@ describe('precedence and shadowing', () => {
     });
   });
 
+  it('get() on a template that exists but is invalid throws template_invalid with file, line, column (F2)', async () => {
+    await writeFile(
+      join(project, '.sandbox', 'broken.yaml'),
+      'apiVersion: 1\nname: broken\nbackend: nope\n',
+    );
+    // the file name differs from the declared name: found via either
+    await writeFile(
+      join(project, '.sandbox', 'other-file.yaml'),
+      'apiVersion: 1\nname: declared\nbackend: nope\n',
+    );
+    const catalog = new TemplateCatalog({ projectDir: project, builtinDir: builtin });
+    for (const name of ['broken', 'declared']) {
+      const err = (await catalog.get(name).catch((e: unknown) => e)) as AboxError;
+      expect(err).toBeInstanceOf(AboxError);
+      expect(err.code).toBe('template_invalid');
+      expect(err.issues[0]).toMatchObject({ path: 'backend', line: 3, column: expect.any(Number) });
+      expect(err.details?.path).toContain('.sandbox');
+      expect(err.message).toContain('line 3');
+    }
+    await expect(catalog.get('unrelated')).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('an invalid higher-precedence template is not silently replaced by a valid one of the same name', async () => {
+    await writeFile(join(builtin, 'dup.yaml'), tpl('dup'));
+    await writeFile(
+      join(project, '.sandbox', 'dup.yaml'),
+      'apiVersion: 1\nname: dup\nbackend: nope\n',
+    );
+    const catalog = new TemplateCatalog({ projectDir: project, builtinDir: builtin });
+    await expect(catalog.get('dup')).rejects.toMatchObject({ code: 'template_invalid' });
+    // the other way round the valid project template wins and the broken builtin one is ignored
+    await writeFile(join(project, '.sandbox', 'dup.yaml'), tpl('dup'));
+    await writeFile(join(builtin, 'dup.yaml'), 'apiVersion: 1\nname: dup\nbackend: nope\n');
+    expect((await catalog.get('dup')).source.kind).toBe('project');
+  });
+
   it('ignores symlinks', async () => {
     await writeFile(join(root, 'outside.yaml'), tpl('linked'));
     await symlink(join(root, 'outside.yaml'), join(project, '.sandbox', 'link.yaml'));

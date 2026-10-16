@@ -1,6 +1,6 @@
 import type { AboxPaths } from '../config/paths.js';
 import type { AboxConfig } from '../config/config.js';
-import type { DirEntry } from '../types.js';
+import type { DirEntry, TtySession } from '../types.js';
 import {
   accessRequest,
   applyApprovedAccess,
@@ -38,6 +38,15 @@ import {
   stopProcess,
   writeSandboxFile,
 } from './exec.js';
+import {
+  attachSandbox,
+  copyIn,
+  copyOut,
+  getPolicyRevision,
+  listPolicyRevisions,
+  listSnapshots,
+  sandboxLogs,
+} from './interactive.js';
 import { Internals } from './internals.js';
 import type { AboxOptions } from './internals.js';
 import {
@@ -62,6 +71,7 @@ import type {
   AgentTokenView,
   ApprovalDecision,
   ApprovalView,
+  AttachOptions,
   AuditEntry,
   AuditFilter,
   BuildResult,
@@ -81,6 +91,8 @@ import type {
   GcOptions,
   GcReport,
   InspectResult,
+  PolicyRevisionDetail,
+  PolicyRevisionSummary,
   PolicyValidation,
   PolicyView,
   ProcessLogsOptions,
@@ -92,8 +104,10 @@ import type {
   ReconcileReport,
   SandboxFilterInput,
   SandboxList,
+  SandboxLogsOptions,
   SandboxView,
   SetPolicyResult,
+  SnapshotView,
   StartProcessResult,
   TemplateDetails,
   TemplateList,
@@ -289,6 +303,29 @@ export class Abox {
   restore(caller: Caller, id: string, snapshotId: string): Promise<{ restored: string }> {
     return restoreSandbox(this.I, caller, id, snapshotId);
   }
+  /** Snapshots taken through `snapshot`, oldest first (owner or human). */
+  listSnapshots(caller: Caller, id: string): Promise<SnapshotView[]> {
+    return listSnapshots(this.I, caller, id);
+  }
+  /**
+   * Human only. Interactive terminal in a running sandbox; the audit log gets `sandbox.attach` and
+   * `sandbox.attach.end` (duration, exit code), never the content. Agents get `policy_denied`.
+   */
+  attach(caller: Caller, id: string, opts: AttachOptions): Promise<TtySession> {
+    return attachSandbox(this.I, caller, id, opts);
+  }
+  /** Human only. Host file/dir -> sandbox. The host path must not be a protected path (~/.ssh, ...). */
+  copyIn(caller: Caller, id: string, hostPath: string, sandboxPath: string): Promise<void> {
+    return copyIn(this.I, caller, id, hostPath, sandboxPath);
+  }
+  /** Human only. Sandbox file/dir -> host. The destination must not be an abox/protected path. */
+  copyOut(caller: Caller, id: string, sandboxPath: string, hostPath: string): Promise<void> {
+    return copyOut(this.I, caller, id, sandboxPath, hostPath);
+  }
+  /** Output of the sandbox's main process (owner or human), secrets masked. */
+  sandboxLogs(caller: Caller, id: string, opts: SandboxLogsOptions = {}): Promise<string> {
+    return sandboxLogs(this.I, caller, id, opts);
+  }
   /** Produces diff/patch/branch/files; never applies anything to the original project. */
   exportSandbox(caller: Caller, id: string, params: ExportParams): Promise<ExportSandboxResult> {
     return exportSandbox(this.I, caller, id, params);
@@ -327,6 +364,14 @@ export class Abox {
   /** Pure syntax/semantic check; changes nothing. */
   validatePolicy(text: string): PolicyValidation {
     return validatePolicyText(text);
+  }
+  /** Human only. Revisions of policy.yaml, newest first. */
+  listPolicyRevisions(caller: Caller): Promise<PolicyRevisionSummary[]> {
+    return listPolicyRevisions(this.I, caller);
+  }
+  /** Human only. One revision with its full text. */
+  getPolicyRevision(caller: Caller, rev: number): Promise<PolicyRevisionDetail> {
+    return getPolicyRevision(this.I, caller, rev);
   }
   /** Human only. An attempt by an agent is audited as `policy_change_denied`. */
   setPolicy(caller: Caller, text: string): Promise<SetPolicyResult> {

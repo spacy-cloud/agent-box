@@ -3,11 +3,38 @@ import { existsSync } from 'node:fs';
 import { chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildGitArgv, runGit } from '../git.js';
+import { buildGitArgv, driverNeutralizingEnv, runGit } from '../git.js';
 import { compileExcludes } from '../glob.js';
 import { makeRepo, tmp, useTempCleanup, write } from './helpers.js';
 
 useTempCleanup();
+
+describe('driverNeutralizingEnv', () => {
+  it('lists every filter/diff/merge driver of the repository config, also odd subsection names', async () => {
+    const root = await tmp();
+    const repo = await makeRepo(join(root, 'r'));
+    execFileSync('git', ['config', 'filter.a.b=c.clean', 'x'], { cwd: repo });
+    execFileSync('git', ['config', 'filter.lfs.clean', 'git-lfs clean -- %f'], { cwd: repo });
+    execFileSync('git', ['config', 'filter.lfs.required', 'true'], { cwd: repo });
+    execFileSync('git', ['config', 'diff.pdf.textconv', 'pdftotext'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'kept'], { cwd: repo });
+    const env = await driverNeutralizingEnv(join(repo, '.git'));
+    const pairs = new Map<string, string>();
+    for (let i = 0; i < Number(env['GIT_CONFIG_COUNT']); i++)
+      pairs.set(env[`GIT_CONFIG_KEY_${i}`]!, env[`GIT_CONFIG_VALUE_${i}`]!);
+    expect(pairs.get('filter.lfs.clean')).toBe('');
+    expect(pairs.get('filter.lfs.required')).toBe('false');
+    expect(pairs.get('diff.pdf.textconv')).toBe('');
+    expect([...pairs.keys()].some((k) => k.startsWith('user.'))).toBe(false);
+    expect(await driverNeutralizingEnv(join(repo, 'nope.git'))).toEqual({});
+  });
+
+  it('is empty for a repository without drivers', async () => {
+    const root = await tmp();
+    const repo = await makeRepo(join(root, 'r'));
+    expect(await driverNeutralizingEnv(join(repo, '.git'))).toEqual({});
+  });
+});
 
 describe('runGit hardening', () => {
   it('builds hardened argv', () => {

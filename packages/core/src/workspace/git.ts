@@ -191,6 +191,56 @@ export async function runGit(args: string[], opts: RunGitOptions = {}): Promise<
   });
 }
 
+const DRIVER_KEY_RE =
+  /^(?:(filter)\.(.+)\.(clean|smudge|process|required)|(diff)\.(.+)\.(textconv|command)|(merge)\.(.+)\.(driver|recursive))$/i;
+
+/**
+ * Environment (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`) that switches off every
+ * filter, textconv, external diff and merge driver defined in the repository's configuration.
+ *
+ * Why: the repository config is the user's own and trusted, but `.gitattributes` files in a work
+ * tree a sandbox could write (workspace mode `mount`, rw) decide *which path uses which driver*. A
+ * host-side `git status`/`diff`/`checkout` on such a work tree would therefore run a command the
+ * user configured (for example `filter.lfs.clean`) on content the sandbox chose. With the drivers
+ * empty (and `required` off) the attributes name drivers that do nothing. Command-line style
+ * overrides cannot carry every subsection name, the environment form can.
+ *
+ * Reading the keys does not execute anything. Pass the result as `env` to `runGit`.
+ */
+export async function driverNeutralizingEnv(gitDir: string): Promise<Record<string, string>> {
+  const r = await runGit(
+    ['config', '--no-includes', '--name-only', '--get-regexp', '^(filter|diff|merge)\\.'],
+    { gitDir, allowFailure: true },
+  );
+  const keys = new Set<string>();
+  if (r.code === 0) {
+    for (const line of r.stdout.split('\n')) {
+      const key = line.trim();
+      if (key && !/[\0]/.test(key) && DRIVER_KEY_RE.test(key)) keys.add(key);
+    }
+  }
+  // includes are followed by git itself; read them too (the key list is the same either way)
+  const withIncludes = await runGit(
+    ['config', '--name-only', '--get-regexp', '^(filter|diff|merge)\\.'],
+    { gitDir, allowFailure: true },
+  );
+  if (withIncludes.code === 0) {
+    for (const line of withIncludes.stdout.split('\n')) {
+      const key = line.trim();
+      if (key && DRIVER_KEY_RE.test(key)) keys.add(key);
+    }
+  }
+  const env: Record<string, string> = {};
+  let n = 0;
+  for (const key of keys) {
+    env[`GIT_CONFIG_KEY_${n}`] = key;
+    env[`GIT_CONFIG_VALUE_${n}`] = /\.required$/i.test(key) ? 'false' : '';
+    n++;
+  }
+  if (n > 0) env['GIT_CONFIG_COUNT'] = String(n);
+  return env;
+}
+
 /** Rejects revision-like input that git could interpret as an option. */
 export function assertSafeRev(value: string, what: string): void {
   if (!value || value.startsWith('-') || /[\0\n\r]/.test(value)) {

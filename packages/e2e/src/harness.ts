@@ -47,6 +47,12 @@ export const RUN = `e2e${randomBytes(4).toString('hex')}`;
  */
 export const E2E_LABELS: Record<string, string> = { 'abox.test': 'e2e', 'abox.e2e': RUN };
 
+/**
+ * The `DockerProviderOptions.instanceId` of a manager instance of this run. Run-unique, so two e2e runs on the
+ * same daemon (other developers!) never see each other's sandboxes, whatever the instance is called.
+ */
+export const instanceIdOf = (instance: string): string => `${RUN}${instance}`;
+
 export const HUMAN: Caller = { contextId: 'human' };
 export const HUMAN_YES: Caller = { contextId: 'human', humanConfirmed: true };
 export const A: Caller = { contextId: 'agent-a' };
@@ -285,9 +291,12 @@ export interface OpenOpts {
   providerOpts?: DockerProviderOptions;
   /** Extra provider factories, e.g. a different `process` backend. */
   providers?: Partial<Record<BackendKind, ProviderFactory>>;
-  /** Use the raw daemon-wide `list()` (default: only the sandboxes of this manager instance). */
+  /**
+   * Provider without an instance id (a "legacy" installation): it only sees engine objects that carry no
+   * `abox.instance` label, i.e. none of this run's. Default: the provider has the id `instanceIdOf(instance)`.
+   */
   unscoped?: boolean;
-  /** Instance id used to scope `list()`; default: random. */
+  /** Name of this manager instance (becomes the provider's instance id, see `instanceIdOf`); default: random. */
   instance?: string;
   reconcileOnOpen?: boolean;
   projectDir?: string;
@@ -312,18 +321,20 @@ export interface Ctx {
 }
 
 /**
- * The Docker provider of host `local`. With an `instance` id, `list()` only reports sandboxes carrying
- * `abox.e2e-inst=<instance>`: the daemon is shared with other developers' test runs (and possibly a real abox)
- * and with the other manager instances of this very suite, and the manager's `reconcile`/`doctor` treat every
- * backend sandbox without a registry row as an orphan (see the "two abox instances" test and the README).
- * Without `instance` the provider has the raw daemon-wide view.
+ * The Docker provider of host `local`. With an `instance` name the provider gets the instance id
+ * `instanceIdOf(instance)`: it only sees (list/inspect/remove/gcImages) the engine objects of that instance,
+ * like a real installation does. The daemon is shared with other developers' test runs (and possibly a real abox)
+ * and with the other manager instances of this very suite; the manager's `reconcile`/`doctor` treat every backend
+ * sandbox without a registry row as an orphan (see the "two abox instances" test and the README).
+ * The extra label `abox.e2e-inst=<instance>` is only for the `docker ps` based assertions and the cleanup.
  */
 export function dockerProvider(
   opts: DockerProviderOptions & { instance?: string; host?: HostConnection } = {},
 ): DockerProvider {
   const { instance, extraLabels, host, ...rest } = opts;
-  const p = createDockerProvider(host ?? { host: 'local', kind: 'local' }, {
+  return createDockerProvider(host ?? { host: 'local', kind: 'local' }, {
     stopTimeoutSec: 1,
+    ...(instance ? { instanceId: instanceIdOf(instance) } : {}),
     ...rest,
     extraLabels: {
       ...E2E_LABELS,
@@ -331,12 +342,6 @@ export function dockerProvider(
       ...extraLabels,
     },
   });
-  if (instance) {
-    const list = p.list.bind(p);
-    p.list = async (filter) =>
-      (await list(filter)).filter((i) => i.labels['abox.e2e-inst'] === instance);
-  }
-  return p;
 }
 
 export async function openAbox(env: Env, o: OpenOpts = {}): Promise<Ctx> {
@@ -358,7 +363,11 @@ export async function openAbox(env: Env, o: OpenOpts = {}): Promise<Ctx> {
       docker: (h) =>
         h.host === 'local'
           ? shared
-          : createDockerProvider(h, { extraLabels: E2E_LABELS, ...o.providerOpts }),
+          : createDockerProvider(h, {
+              extraLabels: E2E_LABELS,
+              ...(o.unscoped ? {} : { instanceId: instanceIdOf(instance) }),
+              ...o.providerOpts,
+            }),
       process: (h) => createProcessProvider(h, { dataDir: join(env.aboxHome, 'data', 'process') }),
       ...o.providers,
     },

@@ -1,10 +1,22 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MemorySecretStore, type ProviderFactory } from '@abox/core';
 import {
+  INSTANCE_ID_FILE,
   engineSocket,
+  loadInstanceId,
   openAbox,
   providerFactories,
   registerProvider,
@@ -158,5 +170,45 @@ describe('engine sockets', () => {
     } finally {
       await rt.close();
     }
+  });
+});
+
+describe('instance id', () => {
+  it('is generated once per data dir, persisted with mode 0600 and stable', () => {
+    const dir = join(root, 'abox', 'data');
+    const id = loadInstanceId(dir);
+    expect(id).toMatch(/^[0-9a-f]{16}$/);
+    const file = join(dir, INSTANCE_ID_FILE);
+    expect(readFileSync(file, 'utf8').trim()).toBe(id);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(loadInstanceId(dir)).toBe(id);
+    expect(loadInstanceId(join(root, 'other', 'data'))).not.toBe(id);
+  });
+
+  it('replaces a garbage file and leaves no temporary files behind', () => {
+    const dir = join(root, 'abox', 'data');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, INSTANCE_ID_FILE), 'not an id');
+    const id = loadInstanceId(dir);
+    expect(id).toMatch(/^[0-9a-f]{16}$/);
+    expect(loadInstanceId(dir)).toBe(id);
+    chmodSync(join(dir, INSTANCE_ID_FILE), 0o600);
+    expect(readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('is passed to the docker, podman and python providers, one id per installation', async () => {
+    const mk = (home: string) =>
+      providerFactories({ env: { ...env, ABOX_HOME: home } as NodeJS.ProcessEnv });
+    const host = { host: 'local', kind: 'local' } as const;
+    const a = mk(join(root, 'a'));
+    const idA = (a.docker!(host) as unknown as { instanceId?: string }).instanceId;
+    expect(idA).toMatch(/^[0-9a-f]{16}$/);
+    expect((a.podman!(host) as unknown as { instanceId?: string }).instanceId).toBe(idA);
+    expect((a.python!(host) as unknown as { instanceId?: string }).instanceId).toBe(idA);
+    expect(readFileSync(join(root, 'a', 'data', INSTANCE_ID_FILE), 'utf8').trim()).toBe(idA);
+    const idB = (mk(join(root, 'b')).docker!(host) as unknown as { instanceId?: string })
+      .instanceId;
+    expect(idB).toMatch(/^[0-9a-f]{16}$/);
+    expect(idB).not.toBe(idA);
   });
 });

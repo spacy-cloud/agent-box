@@ -495,6 +495,23 @@ describe('network', () => {
     expect(approvalKinds(run({}, allowlist('cdn.example.org')))).toContain('network_domains');
     expect(approvalKinds(run({}, allowlist('*.example.org')))).toContain('network_domains');
   });
+  it('destinations with a port: valid, and compared like the proxy does (F5)', () => {
+    // the human profile allows everything ('*'): a port entry is accepted, not "not a valid domain pattern"
+    expect(run({ network: { allow: ['*'] } }, allowlist('example.org:8443')).decision).toBe(
+      'allow',
+    );
+    // plain entry covers 80/443 only
+    expect(run({}, allowlist('internal.example.org:443')).decision).toBe('allow');
+    expect(approvalKinds(run({}, allowlist('internal.example.org:8443')))).toContain(
+      'network_domains',
+    );
+    // profile entry with port covers exactly that port
+    const p = { network: { allow: ['api.example.org:8443'] } };
+    expect(run(p, allowlist('api.example.org:8443')).decision).toBe('allow');
+    expect(approvalKinds(run(p, allowlist('api.example.org:9443')))).toContain('network_domains');
+    expect(approvalKinds(run(p, allowlist('api.example.org')))).toContain('network_domains');
+    expectDeny(run({}, allowlist('x.example.org:99999')), 'is not a valid domain pattern');
+  });
   it('denies destinations when the profile has an empty network list', () => {
     const r = run({ network: { allow_presets: [], allow: [] } }, allowlist('pypi.org'));
     expectDeny(r, 'has no network allowlist');

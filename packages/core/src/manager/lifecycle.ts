@@ -33,6 +33,7 @@ import type {
 import { cleanupWorkspace, prepareWorkspace } from '../workspace/index.js';
 import type { WorkspaceRecord } from '../workspace/index.js';
 import { confirmationRequired, consumeApproval, gate } from './approvals.js';
+import { collectNetworkEvents } from './network-audit.js';
 import type { Internals, StoredEffective } from './internals.js';
 import { createRequestSchema } from './schemas.js';
 import {
@@ -909,6 +910,7 @@ export async function inspectSandbox(
 ): Promise<InspectResult> {
   const ctx = await I.context(caller);
   const rec = I.lookup(ctx, id, { allowRemoved: true });
+  await collectNetworkEvents(I, rec);
   const view = await viewFor(I, rec);
   const processes: ProcessView[] = I.state.processes.list(rec.id).map((p) => ({
     id: p.id,
@@ -955,6 +957,7 @@ export async function stopSandbox(I: Internals, caller: Caller, id: string): Pro
   const ctx = await I.context(caller);
   const rec = I.lookup(ctx, id);
   const provider = await I.providerForRecord(rec);
+  await collectNetworkEvents(I, rec);
   await provider.stop(id);
   I.state.sandboxes.transition(id, ['created', 'running', 'stopped'], 'stopped');
   for (const p of I.state.processes.list(id))
@@ -973,12 +976,14 @@ export async function destroySandbox(
   opts: { markRemoved?: boolean } = {},
 ): Promise<void> {
   const provider = await I.providerForRecord(rec);
+  await collectNetworkEvents(I, rec); // the proxy and its log disappear with the sandbox
   try {
     await provider.stop(rec.id);
   } catch {
     /* not running, already gone or unsupported */
   }
   await provider.remove(rec.id);
+  I.state.snapshots.deleteAll(rec.id);
   const ws = rec.workspace as WorkspaceRecord | null;
   const problems: string[] = [];
   if (ws && ws.version === 1) {

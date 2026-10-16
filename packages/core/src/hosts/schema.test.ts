@@ -192,8 +192,17 @@ describe('parseHostsYaml', () => {
     expect(local).toMatchObject({
       kind: 'local',
       zone: 'workstation',
-      backends: ['docker', 'process'],
+      backends: ['docker', 'podman', 'process', 'python', 'vm'],
     });
+  });
+
+  it('accepts python and vm in the backends of a host', () => {
+    const hosts = parseHostsYaml(
+      'hosts:\n  box:\n    kind: ssh\n    hostname: box.example.org\n    user: dev\n    backends: [python, vm]\n  local:\n    backends: [python]\n',
+    );
+    expect(hosts.get('box')!.backends).toEqual(['python', 'vm']);
+    expect(hosts.get('local')!.backends).toEqual(['python']);
+    expect(() => parseHostsYaml('hosts:\n  x:\n    backends: [lxc]\n')).toThrow();
   });
 
   it('parses the concept example (placeholders only)', () => {

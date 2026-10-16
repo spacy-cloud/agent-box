@@ -37,8 +37,25 @@ export const AUDIT_DECISIONS = [
 export const APPROVAL_STATUSES = ['pending', 'approved', 'denied', 'expired'] as const;
 export const EXPORT_FORMATS = ['diff', 'patch', 'branch'] as const;
 export const LOCALES = ['de', 'en'] as const;
+export const HOST_ZONES = ['workstation', 'lab', 'shared', 'restricted'] as const;
+export const HOST_BACKENDS = ['docker', 'podman', 'process', 'vm'] as const;
+export const FORWARD_KINDS = ['local', 'remote', 'dynamic'] as const;
+export const TEMPLATE_BACKENDS = ['docker', 'podman', 'process', 'python', 'vm'] as const;
+export const TEMPLATE_SOURCES = ['builtin', 'user', 'project'] as const;
+export const TTY_MAX_COLS = 500;
+export const TTY_MAX_ROWS = 300;
+export const TTY_MAX_INPUT = 65_536;
 export type Locale = (typeof LOCALES)[number];
-export const VIEWS = ['sandboxes', 'approvals', 'audit', 'policy', 'settings', 'detail'] as const;
+export const VIEWS = [
+  'sandboxes',
+  'templates',
+  'hosts',
+  'approvals',
+  'audit',
+  'policy',
+  'settings',
+  'detail',
+] as const;
 export type ViewName = (typeof VIEWS)[number];
 
 export { EVENT_CHANNELS };
@@ -61,10 +78,24 @@ export interface NavigateEvent {
   view: ViewName;
   approvalId?: string;
 }
+/** Terminal output. Always bytes, always treated as data by the renderer (never as markup or commands). */
+export interface TtyDataEvent {
+  sessionId: string;
+  data: Uint8Array;
+}
+export interface TtyExitEvent {
+  sessionId: string;
+  /** Exit code of the shell / ssh process; `null` when it was killed or is unknown. */
+  code: number | null;
+  /** Set when the session ended because of an error on abox's side. */
+  reason?: string;
+}
 export interface EventPayloads {
   'evt:changed': ChangedEvent;
   'evt:progress': ProgressEvent;
   'evt:navigate': NavigateEvent;
+  'evt:tty-data': TtyDataEvent;
+  'evt:tty-exit': TtyExitEvent;
 }
 
 /** Errors cross the boundary as plain data. */

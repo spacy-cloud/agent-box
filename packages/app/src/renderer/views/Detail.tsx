@@ -3,6 +3,7 @@ import type { AuditEntry, DirEntry, ExportSandboxResult } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
 import { useNow, useQuery } from '../hooks';
+import { TerminalPane } from '../components/Terminal';
 import {
   Badge,
   Banner,
@@ -131,7 +132,7 @@ export function DetailView(props: { id: string }) {
             {tab === 'overview' ? (
               <OverviewTab id={s.id} template={s.template} sandbox={s} now={now} />
             ) : null}
-            {tab === 'terminal' ? <TerminalPlaceholder /> : null}
+            {tab === 'terminal' ? <TerminalTab id={s.id} name={s.name} state={s.state} /> : null}
             {tab === 'activity' ? <ActivityTab id={s.id} /> : null}
             {tab === 'files' ? <FilesTab id={s.id} /> : null}
             {tab === 'logs' ? <LogsTab id={s.id} /> : null}
@@ -249,9 +250,24 @@ function OverviewTab(props: {
   );
 }
 
-function TerminalPlaceholder() {
+function TerminalTab(props: { id: string; name: string; state: string }) {
   const { t } = useApp();
-  return <EmptyState title={t('detail.terminal.title')} text={t('detail.terminal.text')} />;
+  if (props.state !== 'running') {
+    return (
+      <EmptyState title={t('detail.terminal.notRunning.title')} text={t('detail.terminal.notRunning.text')} />
+    );
+  }
+  return (
+    <>
+      <p className="muted">{t('detail.terminal.intro')}</p>
+      <TerminalPane
+        target={{ kind: 'sandbox', id: props.id }}
+        kindLabel={t('terminal.kind.sandbox')}
+        title={props.name}
+        subtitle={props.id}
+      />
+    </>
+  );
 }
 
 // -- activity -------------------------------------------------------------------------------------------
@@ -612,6 +628,26 @@ function DiffText(props: { text: string }) {
 
 // -- logs ----------------------------------------------------------------------------------------------------
 
+function SandboxOutput(props: { id: string }) {
+  const { t } = useApp();
+  const q = useQuery('sandboxes:logs', { id: props.id, tail: 300 }, { pollMs: 3000, live: false });
+  return (
+    <>
+      <h2 className="h-small">{t('detail.logs.sandbox')}</h2>
+      <p className="muted small">{t('detail.logs.sandboxHint')}</p>
+      {q.error ? <ErrorBox error={q.error} /> : null}
+      <pre
+        className="log plain"
+        tabIndex={0}
+        aria-label={t('detail.logs.sandboxOutput')}
+        aria-live="off"
+      >
+        {q.data?.content ?? ''}
+      </pre>
+    </>
+  );
+}
+
 function LogsTab(props: { id: string }) {
   const { t } = useApp();
   const procs = useQuery('processes:list', { id: props.id }, { pollMs: 3000 });
@@ -627,33 +663,44 @@ function LogsTab(props: { id: string }) {
   });
   if (procs.error) return <ErrorBox error={procs.error} />;
   if (!procs.data) return <Loading />;
-  if (list.length === 0)
-    return <EmptyState title={t('detail.logs.empty.title')} text={t('detail.logs.empty.text')} />;
   const cur = list.find((p) => p.id === sel);
   return (
     <>
-      <Field label={t('detail.logs.process')}>
-        {(id) => (
-          <select id={id} value={sel ?? ''} onChange={(e) => setSel(e.target.value)}>
-            {list.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.id} - {p.command.slice(0, 60)} ({p.status})
-              </option>
-            ))}
-          </select>
-        )}
-      </Field>
-      {cur ? (
-        <p className="muted small">
-          {t(`detail.logs.status.${cur.status}`)} &middot; {formatTimestamp(cur.startedAt)}
-          {cur.exitCode !== null ? ` · exit ${cur.exitCode}` : ''}
-        </p>
-      ) : null}
-      {logs.error ? <ErrorBox error={logs.error} /> : null}
-      <pre className="log plain" tabIndex={0} aria-label={t('detail.logs.output')} aria-live="off">
-        {logs.data?.content ?? ''}
-      </pre>
-      {logs.data?.truncated ? <p className="muted small">{t('detail.logs.truncated')}</p> : null}
+      <SandboxOutput id={props.id} />
+      <h2 className="h-small">{t('detail.logs.processes')}</h2>
+      {list.length === 0 ? (
+        <EmptyState title={t('detail.logs.empty.title')} text={t('detail.logs.empty.text')} />
+      ) : (
+        <>
+          <Field label={t('detail.logs.process')}>
+            {(id) => (
+              <select id={id} value={sel ?? ''} onChange={(e) => setSel(e.target.value)}>
+                {list.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id} - {p.command.slice(0, 60)} ({p.status})
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+          {cur ? (
+            <p className="muted small">
+              {t(`detail.logs.status.${cur.status}`)} &middot; {formatTimestamp(cur.startedAt)}
+              {cur.exitCode !== null ? ` · exit ${cur.exitCode}` : ''}
+            </p>
+          ) : null}
+          {logs.error ? <ErrorBox error={logs.error} /> : null}
+          <pre
+            className="log plain"
+            tabIndex={0}
+            aria-label={t('detail.logs.output')}
+            aria-live="off"
+          >
+            {logs.data?.content ?? ''}
+          </pre>
+          {logs.data?.truncated ? <p className="muted small">{t('detail.logs.truncated')}</p> : null}
+        </>
+      )}
     </>
   );
 }
@@ -662,15 +709,11 @@ function LogsTab(props: { id: string }) {
 
 function SnapshotsTab(props: { id: string }) {
   const { t, notify } = useApp();
-  const audit = useQuery(
-    'audit:query',
-    { sandboxId: props.id, action: 'sandbox.snapshot', limit: 100 },
-    { pollMs: 5000 },
-  );
+  const snapshots = useQuery('snapshots:list', { id: props.id }, { pollMs: 5000 });
   const [name, setName] = useState('');
   const [restoreId, setRestoreId] = useState<string | null>(null);
   const [error, setError] = useState<unknown>();
-  const snaps = (audit.data ?? []).filter((e) => typeof e.details?.['snapshotId'] === 'string');
+  const snaps = snapshots.data ?? [];
 
   async function create() {
     setError(undefined);
@@ -678,7 +721,7 @@ function SnapshotsTab(props: { id: string }) {
       const r = await call('snapshots:create', { id: props.id, name });
       notify('ok', t('detail.snap.created', { id: r.snapshotId }));
       setName('');
-      await audit.reload();
+      await snapshots.reload();
     } catch (e) {
       setError(e);
     }
@@ -719,9 +762,12 @@ function SnapshotsTab(props: { id: string }) {
         </button>
       </form>
       {error ? <ErrorBox error={error} /> : null}
-      {snaps.length === 0 ? (
+      {snapshots.error ? <ErrorBox error={snapshots.error} /> : null}
+      {snapshots.loading && !snapshots.data ? <Loading /> : null}
+      {snapshots.data && snaps.length === 0 ? (
         <p className="muted">{t('detail.snap.empty')}</p>
-      ) : (
+      ) : null}
+      {snaps.length > 0 ? (
         <div className="table-wrap">
           <table>
             <caption className="sr-only">{t('detail.tab.snapshots')}</caption>
@@ -734,17 +780,15 @@ function SnapshotsTab(props: { id: string }) {
               </tr>
             </thead>
             <tbody>
-              {snaps.map((e) => (
-                <tr key={e.seq}>
-                  <td className="plain">{String(e.details?.['name'] ?? '')}</td>
-                  <td className="plain mono">{String(e.details?.['snapshotId'])}</td>
-                  <td className="mono">{formatTimestamp(e.ts)}</td>
+              {snaps.map((snap) => (
+                <tr key={snap.id}>
+                  <td className="plain">{snap.name}</td>
+                  <td className="plain mono">{snap.id}</td>
+                  <td className="mono">{formatTimestamp(snap.createdAt)}</td>
                   <td>
-                    <button
-                      type="button"
-                      onClick={() => setRestoreId(String(e.details?.['snapshotId']))}
-                    >
+                    <button type="button" onClick={() => setRestoreId(snap.id)}>
                       {t('detail.snap.restore')}
+                      <span className="sr-only"> {snap.name}</span>
                     </button>
                   </td>
                 </tr>
@@ -752,7 +796,7 @@ function SnapshotsTab(props: { id: string }) {
             </tbody>
           </table>
         </div>
-      )}
+      ) : null}
       {restoreId ? (
         <ConfirmDialog
           title={t('detail.snap.restore')}

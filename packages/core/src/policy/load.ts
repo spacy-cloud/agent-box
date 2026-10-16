@@ -39,12 +39,23 @@ export const BUILTIN_HUMAN_PROFILE: RawProfile = {
   exec: { approval: false },
 };
 
+/** Agent context ids of the built-in default policy (all use profile `default`). */
+export const BUILTIN_AGENT_CONTEXTS: readonly string[] = [
+  'default',
+  'claude-code',
+  'codex',
+  'cursor',
+  'orca',
+];
+
 /**
  * Policy used when no policy.yaml exists. The `default` profile may use any
  * directory below `~` as workspace root; the forbidden-path list (`~`, `~/.ssh`,
  * `~/.config`, ...) still applies. The agent context `default` lets an MCP/CLI
- * connection started with `--agent default` work out of the box; every other
- * agent context id is unknown and therefore denied.
+ * connection started with `--agent <id>` work out of the box for the built-in agent
+ * contexts (`BUILTIN_AGENT_CONTEXTS`: default, claude-code, codex, cursor, orca; all
+ * mapped to profile `default`); every other context id is unknown and therefore denied.
+ * A policy.yaml replaces this policy completely (and so may redefine or drop these contexts).
  */
 export const DEFAULT_POLICY_YAML = `# abox built-in default policy (used when no policy.yaml exists)
 version: 1
@@ -61,7 +72,12 @@ profiles:
     hosts: [local]
     exec: { approval: false }
 contexts:
+  # Agent contexts of the supported agent integrations (\`abox mcp serve --agent <id>\`), all with the same profile.
   default: { profile: default }
+  claude-code: { profile: default }
+  codex: { profile: default }
+  cursor: { profile: default }
+  orca: { profile: default }
 `;
 
 export function policyContentHash(text: string): string {

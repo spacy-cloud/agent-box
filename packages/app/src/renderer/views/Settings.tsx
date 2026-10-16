@@ -18,7 +18,17 @@ import type { DoctorReport, ReconcileReport } from '../../shared/types';
 import { formatTimestamp } from '../../shared/format';
 
 export function SettingsView() {
-  const { t, locale, setLocale, info } = useApp();
+  const { t, locale, setLocale, info, notify } = useApp();
+  const [closeToTray, setCloseToTray] = useState(info.closeToTray);
+  async function changeCloseToTray(on: boolean) {
+    setCloseToTray(on);
+    try {
+      await call('app:settings', { closeToTray: on });
+    } catch (e) {
+      setCloseToTray(!on);
+      notify('error', (e as Error).message);
+    }
+  }
   return (
     <section aria-labelledby="h-settings">
       <header className="page-head">
@@ -37,6 +47,21 @@ export function SettingsView() {
             </select>
           )}
         </Field>
+        <div className="field">
+          <label className="inline">
+            <input
+              type="checkbox"
+              checked={closeToTray}
+              disabled={!info.trayAvailable}
+              aria-describedby="close-to-tray-hint"
+              onChange={(e) => void changeCloseToTray(e.target.checked)}
+            />
+            {t('settings.closeToTray')}
+          </label>
+          <small id="close-to-tray-hint" className="muted">
+            {info.trayAvailable ? t('settings.closeToTrayHint') : t('settings.closeToTrayNoTray')}
+          </small>
+        </div>
       </div>
       <dl className="kv-list">
         <dt>{t('settings.tray')}</dt>

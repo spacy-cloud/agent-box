@@ -8,7 +8,7 @@ import { AboxError, DEFAULT_POLICY_YAML } from '@abox/core';
 import type { Abox, AboxPaths, AuditFilter, Caller, CreateSandboxRequest } from '@abox/core';
 import type { z } from 'zod';
 import type { IPC, IpcChannel } from '../shared/ipc';
-import type { McpConfig, Outputs, PolicyRevisionInfo } from '../shared/types';
+import type { McpConfig, Outputs } from '../shared/types';
 import { mcpClaudeCommand, mcpJsonConfig } from '../shared/mcp-config';
 
 export interface ServiceRuntime {
@@ -41,6 +41,8 @@ export type ManagerChannel =
   | 'export:run'
   | 'processes:list'
   | 'processes:logs'
+  | 'sandboxes:logs'
+  | 'snapshots:list'
   | 'snapshots:create'
   | 'snapshots:restore'
   | 'approvals:list'
@@ -52,6 +54,7 @@ export type ManagerChannel =
   | 'policy:validate'
   | 'policy:set'
   | 'policy:revisions'
+  | 'policy:revision'
   | 'doctor:run'
   | 'reconcile:run'
   | 'tokens:list'
@@ -127,6 +130,10 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
       ),
     'processes:list': (i) => abox.listProcesses(HUMAN, i.id),
     'processes:logs': (i) => abox.processLogs(HUMAN, i.processId, clean({ tail: i.tail ?? 200 })),
+    'sandboxes:logs': async (i) => ({
+      content: await abox.sandboxLogs(HUMAN, i.id, clean({ tail: i.tail ?? 300, sinceTs: i.sinceTs })),
+    }),
+    'snapshots:list': (i) => abox.listSnapshots(HUMAN, i.id),
     'snapshots:create': (i) => abox.snapshot(HUMAN, i.id, i.name),
     'snapshots:restore': (i) => abox.restore(HUMAN, i.id, i.snapshotId),
     'approvals:list': (i) => abox.listApprovals(HUMAN, clean({ ...(i ?? {}) })),
@@ -148,28 +155,10 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
       return abox.setPolicy(HUMAN, i.text);
     },
     'policy:revisions': async () => {
-      const entries = await abox.queryAudit(HUMAN, {
-        action: ['policy.set', 'policy.reload'],
-        limit: 50,
-      });
-      return entries.map((e): PolicyRevisionInfo => {
-        const d = e.details ?? {};
-        return {
-          seq: e.seq,
-          ts: e.ts,
-          actor: e.actor,
-          action: e.action,
-          revision: typeof d['revision'] === 'number' ? d['revision'] : null,
-          newHash:
-            typeof d['newHash'] === 'string'
-              ? d['newHash']
-              : typeof d['contentHash'] === 'string'
-                ? d['contentHash']
-                : null,
-          oldHash: typeof d['oldHash'] === 'string' ? d['oldHash'] : null,
-        };
-      });
+      const list = await abox.listPolicyRevisions(HUMAN);
+      return [...list].sort((a, b) => b.rev - a.rev);
     },
+    'policy:revision': (i) => abox.getPolicyRevision(HUMAN, i.rev),
     'doctor:run': () => abox.doctor(HUMAN),
     'reconcile:run': (i) => abox.reconcile(HUMAN, clean({ ...(i ?? {}) })),
     'tokens:list': () => abox.listAgentTokens(HUMAN),

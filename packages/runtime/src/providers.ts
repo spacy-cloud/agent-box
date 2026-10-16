@@ -11,6 +11,7 @@ import { createDockerProvider, createPodmanProvider } from '@abox/backend-docker
 import { createProcessProvider } from '@abox/backend-process';
 import { createPythonProvider } from '@abox/backend-python';
 import { createVmProvider } from '@abox/backend-vm';
+import { loadInstanceId } from './instance.js';
 
 /** What a provider-factory maker may use to configure its backend. */
 export interface ProviderContext {
@@ -46,15 +47,24 @@ export function engineSocket(
   return join(runtime, 'podman', 'podman.sock');
 }
 
+// The container backends stamp the id of this abox installation on everything they create and only
+// see objects carrying it (`DockerProviderOptions.instanceId`). Read lazily: only when a provider
+// is built, so commands that never touch an engine do not create the file.
 registry.set(
   'docker',
   (ctx) => (host) =>
-    createDockerProvider(host, { socketPath: engineSocket('docker', ctx, host.engineSocket) }),
+    createDockerProvider(host, {
+      socketPath: engineSocket('docker', ctx, host.engineSocket),
+      instanceId: loadInstanceId(ctx.paths.dataDir),
+    }),
 );
 registry.set(
   'podman',
   (ctx) => (host) =>
-    createPodmanProvider(host, { socketPath: engineSocket('podman', ctx, host.engineSocket) }),
+    createPodmanProvider(host, {
+      socketPath: engineSocket('podman', ctx, host.engineSocket),
+      instanceId: loadInstanceId(ctx.paths.dataDir),
+    }),
 );
 registry.set(
   'process',
@@ -73,7 +83,10 @@ registry.set(
   'python',
   (ctx) => (host) =>
     createPythonProvider(host, {
-      docker: { socketPath: engineSocket('docker', ctx, host.engineSocket) },
+      docker: {
+        socketPath: engineSocket('docker', ctx, host.engineSocket),
+        instanceId: loadInstanceId(ctx.paths.dataDir),
+      },
       dataDir: host.dataDir ?? ctx.paths.dataDir,
     }),
 );

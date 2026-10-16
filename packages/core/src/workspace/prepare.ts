@@ -4,7 +4,14 @@ import { AboxError } from '../errors.js';
 import type { WorkspaceDelivery } from '../types.js';
 import { compileExcludes } from './glob.js';
 import { captureGitMarker } from './gitmarker.js';
-import { assertSafeRev, locateRepo, resolveCommit, runGit, type RepoLocation } from './git.js';
+import {
+  assertSafeRev,
+  driverNeutralizingEnv,
+  locateRepo,
+  resolveCommit,
+  runGit,
+  type RepoLocation,
+} from './git.js';
 import { initBareRepo, type ObjectFormat } from './objstore.js';
 import { copyTreeSafely, createBaselineFromTree, writeManifest } from './snapshot.js';
 import type { PrepareWorkspaceInput, PrepareWorkspaceResult, WorkspaceRecord } from './types.js';
@@ -25,6 +32,9 @@ import type { PrepareWorkspaceInput, PrepareWorkspaceResult, WorkspaceRecord } f
  *              (changes are plain file edits). Not available on remote hosts (yet).
  *              Filter drivers configured in the user's own repository config (e.g. git-lfs) are
  *              honoured by the checkout; tracked `.gitattributes` alone cannot run anything.
+ *              (In `mount` the work tree is sandbox-writable, so there every filter/diff/merge driver of
+ *              the repository config is switched off for the host-side `git status`/`ls-files`; the
+ *              export never runs git on the work tree at all, see export.ts.)
  * - `clone`    an independent repository at `<sandboxDir>/staging` (own objects via
  *              `--no-local`-equivalent fetch, no hooks, no remote, branch `abox/<short>`), delivered
  *              as `copy`. Baseline = pristine bare repo `<sandboxDir>/baseline.git`. Uncommitted
@@ -240,9 +250,13 @@ async function prepareMount(
 
   // read-only subpaths: .git plus the .git entry of every submodule checkout
   const readonlySubpaths = ['.git'];
+  // The work tree is bound writable into earlier/other sandboxes: its .gitattributes must not be able to
+  // run a filter/diff driver that the (trusted) repository config defines.
+  const noDrivers = await driverNeutralizingEnv(repo.gitDir);
   const ls = await runGit(['ls-files', '-s', '-z'], {
     gitDir: repo.gitDir,
     workTree: source,
+    env: noDrivers,
     allowFailure: true,
   });
   if (ls.code === 0) {
@@ -257,11 +271,15 @@ async function prepareMount(
   const st = await runGit(['status', '--porcelain', '-z', '--untracked-files=no'], {
     gitDir: repo.gitDir,
     workTree: source,
+    env: noDrivers,
     allowFailure: true,
   });
   if (st.code === 0 && st.stdout.length > 0) {
     warnings.push(
-      'source has uncommitted changes; an export diff (against HEAD) will include them',
+      'source has uncommitted changes; an export diff (against HEAD) will include them' +
+        (Object.keys(noDrivers).length > 0
+          ? ' (git filters of the repository config are not run here, so content converted by a filter such as git-lfs can show up as changed)'
+          : ''),
     );
   }
   warnings.push(
