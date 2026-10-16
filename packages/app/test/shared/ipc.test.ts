@@ -164,4 +164,31 @@ describe('IPC contract', () => {
       expect(ok('templates:build', { name: 'node-dev' })).toBe(false);
     });
   });
+
+  describe('template and approval review', () => {
+    it('templates:review takes a template name and optionally the workspace of the sandbox being created', () => {
+      expect(ok('templates:review', { name: 'proj-tpl' })).toBe(true);
+      expect(ok('templates:review', { name: 'proj-tpl', workspacePath: '/home/u/project' })).toBe(
+        true,
+      );
+      expect(ok('templates:review', {})).toBe(false);
+      expect(ok('templates:review', { name: '' })).toBe(false);
+      expect(ok('templates:review', { name: 'x'.repeat(201) })).toBe(false);
+      expect(ok('templates:review', { name: 'a', workspacePath: '' })).toBe(false);
+      expect(ok('templates:review', { name: 'a', workspacePath: '/x'.repeat(2100) })).toBe(false);
+      // the renderer cannot name where the project directory is, nor claim what the request contained
+      expect(ok('templates:review', { name: 'a', projectDir: '/etc' })).toBe(false);
+      expect(ok('templates:review', { name: 'a', expectedContentHash: 'abc' })).toBe(false);
+    });
+    it('approvals:templateReview and approvals:image take nothing but the approval id', () => {
+      for (const c of ['approvals:templateReview', 'approvals:image'] as const) {
+        expect(ok(c, { id: 'a1b2' }), c).toBe(true);
+        expect(ok(c, { id: '' }), c).toBe(false);
+        expect(ok(c, undefined), c).toBe(false);
+        expect(ok(c, { id: 'a1', path: '/etc/hosts' }), c).toBe(false);
+        expect(ok(c, { id: 'a1', projectDir: '/tmp/x' }), c).toBe(false);
+        expect(ok(c, { id: 'a1', template: 'x' }), c).toBe(false);
+      }
+    });
+  });
 });

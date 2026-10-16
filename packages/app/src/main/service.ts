@@ -10,6 +10,8 @@ import type { z } from 'zod';
 import type { IPC, IpcChannel } from '../shared/ipc';
 import type { McpConfig, Outputs } from '../shared/types';
 import { mcpClaudeCommand, mcpJsonConfig } from '../shared/mcp-config';
+import { describeBase } from '../shared/image-ref';
+import { templateTarget } from './approval-context';
 
 export interface ServiceRuntime {
   abox: Abox;
@@ -37,6 +39,7 @@ export type ManagerChannel =
   | 'sandboxes:create'
   | 'templates:list'
   | 'templates:show'
+  | 'templates:review'
   | 'files:list'
   | 'export:run'
   | 'processes:list'
@@ -48,6 +51,8 @@ export type ManagerChannel =
   | 'approvals:list'
   | 'approvals:approve'
   | 'approvals:deny'
+  | 'approvals:templateReview'
+  | 'approvals:image'
   | 'audit:query'
   | 'audit:verify'
   | 'policy:get'
@@ -121,6 +126,8 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     },
     'templates:list': () => abox.listTemplates(HUMAN),
     'templates:show': (i) => abox.showTemplate(HUMAN, i.name),
+    'templates:review': (i) =>
+      abox.reviewTemplate(HUMAN, i.name, clean({ workspacePath: i.workspacePath })),
     'files:list': (i) => abox.listDir(HUMAN, i.id, i.path),
     'export:run': (i) =>
       abox.exportSandbox(
@@ -143,6 +150,42 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     'approvals:list': (i) => abox.listApprovals(HUMAN, clean({ ...(i ?? {}) })),
     'approvals:approve': (i) => abox.approve(HUMAN, i.id, i.note),
     'approvals:deny': (i) => abox.deny(HUMAN, i.id, i.note),
+    'approvals:templateReview': async (i) => {
+      const a = await abox.getApproval(HUMAN, i.id);
+      const target = a.kind === 'template_trust' ? templateTarget(a.request) : undefined;
+      if (!target) {
+        throw new AboxError('invalid_input', 'this approval is not about trusting a template');
+      }
+      // The same call as `abox approvals show`: the hash from the request flags a file changed since.
+      return abox.reviewTemplate(
+        HUMAN,
+        target.name,
+        clean({ projectDir: target.projectDir, expectedContentHash: target.contentHash }),
+      );
+    },
+    'approvals:image': async (i) => {
+      const a = await abox.getApproval(HUMAN, i.id);
+      const target = templateTarget(a.request);
+      if (!target) return null;
+      let details;
+      try {
+        details = await abox.showTemplate(
+          HUMAN,
+          target.name,
+          clean({ projectDir: target.projectDir }),
+        );
+      } catch {
+        return null; // the template is gone or not reachable from here: nothing to show
+      }
+      const tpl = details.template;
+      // An approval covers the content it was requested for; a changed file says nothing about it.
+      if (target.contentHash !== undefined && tpl.contentHash !== target.contentHash) return null;
+      const view = await abox.showPolicy(HUMAN);
+      const profile = target.profile ? view.profiles?.[target.profile] : undefined;
+      return (
+        describeBase(tpl.base, tpl.backend, profile ? profile.images.registries : null) ?? null
+      );
+    },
     'audit:query': (i) => abox.queryAudit(HUMAN, clean({ ...(i ?? {}) }) as AuditFilter),
     'audit:verify': () => abox.verifyAudit(HUMAN),
     'policy:get': async () => {

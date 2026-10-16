@@ -651,6 +651,10 @@ dialog.modal h2 {
     grid-template-columns: 1fr;
   }
 }
+.approvals-layout > * {
+  /* a wide diff scrolls inside its own box instead of widening the page */
+  min-width: 0;
+}
 .queue {
   list-style: none;
   margin: 0;
@@ -768,6 +772,13 @@ dialog.modal h2 {
 }
 .diff-head {
   font-weight: 700;
+}
+.template-review,
+.image-use {
+  margin: 0.4rem 0 1rem;
+}
+.template-review h4 {
+  margin: 0.8rem 0 0.2rem;
 }
 .diff-hunk {
   color: var(--muted);

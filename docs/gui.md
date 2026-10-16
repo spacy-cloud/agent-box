@@ -32,7 +32,7 @@ it).
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Sandboxes**      | table of all sandboxes (agents' and yours) with state, backend and isolation, owner, resources, workspace and time left; filter by state, template, agent and text; start, stop, extend the lifetime, export a diff, delete (the dialog warns that unexported changes are lost). Orphaned backend objects and stale sandboxes are announced in a banner; nothing is deleted automatically. A wizard (**New sandbox**) walks through template, options (network, resources, workspace) and a summary; risky settings need your explicit confirmation before anything is created. |
 | **Sandbox detail** | tabs for the overview (effective options with deviations from the template highlighted), **Files** (browse the workspace, review the changes since start, flagged files that can run code on the host, save the diff or a patch, export to a branch), **Logs** (background processes), **Snapshots**, **Activity** (the audit entries for this sandbox) and an interactive **Terminal**.                                                                                                                                                                                        |
-| **Templates**      | list of builtin (read-only), user and project templates with a form editor and a YAML editor, live validation with line numbers, duplicate, export as YAML, and **Build** (with a note that builds have network access).                                                                                                                                                                                                                                                                                                                                                        |
+| **Templates**      | list of builtin (read-only), user and project templates with a form editor and a YAML editor, live validation with line numbers, duplicate, export as YAML, **Build** (with a note that builds have network access) and, for a project template, **Review …** (what it adds and its risks, see below).                                                                                                                                                                                                                                                                          |
 | **Hosts**          | host profiles: add, edit, remove, test, confirm the host key by fingerprint, import from `~/.ssh/config`, saved port forwards, and an SSH terminal. See [hosts and SSH](hosts-ssh.md). There are no fields for passwords or keys.                                                                                                                                                                                                                                                                                                                                               |
 | **Approvals**      | the queue of requests from agents, see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **Audit**          | the audit log with filters (time, actor, sandbox, action, decision), verification of the hash chain and export as JSON Lines.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -46,11 +46,19 @@ icon and as a desktop notification (where the desktop supports a tray and notifi
 them the count in the window remains). A request shows:
 
 - who asks (the agent context), what kind of request it is (create, run command, extend access,
-  trust a template) and when it expires;
+  trust a template, a base image from a registry the profile does not list) and when it expires. A
+  kind this version of the app does not know is shown with a generic label and a warning, never as
+  a raw key, together with the exact request;
 - the **exact options compared to the default**, with the differences first;
 - abox's own risk notes (isolation `none`, a mount outside the workspace, an open network, extra
   destinations, private addresses, a secret, an untrusted template);
-- the agent's reason, labelled as unverified text.
+- the agent's reason, labelled as unverified text;
+- for a **template** request, the **base image** of the template, the registry it comes from, the
+  registries the profile allows (`images.registries`) and a warning when the image lies outside
+  them or a Dockerfile base cannot be checked. An image outside the allowlist is a decision for
+  you, like a network destination beyond the allowlist; the publisher of the image controls
+  everything that runs in the sandbox;
+- for a **trust template** request, the **template review** (see below).
 
 You can **Allow once** or **Deny**. Allowing is bound to exactly this request. "Allow permanently"
 does not create a rule: it leads to the policy editor, where you change the profile and review
@@ -61,6 +69,30 @@ a button inside it has focus (the button handles its own Enter), so a stray key 
 approve. The navigation is a list of buttons, views move focus to the content area on change, and
 the app is built for keyboard and screen-reader use (it has an automated accessibility check with
 axe in its tests).
+
+### Template review
+
+A project template is foreign input: it can run setup commands as root and ask for mounts,
+network and secrets. Before you trust one, the approval shows the review the CLI prints with
+`abox approvals show` (the manager's `reviewTemplate`):
+
+- where the template comes from and what it is compared with: the version you trusted last, else
+  the template it `extends`, else nothing (then the whole template is shown);
+- the **risky points** in plain words (setup commands, open network, mounts, secrets, no
+  isolation), computed by abox;
+- the resolved template as a **diff** in a monospaced, scrollable box: added lines with `+`, removed
+  lines with `-` (the colour is only a hint, the characters carry the meaning). Control and
+  direction-changing characters in the file are shown as visible escapes, so a file cannot hide or
+  reorder lines.
+
+If the file **changed after the request was made**, a warning says so: an approval covers the old
+content (its hash), so deny the request and review the new file. If the review cannot be loaded (the
+file is gone), a notice says so and the decision stays available.
+
+The same review appears in two more places: in the **New sandbox** confirmation when the template
+is an untrusted project template (it is shown before anything is created, together with the base
+image when that lies outside the allowed registries), and as **Review …** in the Templates view for
+a project template. Looking at a review never trusts anything.
 
 ## The terminal
 

@@ -47,3 +47,24 @@ export function formatTimestamp(ts: number): string {
   const p = (n: number, w = 2) => String(n).padStart(w, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+
+// Control characters, bidi overrides and zero-width characters.
+const CONTROL_RE = new RegExp(
+  // eslint-disable-next-line no-control-regex
+  '[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069]',
+  'g',
+);
+
+/**
+ * Makes text from a project file or an agent safe to read: control characters, bidi overrides and
+ * zero-width characters become visible escapes (a template could otherwise hide or reorder lines
+ * in the review). Newlines and tabs stay. Same rules as `safe` of the CLI.
+ */
+export function safeText(text: string): string {
+  return text.replace(CONTROL_RE, (c) => {
+    const code = c.codePointAt(0) ?? 0;
+    return code < 0x100
+      ? `\\x${code.toString(16).padStart(2, '0')}`
+      : `\\u${code.toString(16).padStart(4, '0')}`;
+  });
+}

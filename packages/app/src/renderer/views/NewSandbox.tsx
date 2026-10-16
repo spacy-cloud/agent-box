@@ -4,7 +4,9 @@ import { call } from '../api';
 import { useApp } from '../context';
 import { useQuery } from '../hooks';
 import { Banner, Dialog, ErrorBox, Field, IsolationBadge, Loading, Badge } from '../components/ui';
+import { ImageUseBlock, TemplateReviewPanel } from '../components/review';
 import { NETWORK_MODES, WORKSPACE_MODES } from '../../shared/constants';
+import { describeBase } from '../../shared/image-ref';
 import type { IpcInput } from '../../shared/ipc';
 import type { ApprovalItem } from '@abox/core';
 
@@ -97,6 +99,26 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
     { name: form.template },
     { enabled: form.template !== '' && step !== 'template', live: false },
   );
+
+  // A project template is foreign input: the confirmation shows what it does before the human trusts it.
+  const needsReview = step === 'confirm' && Boolean(confirmation?.items.some(isTemplateTrust));
+  const workspacePath =
+    form.workspacePath.trim() && form.workspaceMode !== 'empty' ? form.workspacePath.trim() : '';
+  const review = useQuery(
+    'templates:review',
+    { name: form.template, ...(workspacePath ? { workspacePath } : {}) },
+    { enabled: needsReview, live: false },
+  );
+  const baseImage =
+    step === 'confirm' &&
+    confirmation?.items.some((it) => it.kind === 'image_registry') &&
+    details.data
+      ? describeBase(
+          details.data.template.base,
+          details.data.template.backend,
+          profile ? profile.images.registries : null,
+        )
+      : undefined;
 
   useEffect(() => {
     return window.abox.on('evt:progress', (ev) => {
@@ -509,6 +531,26 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
                 ))
               : null}
           </ul>
+          {baseImage ? (
+            <>
+              <h3>{t('approvals.image.title')}</h3>
+              <ImageUseBlock use={baseImage} />
+            </>
+          ) : null}
+          {needsReview ? (
+            <>
+              <h3>{t('new.review.title')}</h3>
+              {review.loading && !review.data ? <Loading /> : null}
+              {review.error ? (
+                <Banner tone="warn">
+                  <span className="plain">
+                    {t('new.review.unavailable', { message: review.error.message })}
+                  </span>
+                </Banner>
+              ) : null}
+              {review.data ? <TemplateReviewPanel review={review.data} /> : null}
+            </>
+          ) : null}
         </>
       ) : null}
 
@@ -516,6 +558,8 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
     </Dialog>
   );
 }
+
+const isTemplateTrust = (it: ApprovalItem): boolean => it.kind === 'template_trust';
 
 function validOptions(f: Form): boolean {
   if (f.name.trim() && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(f.name.trim())) return false;

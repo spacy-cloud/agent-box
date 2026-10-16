@@ -19,12 +19,12 @@ export interface TestHome {
 }
 
 /** Policy for the agent context `sim`: may use host-shell (isolation none) so every create needs an approval. */
-export function simPolicy(project: string): string {
+export function simPolicy(project: string, templates: string[] = ['host-shell']): string {
   return `version: 1
 profiles:
   agent:
     approval: medium
-    templates: [host-shell]
+    templates: [${templates.join(', ')}]
     limits: { sandboxes: 5, cpus: 4, memory: 8g, ttl: 4h }
     workspace: { roots: ['${project}'], modes: [copy, empty] }
     network: { modes: [none, allowlist, open], allow_presets: [npm], allow: [] }
@@ -38,6 +38,8 @@ contexts:
 }
 
 export interface HomeOptions {
+  /** Templates the agent context `sim` may use (default: `host-shell` only). */
+  templates?: string[];
   /** Use the real docker engine of the machine (tests guarded by `ABOX_TEST_DOCKER=1`). */
   docker?: boolean;
 }
@@ -52,7 +54,9 @@ export function makeHome(opts: HomeOptions = {}): TestHome {
   mkdirSync(join(home, 'config'), { recursive: true, mode: 0o700 });
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, 'README.md'), '# demo project\n');
-  writeFileSync(join(home, 'config', 'policy.yaml'), simPolicy(project), { mode: 0o600 });
+  writeFileSync(join(home, 'config', 'policy.yaml'), simPolicy(project, opts.templates), {
+    mode: 0o600,
+  });
   const env = {
     ...process.env,
     ABOX_HOME: home,
@@ -93,6 +97,17 @@ export async function launchGui(
 /** The "agent simulator": a second manager in the test process with an agent context (like an MCP server would be). */
 export async function openAgent(h: TestHome, contextId = 'sim'): Promise<AboxRuntime> {
   return openAbox({ contextId, env: h.env, hosts: false, reconcileOnOpen: false });
+}
+
+/** A project template (`<project>/.sandbox/<name>.yaml`) that extends host-shell: foreign input until a human trusts it. */
+export function writeProjectTemplate(project: string, name: string, extra = ''): string {
+  mkdirSync(join(project, '.sandbox'), { recursive: true });
+  const file = join(project, '.sandbox', `${name}.yaml`);
+  writeFileSync(
+    file,
+    `apiVersion: 1\nname: ${name}\ndescription: Project shell for the GUI e2e review test.\nextends: host-shell\nbackend: process\nisolation: none\nresources:\n  memory: 1g\n${extra}`,
+  );
+  return file;
 }
 
 export const SHELL_REQ = (project: string, name = 'agent-box') => ({

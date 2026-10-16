@@ -68,6 +68,15 @@ release. Nothing has been released yet.
 
 ### Changed
 
+- **GUI:** approvals for a base image outside the profile's `images.registries`
+  (`image_registry`) show the image, its registry and the allowed registries, with a warning when
+  it is outside the list. Request kinds the app does not know are shown with a generic label and
+  the exact request instead of a raw key.
+- **GUI:** trusting a project template shows the template review before you decide: risk notes and
+  the resolved template as a diff against the last trusted version or the template it extends, and
+  a warning when the file changed after the request. The same review appears in the New sandbox
+  confirmation for untrusted project templates and as "Review ..." in the Templates view. Control
+  and direction-changing characters in reviewed files are shown as visible escapes.
 - **Safer default policy:** without a `policy.yaml`, agents may only work on projects below
   `~/projects`, `~/Projekte`, `~/src`, `~/code`, `~/dev`, `~/work`, `~/git` and `~/repos` (before:
   anything below the home directory, including `~/Documents`). For agents, paths inside hidden

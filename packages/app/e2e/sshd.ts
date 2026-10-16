@@ -30,7 +30,7 @@ export interface ThrowawaySshd {
 export function startSshd(dir: string): ThrowawaySshd {
   const have = spawnSync('docker', ['image', 'inspect', IMAGE], { stdio: 'ignore' }).status === 0;
   if (!have) {
-    execFileSync('docker', ['build', '-t', IMAGE, '-'], {
+    execFileSync('docker', ['build', '--force-rm', '-t', IMAGE, '-'], {
       input: DOCKERFILE,
       stdio: ['pipe', 'ignore', 'inherit'],
     });

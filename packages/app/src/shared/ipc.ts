@@ -207,6 +207,11 @@ export const IPC = {
   'sandboxes:create': createRequestSchema,
   'templates:list': none,
   'templates:show': z.object({ name: shortText }).strict(),
+  /**
+   * Review material for a project template (what it adds, its risks). `workspacePath`: the workspace of a
+   * sandbox being created, where a project template may live; the main process checks it like the manager.
+   */
+  'templates:review': z.object({ name: shortText, workspacePath: absPath.optional() }).strict(),
 
   'files:list': z.object({ id, path: z.string().max(4096).optional() }).strict(),
   /** The host side is chosen in a native dialog by the human, never passed by the renderer. */
@@ -253,6 +258,10 @@ export const IPC = {
     .optional(),
   'approvals:approve': z.object({ id, note: z.string().max(500).optional() }).strict(),
   'approvals:deny': z.object({ id, note: z.string().max(500).optional() }).strict(),
+  /** Review of the template a `template_trust` approval is about; the main process reads the approval, the renderer names no path. */
+  'approvals:templateReview': z.object({ id }).strict(),
+  /** Base image and registry of the template an approval is about (null when it cannot be determined). */
+  'approvals:image': z.object({ id }).strict(),
 
   'audit:query': auditFilter.optional(),
   'audit:exportSave': auditFilter.optional(),

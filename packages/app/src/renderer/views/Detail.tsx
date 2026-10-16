@@ -4,6 +4,7 @@ import { call } from '../api';
 import { useApp } from '../context';
 import { useNow, useQuery } from '../hooks';
 import { TerminalPane } from '../components/Terminal';
+import { UnifiedDiff } from '../components/review';
 import {
   Badge,
   Banner,
@@ -619,7 +620,9 @@ function FilesTab(props: { id: string }) {
               </table>
             </div>
           ) : null}
-          {exp.content ? <DiffText text={exp.content} /> : null}
+          {exp.content ? (
+            <UnifiedDiff text={exp.content} label={t('detail.files.diffLabel')} />
+          ) : null}
           <h3 className="h-small">{t('detail.files.branchTitle')}</h3>
           <div className="with-button">
             <Field label={t('detail.files.branchName')}>
@@ -653,35 +656,6 @@ function FilesTab(props: { id: string }) {
         </ConfirmDialog>
       ) : null}
     </>
-  );
-}
-
-/** Diff text rendered line by line as plain text; +/- are shown as characters, colour is only a hint. */
-function DiffText(props: { text: string }) {
-  const { t } = useApp();
-  const lines = useMemo(() => props.text.split('\n'), [props.text]);
-  return (
-    <pre className="diff plain" tabIndex={0} aria-label={t('detail.files.diffLabel')}>
-      {lines.map((l, i) => (
-        <span
-          key={i}
-          className={
-            l.startsWith('+++') || l.startsWith('---') || l.startsWith('diff ')
-              ? 'diff-head'
-              : l.startsWith('+')
-                ? 'diff-add'
-                : l.startsWith('-')
-                  ? 'diff-del'
-                  : l.startsWith('@@')
-                    ? 'diff-hunk'
-                    : ''
-          }
-        >
-          {l}
-          {'\n'}
-        </span>
-      ))}
-    </pre>
   );
 }
 

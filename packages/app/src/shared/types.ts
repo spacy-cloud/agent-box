@@ -27,6 +27,7 @@ import type {
   SnapshotView,
   TemplateDetails,
   TemplateList,
+  TemplateReview,
   TemplateValidation,
   BuildResult,
   HostProfile,
@@ -58,6 +59,7 @@ export type {
   SnapshotView,
   TemplateDetails,
   TemplateList,
+  TemplateReview,
   TemplateValidation,
   BuildResult,
   HostProfile,
@@ -109,6 +111,23 @@ export interface TokenCreated {
 export interface SaveResult {
   saved: string | null;
   count?: number;
+}
+
+/**
+ * The base of a template as shown to an approver: the image, the registry it comes from and whether the
+ * profile's image allowlist (`images.registries`) covers it. Explains the policy decision, never makes one.
+ */
+export interface ImageUse {
+  /** Image reference, or the Dockerfile path for `base.dockerfile`. */
+  ref: string;
+  source: 'image' | 'dockerfile';
+  /** Registry host (`docker.io` for Docker Hub names); null for a Dockerfile or a malformed name. */
+  registry: string | null;
+  repository: string | null;
+  /** `images.registries` of the profile; null when the profile is unknown. */
+  registries: string[] | null;
+  /** Not covered by the allowlist (a Dockerfile base cannot be checked and counts as outside); null when unknown. */
+  outside: boolean | null;
 }
 
 // -- terminals ------------------------------------------------------------------------------------------------
@@ -269,6 +288,7 @@ export interface Outputs {
   'sandboxes:create': CreateResult;
   'templates:list': TemplateList;
   'templates:show': TemplateDetails;
+  'templates:review': TemplateReview;
   'files:list': DirEntry[];
   'files:copyIn': { copied: string | null };
   'files:copyOut': { copied: string | null };
@@ -283,6 +303,8 @@ export interface Outputs {
   'approvals:list': ApprovalView[];
   'approvals:approve': ApprovalDecision;
   'approvals:deny': ApprovalDecision;
+  'approvals:templateReview': TemplateReview;
+  'approvals:image': ImageUse | null;
   'audit:query': AuditEntry[];
   'audit:exportSave': SaveResult;
   'audit:verify': ChainVerification;

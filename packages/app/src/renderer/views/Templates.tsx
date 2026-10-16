@@ -14,6 +14,7 @@ import {
   Loading,
 } from '../components/ui';
 import { YamlEditor } from '../components/CodeEditor';
+import { TemplateReviewPanel } from '../components/review';
 import { ListInput, SyncedInput, SyncedTextarea } from '../components/inputs';
 import { osFamilyOf, FAMILY_PACKAGE_MANAGER } from '../../shared/base-images';
 import {
@@ -70,6 +71,7 @@ export function TemplatesView() {
   const [discard, setDiscard] = useState<Pending>(null);
   const [building, setBuilding] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
 
   const entries = list.data?.templates ?? [];
   const dirty = opened && yaml !== saved;
@@ -308,6 +310,11 @@ export function TemplatesView() {
                   <button type="button" disabled={!form.valid} onClick={duplicate}>
                     {t('tpl.duplicate')}
                   </button>
+                  {origin?.kind === 'project' ? (
+                    <button type="button" onClick={() => setReviewing(true)}>
+                      {t('tpl.review')}
+                    </button>
+                  ) : null}
                   <button type="button" onClick={() => void exportYaml()}>
                     {t('tpl.export')}
                   </button>
@@ -379,6 +386,9 @@ export function TemplatesView() {
       ) : null}
       {testing && origin ? (
         <TestDialog name={origin.name} onClose={() => setTesting(false)} />
+      ) : null}
+      {reviewing && origin ? (
+        <ReviewDialog name={origin.name} onClose={() => setReviewing(false)} />
       ) : null}
     </section>
   );
@@ -1219,6 +1229,29 @@ function useProgress(key: string): {
     ref.current?.scrollTo({ top: ref.current.scrollHeight });
   }, [lines]);
   return { lines, reset: () => setLines([]), ref };
+}
+
+/** What a project template does, shown the way the approver sees it (risks and the resolved template as a diff). */
+export function ReviewDialog(props: { name: string; onClose(): void }) {
+  const { t } = useApp();
+  const q = useQuery('templates:review', { name: props.name }, { live: false });
+  return (
+    <Dialog
+      title={t('tpl.review.title', { name: props.name })}
+      onClose={props.onClose}
+      wide
+      footer={
+        <button type="button" onClick={props.onClose} autoFocus>
+          {t('common.close')}
+        </button>
+      }
+    >
+      <p className="muted">{t('tpl.review.hint')}</p>
+      {q.loading && !q.data ? <Loading /> : null}
+      {q.error ? <ErrorBox error={q.error} /> : null}
+      {q.data ? <TemplateReviewPanel review={q.data} /> : null}
+    </Dialog>
+  );
 }
 
 function BuildDialog(props: { name: string; onClose(): void }) {

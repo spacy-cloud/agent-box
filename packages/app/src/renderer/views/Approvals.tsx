@@ -13,9 +13,17 @@ import {
   Loading,
   OwnerBadge,
 } from '../components/ui';
-import { approvalRows, requestTemplateName, riskHints } from '../../shared/approval-diff';
+import { ImageUseBlock, TemplateReviewPanel } from '../components/review';
+import {
+  approvalRows,
+  kindHintKey,
+  kindLabelKey,
+  requestTemplateName,
+  riskHints,
+} from '../../shared/approval-diff';
 import type { ApprovalRow } from '../../shared/approval-diff';
-import { formatDuration, formatTimestamp, remainingMs } from '../../shared/format';
+import { formatDuration, formatTimestamp, remainingMs, safeText } from '../../shared/format';
+import type { TFn } from '../i18n';
 
 export function ApprovalsView() {
   const { t, route, navigate, notify } = useApp();
@@ -152,6 +160,18 @@ export function ApprovalDialog(props: {
   const [error, setError] = useState<unknown>();
   const [showSame, setShowSame] = useState(false);
   const isPending = a.status === 'pending';
+  // What the approver needs to judge a template: the review (the file may be foreign) and the base image.
+  const review = useQuery(
+    'approvals:templateReview',
+    { id: a.id },
+    { enabled: isPending && a.kind === 'template_trust', live: false },
+  );
+  const image = useQuery(
+    'approvals:image',
+    { id: a.id },
+    { enabled: isPending && IMAGE_KINDS.includes(a.kind), live: false },
+  );
+  const hintKey = kindHintKey(a.kind);
 
   const rows = useMemo(() => approvalRows(a.request), [a.request]);
   const hints = useMemo(() => riskHints(a.kind, a.request), [a.kind, a.request]);
@@ -217,6 +237,8 @@ export function ApprovalDialog(props: {
         </Banner>
       ) : null}
 
+      {hintKey === 'approvals.kind.unknown.hint' ? <Banner tone="warn">{t(hintKey)}</Banner> : null}
+
       <AgentText text={a.reason} label={t('approvals.agentReason')} />
 
       <h3>{t('approvals.risks')}</h3>
@@ -244,6 +266,32 @@ export function ApprovalDialog(props: {
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {image.data ? (
+        <>
+          <h3>{t('approvals.image.title')}</h3>
+          <ImageUseBlock use={image.data} />
+        </>
+      ) : null}
+
+      {isPending && a.kind === 'template_trust' ? (
+        <>
+          <h3>{t('approvals.review.title')}</h3>
+          {review.loading && !review.data ? (
+            <p className="muted" role="status">
+              {t('approvals.review.loading')}
+            </p>
+          ) : null}
+          {review.error ? (
+            <Banner tone="warn">
+              <span className="plain">
+                {t('approvals.review.unavailable', { message: review.error.message })}
+              </span>
+            </Banner>
+          ) : null}
+          {review.data ? <TemplateReviewPanel review={review.data} /> : null}
+        </>
       ) : null}
 
       <h3>{t('approvals.options')}</h3>
@@ -307,8 +355,8 @@ export function ApprovalDialog(props: {
         </button>
       ) : null}
 
-      {a.kind === 'template_trust' ? (
-        <p className="muted">{t('approvals.kind.template_trust.hint')}</p>
+      {hintKey && hintKey !== 'approvals.kind.unknown.hint' ? (
+        <p className="muted">{t(hintKey)}</p>
       ) : null}
       {error ? <ErrorBox error={error} /> : null}
 
@@ -342,9 +390,14 @@ export function ApprovalDialog(props: {
   );
 }
 
-function kindLabel(t: (k: string) => string, kind: string): string {
-  const label = t(`approvals.kind.${kind}`);
-  return label.startsWith('approvals.kind.') ? kind : label;
+/** Kinds that name a template, whose base image is shown. */
+const IMAGE_KINDS = ['create', 'template_trust', 'image_registry'];
+
+/** Label of a request kind; a kind this app does not know gets a generic label instead of a raw key. */
+function kindLabel(t: TFn, kind: string): string {
+  return kindLabelKey(kind) === 'approvals.kind.unknown'
+    ? t('approvals.kind.unknown', { kind: safeText(kind) })
+    : t(kindLabelKey(kind));
 }
 
 function DiffRow(props: { row: ApprovalRow }) {

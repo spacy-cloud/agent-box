@@ -24,6 +24,37 @@ export type RiskHint =
   | 'private_address'
   | 'network_destinations';
 
+/**
+ * Request kinds the app has a label for: the kinds of the approval queue (`create`, `exec`, `access`,
+ * `template_trust`) and `image_registry`, the policy item for a base image outside the profile's
+ * registries. Anything else (a kind of a newer core) is shown generically, never as a raw key.
+ */
+export const KNOWN_APPROVAL_KINDS = [
+  'create',
+  'exec',
+  'access',
+  'template_trust',
+  'image_registry',
+] as const;
+
+/** Kinds with an explanation under the options table. */
+const KINDS_WITH_HINT: readonly string[] = ['template_trust', 'image_registry'];
+
+/** i18n key for the label of a request kind (`approvals.kind.unknown` for a kind this version does not know). */
+export function kindLabelKey(kind: string): string {
+  return (KNOWN_APPROVAL_KINDS as readonly string[]).includes(kind)
+    ? `approvals.kind.${kind}`
+    : 'approvals.kind.unknown';
+}
+
+/** i18n key for the explanation of a request kind, or null when the kind has none. */
+export function kindHintKey(kind: string): string | null {
+  if (KINDS_WITH_HINT.includes(kind)) return `approvals.kind.${kind}.hint`;
+  return (KNOWN_APPROVAL_KINDS as readonly string[]).includes(kind)
+    ? null
+    : 'approvals.kind.unknown.hint';
+}
+
 const HIDDEN = new Set([
   'v',
   'kind',

@@ -4,6 +4,7 @@ import { AboxError } from '@abox/core';
 import { isAllowedUrl, originOf, resolveAppFile, senderAllowed } from '../../src/main/guard';
 import { toIpcError } from '../../src/main/errors';
 import { createManagerHandlers } from '../../src/main/service';
+import { templateTarget } from '../../src/main/approval-context';
 import { Monitor } from '../../src/main/monitor';
 import { resolveLocale } from '../../src/main/settings';
 import { ZodError, z } from 'zod';
@@ -210,6 +211,148 @@ describe('manager handlers are thin: always the human caller, confirmation only 
     const doc = await h['policy:get'](undefined, {});
     expect(doc.source).toBe('default');
     expect(doc.text).toContain('version: 1');
+  });
+});
+
+describe('review handlers read the approval, the renderer names no path', () => {
+  const HASH = 'f'.repeat(64);
+  const request = (over: Record<string, unknown> = {}) => ({
+    kind: 'create',
+    profile: 'agent',
+    template: {
+      name: 'proj-tpl',
+      hash: 'h',
+      contentHash: HASH,
+      source: { kind: 'project', path: '/work/proj/.sandbox/proj-tpl.yaml' },
+    },
+    ...over,
+  });
+  const approvalOf = (kind: string, req: unknown) => ({ id: 'a1', kind, request: req });
+  const review = { template: 'proj-tpl', diff: '', risks: [], trusted: false };
+  const paths = { policyFile: '/nonexistent/policy.yaml' } as never;
+
+  function build(over: Record<string, unknown> = {}) {
+    const calls: Array<{ fn: string; args: unknown[] }> = [];
+    const abox = {
+      getApproval: (...a: unknown[]) => {
+        calls.push({ fn: 'getApproval', args: a });
+        return Promise.resolve(over['approval']);
+      },
+      reviewTemplate: (...a: unknown[]) => {
+        calls.push({ fn: 'reviewTemplate', args: a });
+        return Promise.resolve(review);
+      },
+      showTemplate: (...a: unknown[]) => {
+        calls.push({ fn: 'showTemplate', args: a });
+        if (over['showError']) return Promise.reject(new Error('not found'));
+        return Promise.resolve({
+          template: {
+            contentHash: over['contentHash'] ?? HASH,
+            backend: over['backend'] ?? 'docker',
+            base: over['base'] ?? { os: 'ghcr.io/other/tools:1' },
+          },
+        });
+      },
+      showPolicy: () =>
+        Promise.resolve({
+          profiles: { agent: { images: { registries: ['docker.io/library'] } } },
+        }),
+      reviewTemplateCalls: calls,
+    };
+    return { handlers: createManagerHandlers({ abox: abox as unknown as Abox, paths }), calls };
+  }
+
+  it('templates:review asks the manager as the human, with the workspace if there is one', async () => {
+    const { handlers, calls } = build();
+    await handlers['templates:review']({ name: 'proj-tpl' }, {});
+    await handlers['templates:review']({ name: 'proj-tpl', workspacePath: '/w' }, {});
+    expect(calls[0]!.args).toEqual([{ contextId: 'human' }, 'proj-tpl', {}]);
+    expect(calls[1]!.args).toEqual([{ contextId: 'human' }, 'proj-tpl', { workspacePath: '/w' }]);
+  });
+
+  it('approvals:templateReview derives template, project directory and expected hash from the stored request', async () => {
+    const { handlers, calls } = build({ approval: approvalOf('template_trust', request()) });
+    await expect(handlers['approvals:templateReview']({ id: 'a1' }, {})).resolves.toBe(review);
+    expect(calls.find((c) => c.fn === 'reviewTemplate')!.args).toEqual([
+      { contextId: 'human' },
+      'proj-tpl',
+      { projectDir: '/work/proj', expectedContentHash: HASH },
+    ]);
+  });
+
+  it('approvals:templateReview refuses approvals that are not about trusting a template', async () => {
+    for (const a of [
+      approvalOf('create', request()),
+      approvalOf('exec', { command: 'ls' }),
+      approvalOf('template_trust', 'garbage'),
+    ]) {
+      const { handlers, calls } = build({ approval: a });
+      await expect(handlers['approvals:templateReview']({ id: 'a1' }, {})).rejects.toMatchObject({
+        code: 'invalid_input',
+      });
+      expect(calls.some((c) => c.fn === 'reviewTemplate')).toBe(false);
+    }
+  });
+
+  it('approvals:image describes the base of the requested template against the profile registries', async () => {
+    const { handlers } = build({ approval: approvalOf('create', request()) });
+    await expect(handlers['approvals:image']({ id: 'a1' }, {})).resolves.toEqual({
+      ref: 'ghcr.io/other/tools:1',
+      source: 'image',
+      registry: 'ghcr.io',
+      repository: 'other/tools',
+      registries: ['docker.io/library'],
+      outside: true,
+    });
+  });
+
+  it('approvals:image shows nothing when it cannot be sure: other request, changed file, vm backend, missing template', async () => {
+    const none = async (over: Record<string, unknown>) =>
+      build(over).handlers['approvals:image']({ id: 'a1' }, {});
+    await expect(none({ approval: approvalOf('exec', { command: 'ls' }) })).resolves.toBeNull();
+    await expect(
+      none({ approval: approvalOf('create', request()), contentHash: 'e'.repeat(64) }),
+    ).resolves.toBeNull();
+    await expect(
+      none({ approval: approvalOf('create', request()), backend: 'vm', base: { os: 'debian-12' } }),
+    ).resolves.toBeNull();
+    await expect(
+      none({ approval: approvalOf('create', request()), showError: true }),
+    ).resolves.toBeNull();
+  });
+
+  it('approvals:image keeps the registry but not the verdict when the profile is unknown', async () => {
+    const { handlers } = build({ approval: approvalOf('create', request({ profile: 'gone' })) });
+    await expect(handlers['approvals:image']({ id: 'a1' }, {})).resolves.toMatchObject({
+      registry: 'ghcr.io',
+      registries: null,
+      outside: null,
+    });
+  });
+
+  it('templateTarget reads only well-formed requests', () => {
+    expect(templateTarget(request())).toEqual({
+      name: 'proj-tpl',
+      contentHash: HASH,
+      projectDir: '/work/proj',
+      profile: 'agent',
+    });
+    // a template outside a .sandbox directory has no project directory
+    expect(
+      templateTarget({
+        template: { name: 'x', source: { kind: 'user', path: '/home/u/t/x.yaml' } },
+      }),
+    ).toEqual({ name: 'x' });
+    for (const bad of [
+      null,
+      'x',
+      [],
+      {},
+      { template: 'x' },
+      { template: { name: '' } },
+      { template: { name: 5 } },
+    ])
+      expect(templateTarget(bad), JSON.stringify(bad)).toBeUndefined();
   });
 });
 
