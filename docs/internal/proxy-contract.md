@@ -10,9 +10,10 @@ changing both sides.
   It is shipped as plain JavaScript (no build step) so container backends can copy it
   into an image directly. `@abox/proxy` exports `proxyRuntimeDir` (absolute path of
   `packages/proxy/runtime/`) and `proxyImageDockerfile` (string) plus the config types.
-- Image: built by the backend from `proxyImageDockerfile` with `proxy.mjs` in the build
+- Image: built by the backend from `proxyImageDockerfile` with `proxy.mjs`, `lib.mjs` and
+  `Dockerfile` (all three live in `proxyRuntimeDir`; list: `proxyImageFiles`) in the build
   context. Base `node:24-alpine` plus `openssl` (used only for MITM certificates).
-  Tag: `abox/proxy:<sha256 of proxy.mjs + Dockerfile, first 12 hex>`.
+  Tag: `proxyImageTag()` = `abox/proxy:<sha256 of proxy.mjs + lib.mjs + Dockerfile, first 12 hex>`.
 - Runs as non-root user, `--cap-drop ALL`, `no-new-privileges`, read-only root fs,
   tmpfs at `/run/abox-proxy`, memory 128 MiB, pids 64.
 
@@ -84,3 +85,45 @@ Backends parse these into `NetworkEvent` (`SandboxProvider.networkEvents`).
   internal one. Sandbox only on the internal network.
 - Sandbox env: `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy` =
   `http://abox-proxy:3128`; `NO_PROXY`/`no_proxy` = `localhost,127.0.0.1`.
+
+## Changelog
+
+Implementation notes and deviations (`packages/proxy`, first implementation):
+
+- **`lib.mjs` added.** Pure policy code (allowlist, CIDR/blocked addresses, config
+  validation) lives in `runtime/lib.mjs`, shared by `proxy.mjs` and `@abox/proxy`
+  (`src/index.ts`). The image therefore copies `proxy.mjs` **and** `lib.mjs`
+  (`COPY proxy.mjs lib.mjs /opt/abox-proxy/`); the tag hash covers both plus the Dockerfile.
+- **Config mounts: `docker cp` into a `--read-only` container is refused by Docker**
+  ("container rootfs is marked read-only"). Working recipe (verified in
+  `src/docker.test.ts`): `--read-only --tmpfs /run/abox-proxy:uid=10001,mode=0700 -v /etc/abox-proxy`
+  (anonymous volume; remove with `docker rm -v`), create, `docker cp config.json
+  <c>:/etc/abox-proxy/config.json`, start. The tar entry should be owned by uid 10001 with
+  mode 0600 (the file contains secrets); a 0644 file owned by another uid still works but is
+  world-readable inside the container. The image pre-creates both directories owned by 10001.
+- **Reading `ca.crt`:** `docker cp` cannot read tmpfs mounts. Fetch the CA with exec:
+  `docker exec <proxy> cat /run/abox-proxy/ca.crt` (or exec API equivalent).
+- `ready` event additionally carries the bound port: `{"event":"ready","port":3128}`.
+- **Port semantics:** an `allow` entry without port allows 80 and 443 only; an entry
+  `host:port` allows exactly that port (not additionally 80/443).
+- **Injection hosts must also be allowlisted.** `injections` does not widen `allow`: a
+  CONNECT to an injection host that `allow` does not cover is denied (a `warn` event is
+  logged at startup). Injection hosts must be plain DNS names (no wildcard/port/IP). Header
+  names that frame/route the message (`Host`, `Content-Length`, `Transfer-Encoding`,
+  `Connection`, ...) are rejected; values must be printable ASCII.
+- Plain `http://` requests to an injection host are denied (`plain http to injection host`).
+- For injection hosts the proxy pins the `Host` header to the CONNECT target and logs one
+  extra line per decrypted request (`"mitm":true,"injected":true`, no path/headers).
+- The per-instance CA is name-constrained (critical) to the injection hosts. All leaf
+  certificates are generated at startup and the CA key is deleted from disk afterwards; only
+  `ca.crt` stays in `/run/abox-proxy`.
+- Extra blocked ranges beyond the contract list: whole `::/96` (IPv4-compatible),
+  `fec0::/10`, `64:ff9b:1::/48`, Teredo `2001::/32`; SIIT `::ffff:0:0:0/96` and 6to4
+  `2002::/16` are checked via their embedded IPv4. Unparseable addresses are blocked.
+- Extra optional config keys: `stateDir` (default `/run/abox-proxy`), `maxConnections`
+  (256), `connectTimeoutMs` (10000), `idleTimeoutMs` (120000), and test-only
+  `upstreamCaFile` and `dnsOverrides`. Unknown keys are rejected.
+- Invalid config: one JSON line `{"event":"error","message":"invalid config","errors":[...]}`
+  on stdout (never containing values) and exit code 2.
+- `@abox/proxy` extra exports: `proxyImageFiles`, `ProxyConfigInput`, `normalizeHost`,
+  `parseAuthority`, `parseCidr`, `blockedReason`, `compileAllowlist`, ...
