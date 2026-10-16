@@ -1,0 +1,83 @@
+{
+  "manifestVersion": 1,
+  "id": "agent-sandboxes",
+  "publisher": "spacy-cloud",
+  "name": "Agent Sandboxes",
+  "version": "0.1.0",
+  "description": "Sandboxes for coding agents from abox: create one per worktree, see state and lifetime, open a shell, export the diff, spot pending approvals. Thin front end for the abox CLI.",
+  "author": { "name": "spacy-cloud", "url": "https://github.com/spacy-cloud" },
+  "repository": "https://github.com/spacy-cloud/agent-box",
+  "engines": { "orca": ">=1.4.224" },
+  "pluginApi": 1,
+  "main": "worker.mjs",
+  "contributes": {
+    "panels": [
+      {
+        "id": "sandboxes",
+        "title": "Sandboxes",
+        "icon": "box",
+        "entry": "panel/index.html"
+      }
+    ],
+    "commands": [
+      {
+        "id": "create-sandbox-for-worktree",
+        "title": "Create sandbox for this worktree / Sandbox für diesen Worktree erstellen",
+        "context": "worktree"
+      },
+      {
+        "id": "open-shell",
+        "title": "Open sandbox shell / Shell öffnen",
+        "context": "worktree"
+      },
+      {
+        "id": "export-diff",
+        "title": "Export sandbox diff / Diff exportieren",
+        "context": "worktree"
+      },
+      {
+        "id": "cleanup",
+        "title": "Clean up sandboxes / Aufräumen",
+        "context": "worktree"
+      },
+      {
+        "id": "start-sandbox",
+        "title": "Start sandbox of this worktree / Sandbox des Worktrees starten",
+        "context": "worktree"
+      },
+      {
+        "id": "stop-sandbox",
+        "title": "Stop sandbox of this worktree / Sandbox des Worktrees stoppen",
+        "context": "worktree"
+      },
+      {
+        "id": "list-sandboxes",
+        "title": "Show sandboxes and lifetimes / Sandboxes und Laufzeiten anzeigen",
+        "context": "global"
+      },
+      {
+        "id": "show-approvals",
+        "title": "Show pending sandbox approvals / Offene Sandbox-Freigaben anzeigen",
+        "context": "global"
+      },
+      {
+        "id": "mcp-setup",
+        "title": "Show MCP setup for agents / MCP-Anbindung für Agenten anzeigen",
+        "context": "global"
+      },
+      {
+        "id": "doctor",
+        "title": "Check abox setup / abox-Einrichtung prüfen",
+        "context": "global"
+      }
+    ],
+    "events": [{ "on": "worktree.created" }, { "on": "worktree.removed" }]
+  },
+  "capabilities": [
+    { "kind": "workspace:read" },
+    { "kind": "terminal:send" },
+    { "kind": "notifications:show" },
+    { "kind": "storage" },
+    { "kind": "events:subscribe" }
+  ]
+}

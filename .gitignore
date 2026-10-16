@@ -11,3 +11,5 @@ coverage/
 !.env.example
 /tmp/
 .vitest-cache/
+test-results/
+playwright-report/

@@ -1,0 +1,87 @@
+import { describe, expect, it } from 'vitest';
+import {
+  AUDIT_DECISIONS,
+  ISOLATION_LEVELS,
+  NETWORK_MODES,
+  SANDBOX_STATES,
+  WORKSPACE_MODES,
+} from '@abox/core';
+import * as ui from '../../src/shared/constants';
+import { IPC, IPC_CHANNELS } from '../../src/shared/ipc';
+import { EVENT_CHANNELS, IPC_CHANNEL_NAMES } from '../../src/shared/channels';
+
+describe('IPC contract', () => {
+  it('the dependency-free channel list used by the preload equals the schema table', () => {
+    expect([...IPC_CHANNEL_NAMES].sort()).toEqual(Object.keys(IPC).sort());
+    expect(IPC_CHANNELS.length).toBe(Object.keys(IPC).length);
+    expect(EVENT_CHANNELS).toEqual(['evt:changed', 'evt:progress', 'evt:navigate']);
+  });
+
+  it('constants copied into the renderer-safe module match @abox/core', () => {
+    expect([...ui.SANDBOX_STATES]).toEqual([...SANDBOX_STATES]);
+    expect([...ui.ISOLATION_LEVELS]).toEqual([...ISOLATION_LEVELS]);
+    expect([...ui.NETWORK_MODES]).toEqual([...NETWORK_MODES]);
+    expect([...ui.WORKSPACE_MODES]).toEqual([...WORKSPACE_MODES]);
+    expect([...ui.AUDIT_DECISIONS]).toEqual([...AUDIT_DECISIONS]);
+  });
+
+  it('no channel exposes a shell, path-write or arbitrary eval capability', () => {
+    for (const c of IPC_CHANNELS) expect(c).not.toMatch(/exec|shell|eval|spawn|fs:|write/i);
+  });
+
+  const ok = (c: keyof typeof IPC, v: unknown) => IPC[c].safeParse(v).success;
+
+  it('accepts well-formed input', () => {
+    expect(ok('sandboxes:inspect', { id: 'local/ab12cd34' })).toBe(true);
+    expect(ok('sandboxes:list', undefined)).toBe(true);
+    expect(ok('sandboxes:list', { state: ['running'], owner: 'agent:x' })).toBe(true);
+    expect(ok('sandboxes:extend', { id: 'local/x', ttl: '90m' })).toBe(true);
+    expect(ok('approvals:approve', { id: 'abc' })).toBe(true);
+    expect(ok('export:run', { id: 'local/x', format: 'branch', branchName: 'abox/result' })).toBe(
+      true,
+    );
+    expect(
+      ok('sandboxes:create', {
+        template: 'node-dev',
+        workspace: { mode: 'copy', path: '/home/u/p' },
+        overrides: {
+          cpus: 2,
+          memory: '4g',
+          ttl: '2h',
+          network: { mode: 'allowlist', allow: ['example.org'] },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects wrong types, unknown keys and malformed values (strict objects)', () => {
+    expect(ok('sandboxes:inspect', { id: 5 })).toBe(false);
+    expect(ok('sandboxes:inspect', { id: '' })).toBe(false);
+    expect(ok('sandboxes:inspect', { id: 'x', extra: true })).toBe(false);
+    expect(ok('sandboxes:inspect', undefined)).toBe(false);
+    expect(ok('sandboxes:extend', { id: 'x', ttl: 'forever' })).toBe(false);
+    expect(ok('sandboxes:extend', { id: 'x', ttl: '1h; rm -rf /' })).toBe(false);
+    expect(ok('export:run', { id: 'x', format: 'branch', branchName: 'main' })).toBe(false);
+    expect(ok('export:run', { id: 'x', format: 'files' })).toBe(false);
+    expect(ok('sandboxes:create', { template: 'a', overrides: { cpus: -1 } })).toBe(false);
+    expect(ok('sandboxes:create', { template: 'a', overrides: { memory: '4 gigabytes' } })).toBe(
+      false,
+    );
+    expect(ok('sandboxes:create', { template: 'a', name: '../evil' })).toBe(false);
+    expect(ok('sandboxes:create', { template: 'a', workspace: { mode: 'bind' } })).toBe(false);
+    expect(ok('sandboxes:create', { template: 'a', mounts: [{ source: '/', target: '/x' }] })).toBe(
+      false,
+    );
+    expect(ok('audit:query', { limit: 100000 })).toBe(false);
+    expect(ok('audit:query', { decision: 'maybe' })).toBe(false);
+    expect(ok('app:setLocale', 'fr')).toBe(false);
+    expect(ok('tokens:create', { contextId: 'human bad', label: 'x' })).toBe(false);
+    expect(ok('processes:logs', { processId: 'p1', tail: 0 })).toBe(false);
+    expect(ok('snapshots:create', { id: 'x', name: 'a b' })).toBe(false);
+  });
+
+  it('policy text is bounded', () => {
+    expect(ok('policy:validate', { text: 'x'.repeat(1_000_001) })).toBe(false);
+    expect(ok('policy:validate', { text: 'version: 1' })).toBe(true);
+  });
+});

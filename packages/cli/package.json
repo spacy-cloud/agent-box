@@ -20,12 +20,14 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -b"
+    "build": "tsc -b && chmod +x dist/bin.js"
   },
   "dependencies": {
-    "@abox/core": "workspace:*",
     "@abox/backend-docker": "workspace:*",
     "@abox/backend-process": "workspace:*",
+    "@abox/core": "workspace:*",
+    "@abox/mcp": "workspace:*",
+    "@abox/runtime": "workspace:*",
     "commander": "^15.0.0"
   },
   "bin": {

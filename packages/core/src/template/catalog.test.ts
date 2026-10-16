@@ -41,6 +41,7 @@ describe('builtin templates', () => {
       'node-dev',
       'py-dev',
       'py-offline',
+      'py-uv',
       'rust-dev',
     ]);
   });
