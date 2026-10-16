@@ -1281,8 +1281,16 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       await provider.stop(s.id);
       await new Promise((r) => setTimeout(r, 2000));
       await provider.start(s.id);
-      await new Promise((r) => setTimeout(r, 5000));
-      expect((await inspectRaw(s)).State.Running).toBe(false);
+      // Poll instead of a fixed sleep: slow CI runners need a few seconds of slack,
+      // but the container must still exit close to the ORIGINAL expiry (not a fresh TTL).
+      const deadline = now + 6000 + 5000;
+      let running = true;
+      while (Date.now() < deadline) {
+        running = (await inspectRaw(s)).State.Running;
+        if (!running) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      expect(running).toBe(false);
     }, 30_000);
 
     it('creating with an expiry in the past succeeds; the sandbox is expired and can not start', async () => {
