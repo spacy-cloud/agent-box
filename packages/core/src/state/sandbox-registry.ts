@@ -174,7 +174,7 @@ export class SandboxRegistry {
     }
     const wantsRemoved = filter.includeRemoved ?? states?.includes('removed') ?? false;
     if (!wantsRemoved) where.push(`state <> 'removed'`);
-    const sql = `SELECT * FROM sandboxes ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at, id`;
+    const sql = `SELECT * FROM sandboxes ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at, rowid`;
     return this.ctx.db
       .prepare(sql)
       .all(...args)

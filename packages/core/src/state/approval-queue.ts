@@ -184,7 +184,7 @@ export class ApprovalQueue {
     }
     const limit =
       filter.limit !== undefined ? ` LIMIT ${Math.max(1, Math.trunc(filter.limit))}` : '';
-    const sql = `SELECT * FROM approvals ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at, id${limit}`;
+    const sql = `SELECT * FROM approvals ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at, rowid${limit}`;
     return this.ctx.db
       .prepare(sql)
       .all(...args)

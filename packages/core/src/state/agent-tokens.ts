@@ -100,7 +100,7 @@ export class AgentTokens {
   /** All tokens (including revoked), without hashes or plaintext. */
   list(): AgentTokenInfo[] {
     return this.ctx.db
-      .prepare('SELECT * FROM agent_tokens ORDER BY created_at, id')
+      .prepare('SELECT * FROM agent_tokens ORDER BY created_at, rowid')
       .all()
       .map(toInfo);
   }
