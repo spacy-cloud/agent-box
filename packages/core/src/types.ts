@@ -175,6 +175,8 @@ export interface PreparedImage {
 export interface PrepareOptions {
   /** Ignore the cache and re-resolve the base (e.g. `--update`). */
   update?: boolean;
+  /** Base reference pinned by an earlier build (e.g. `ubuntu@sha256:…`); used unless `update`. */
+  pinnedBase?: string;
   /** Progress callback for build output lines. */
   onProgress?: (line: string) => void;
   signal?: AbortSignal;
