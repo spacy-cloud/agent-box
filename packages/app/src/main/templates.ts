@@ -156,9 +156,7 @@ export function createTemplateHandlers(rt: TemplateRuntime): TemplateHandlers & 
     async 'templates:test'(i, ctx) {
       const started = Date.now();
       const details = await abox.showTemplate(HUMAN, i.name);
-      const caller: Caller = i.confirmed
-        ? { contextId: 'human', humanConfirmed: true }
-        : HUMAN;
+      const caller: Caller = i.confirmed ? { contextId: 'human', humanConfirmed: true } : HUMAN;
       const sandboxName = `tpltest-${randomBytes(3).toString('hex')}`;
       const created = await abox.createSandbox(
         caller,

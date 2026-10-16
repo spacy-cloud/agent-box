@@ -140,6 +140,37 @@ suite('python backend, container mode (docker)', { timeout: 240_000 }, () => {
       expect(denied.exitCode).not.toBe(0);
     });
 
+    it('updateNetwork is delegated to the container provider (allowlist) and refused for none', async ({
+      skip,
+    }) => {
+      if (!provider.capabilities().networkModes.includes('allowlist')) return skip();
+      const net = (allow: string[]) => ({
+        mode: 'allowlist' as const,
+        allow,
+        blockPrivate: true,
+        privateExceptions: [],
+        injections: [],
+      });
+      const al = await sandbox(template, image, { mode: 'allowlist', allow: ['pypi.org'] });
+      const short = al.split('/')[1];
+      const config = async (): Promise<{ allow: string[] }> =>
+        JSON.parse(
+          await docker(['exec', `abox-proxy-${short}`, 'cat', '/etc/abox-proxy/config.json']),
+        ) as { allow: string[] };
+      expect((await config()).allow).toEqual(['pypi.org']);
+      await provider.updateNetwork(al, net(['pypi.org', 'example.org']));
+      expect((await config()).allow).toEqual(['pypi.org', 'example.org']);
+      expect((await provider.inspect(al)).state).toBe('running');
+      expect((await sh(al, 'echo still-works')).stdout).toBe('still-works\n');
+      // the mode cannot change, and a sandbox without rules says so
+      await expect(provider.updateNetwork(al, { ...net([]), mode: 'open' })).rejects.toMatchObject({
+        code: 'invalid_input',
+      });
+      await expect(provider.updateNetwork(id, net(['example.org']))).rejects.toMatchObject({
+        code: 'unsupported',
+      });
+    });
+
     it('status reports the engine and uv', async () => {
       const s = await provider.status();
       expect(s.ok).toBe(true);

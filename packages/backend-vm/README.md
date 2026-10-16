@@ -94,8 +94,10 @@ backing file name and format, one refcount table/block and an all-zero L1 table.
 else. The writer is validated by unit tests and, when `ABOX_TEST_QEMU_IMG` points to a `qemu-img`, by
 `qemu-img check`/`info`.
 
-The virtual size is `max(image size, resources.disk)`. A larger disk is grown at boot with `growpart`
-and `resize2fs`; the disk limit is therefore a hard upper bound, but it can not be smaller than the
+The virtual size is `max(image size, resources.disk, vm.diskSize)`: the template's `vm.diskSize`
+(e.g. `40g`) and the resource limit `resources.disk` (also as an override at creation) both only ever
+enlarge the disk, the larger one wins. A larger disk is grown at boot with `growpart` and
+`resize2fs`; the disk limit is therefore a hard upper bound, but it can not be smaller than the
 10 GiB image size (sparse, so it costs nothing until used).
 
 ### Control channel: QEMU guest agent

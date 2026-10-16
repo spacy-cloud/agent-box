@@ -99,8 +99,16 @@ export function ListInput(
     onItems(split(v));
   };
   return multiline ? (
-    <textarea {...(rest as TextareaHTMLAttributes<HTMLTextAreaElement>)} value={text} onChange={(e) => change(e.target.value)} />
+    <textarea
+      {...(rest as TextareaHTMLAttributes<HTMLTextAreaElement>)}
+      value={text}
+      onChange={(e) => change(e.target.value)}
+    />
   ) : (
-    <input {...(rest as InputHTMLAttributes<HTMLInputElement>)} value={text} onChange={(e) => change(e.target.value)} />
+    <input
+      {...(rest as InputHTMLAttributes<HTMLInputElement>)}
+      value={text}
+      onChange={(e) => change(e.target.value)}
+    />
   );
 }

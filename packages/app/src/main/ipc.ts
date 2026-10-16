@@ -1,7 +1,10 @@
 import { createWriteStream } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { dialog, clipboard, ipcMain } from 'electron';
 import type { BrowserWindow } from 'electron';
+import { AboxError } from '@abox/core';
+import { renderDockerfile } from '@abox/backend-docker';
 import type { AboxRuntime } from '@abox/runtime';
 import type { z } from 'zod';
 import { IPC } from '../shared/ipc';
@@ -124,16 +127,46 @@ export function registerIpc(d: IpcDeps): IpcHandle {
       d.setCloseToTray(i.closeToTray);
       return { closeToTray: i.closeToTray };
     },
+    'files:copyIn': async (i) => {
+      const win = d.getWindow();
+      const opts = { properties: ['openFile' as const, 'openDirectory' as const] };
+      const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+      const from = r.filePaths[0];
+      if (r.canceled || !from) return { copied: null };
+      await need().abox.copyIn({ contextId: 'human' }, i.id, from, i.sandboxPath);
+      d.poke();
+      return { copied: from };
+    },
+    'files:copyOut': async (i) => {
+      const win = d.getWindow();
+      const opts = { properties: ['openDirectory' as const, 'createDirectory' as const] };
+      const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+      const dir = r.filePaths[0];
+      if (r.canceled || !dir) return { copied: null };
+      const target = join(dir, basename(i.sandboxPath.replace(/\/+$/, '')) || 'copy');
+      await need().abox.copyOut({ contextId: 'human' }, i.id, i.sandboxPath, target);
+      return { copied: target };
+    },
     'tty:open': (i) => d.tty.open(i),
     'tty:input': (i) => d.tty.input(i.sessionId, i.data),
     'tty:resize': (i) => d.tty.resize(i.sessionId, i.cols, i.rows),
     'tty:close': (i) => d.tty.close(i.sessionId),
     'templates:export': async (i): Promise<SaveResult> => {
+      const dockerfile = i.format === 'dockerfile';
+      let text = i.yaml;
+      if (dockerfile) {
+        const details = await need().abox.showTemplate({ contextId: 'human' }, i.name);
+        if (details.template.backend !== 'docker' && details.template.backend !== 'podman') {
+          throw new AboxError('unsupported', 'Only docker and podman templates have a Dockerfile');
+        }
+        text = renderDockerfile(details.template);
+      }
       const win = d.getWindow();
-      const opts = { defaultPath: `${i.name.replace(/[^A-Za-z0-9._-]/g, '_')}.yaml` };
+      const base = i.name.replace(/[^A-Za-z0-9._-]/g, '_');
+      const opts = { defaultPath: dockerfile ? `${base}.Dockerfile` : `${base}.yaml` };
       const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
       if (r.canceled || !r.filePath) return { saved: null };
-      await writeFile(r.filePath, i.yaml.endsWith('\n') ? i.yaml : `${i.yaml}\n`, { mode: 0o600 });
+      await writeFile(r.filePath, text.endsWith('\n') ? text : `${text}\n`, { mode: 0o600 });
       return { saved: r.filePath };
     },
     'app:info': () => {

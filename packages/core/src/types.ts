@@ -190,7 +190,13 @@ export interface PrepareOptions {
  */
 export type WorkspaceDelivery =
   | { kind: 'none'; sandboxPath: string }
-  | { kind: 'bind'; hostPath: string; sandboxPath: string; access: AccessMode; readonlySubpaths?: string[] }
+  | {
+      kind: 'bind';
+      hostPath: string;
+      sandboxPath: string;
+      access: AccessMode;
+      readonlySubpaths?: string[];
+    }
   | { kind: 'copy'; hostPath: string; sandboxPath: string; exclude?: string[] };
 
 /** A secret injected by the egress proxy. The value never enters the sandbox. */

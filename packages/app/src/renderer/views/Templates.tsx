@@ -51,6 +51,8 @@ interface Origin {
 
 type Pending = (() => void) | null;
 
+const DOCKERFILE_BACKENDS = ['docker', 'podman'];
+
 export function TemplatesView() {
   const { t, notify, tick } = useApp();
   const list = useQuery('templates:list', undefined, { pollMs: 8000 });
@@ -178,9 +180,13 @@ export function TemplatesView() {
     }
   }
 
-  async function exportYaml() {
+  async function exportYaml(format: 'yaml' | 'dockerfile' = 'yaml') {
     try {
-      const r = await call('templates:export', { name: form.name || 'template', yaml });
+      const r = await call('templates:export', {
+        name: format === 'yaml' ? form.name || 'template' : (origin?.name ?? form.name),
+        yaml,
+        format,
+      });
       if (r.saved) notify('ok', t('tpl.exported', { path: r.saved }));
     } catch (e) {
       notify('error', (e as Error).message);
@@ -234,9 +240,7 @@ export function TemplatesView() {
               </li>
             ))}
           </ul>
-          {list.data && filtered.length === 0 ? (
-            <p className="muted">{t('tpl.noMatch')}</p>
-          ) : null}
+          {list.data && filtered.length === 0 ? <p className="muted">{t('tpl.noMatch')}</p> : null}
           {(list.data?.problems ?? []).length > 0 ? (
             <details className="tpl-problems">
               <summary>{t('tpl.problems', { count: list.data!.problems.length })}</summary>
@@ -307,6 +311,14 @@ export function TemplatesView() {
                   <button type="button" onClick={() => void exportYaml()}>
                     {t('tpl.export')}
                   </button>
+                  <button
+                    type="button"
+                    disabled={!runnable || !DOCKERFILE_BACKENDS.includes(form.backend)}
+                    title={!runnable ? t('tpl.needsSave') : undefined}
+                    onClick={() => void exportYaml('dockerfile')}
+                  >
+                    {t('tpl.exportDockerfile')}
+                  </button>
                 </div>
               </div>
               {readOnly ? <Banner tone="info">{t('tpl.readOnlyHint')}</Banner> : null}
@@ -365,7 +377,9 @@ export function TemplatesView() {
       {building && origin ? (
         <BuildDialog name={origin.name} onClose={() => setBuilding(false)} />
       ) : null}
-      {testing && origin ? <TestDialog name={origin.name} onClose={() => setTesting(false)} /> : null}
+      {testing && origin ? (
+        <TestDialog name={origin.name} onClose={() => setTesting(false)} />
+      ) : null}
     </section>
   );
 }
@@ -496,13 +510,15 @@ function FormField(props: {
         </small>
       ) : null}
       {errs.length > 0 ? (
-        <ul id={errId} className="field-errors" role="alert">
-          {errs.map((e, i) => (
-            <li key={i} className="plain">
-              {e.message}
-            </li>
-          ))}
-        </ul>
+        <div id={errId} role="alert">
+          <ul className="field-errors">
+            {errs.map((e, i) => (
+              <li key={i} className="plain">
+                {e.message}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
     </div>
   );
@@ -551,7 +567,12 @@ function TemplateFormPane(props: {
       <legend className="h-small">{t('tpl.form')}</legend>
 
       <div className="form-grid">
-        <FormField id="f-name" label={t('tpl.f.name')} hint={t('tpl.f.nameHint')} errors={e('name')}>
+        <FormField
+          id="f-name"
+          label={t('tpl.f.name')}
+          hint={t('tpl.f.nameHint')}
+          errors={e('name')}
+        >
           {(p) => (
             <SyncedInput
               id={p.id}
@@ -667,7 +688,11 @@ function TemplateFormPane(props: {
           )}
         </FormField>
         {customMode ? (
-          <FormField id="f-basecustom" label={t('tpl.f.baseCustomName')} hint={t('tpl.f.baseCustomHint')}>
+          <FormField
+            id="f-basecustom"
+            label={t('tpl.f.baseCustomName')}
+            hint={t('tpl.f.baseCustomHint')}
+          >
             {(p) => (
               <SyncedInput
                 id={p.id}
@@ -729,7 +754,13 @@ function TemplateFormPane(props: {
         ))}
       </div>
 
-      <ToolsSection form={form} catalog={catalog} warnings={warnings} errors={e('tools')} patch={patch} />
+      <ToolsSection
+        form={form}
+        catalog={catalog}
+        warnings={warnings}
+        errors={e('tools')}
+        patch={patch}
+      />
 
       <h3 className="h-small">{t('tpl.f.resources')}</h3>
       <div className="form-grid">
@@ -748,7 +779,12 @@ function TemplateFormPane(props: {
             />
           )}
         </FormField>
-        <FormField id="f-memory" label={t('tpl.f.memory')} hint={t('tpl.f.memoryHint')} errors={e('memory')}>
+        <FormField
+          id="f-memory"
+          label={t('tpl.f.memory')}
+          hint={t('tpl.f.memoryHint')}
+          errors={e('memory')}
+        >
           {(p) => (
             <SyncedInput
               id={p.id}
@@ -827,7 +863,10 @@ function TemplateFormPane(props: {
         {form.networkMode === 'open' ? (
           <Banner tone="danger">{t('tpl.f.netOpenWarning')}</Banner>
         ) : null}
-        <fieldset className="wide-col" aria-describedby={e('networkPresets').length ? 'f-netpresets-err' : undefined}>
+        <fieldset
+          className="wide-col"
+          aria-describedby={e('networkPresets').length ? 'f-netpresets-err' : undefined}
+        >
           <legend>{t('tpl.f.netPresets')}</legend>
           {(catalog?.networkPresets ?? []).map((np) => (
             <label key={np.name} className="inline" title={np.domains.join(', ')}>
@@ -846,13 +885,15 @@ function TemplateFormPane(props: {
             </label>
           ))}
           {e('networkPresets').length > 0 ? (
-            <ul id="f-netpresets-err" className="field-errors" role="alert">
-              {e('networkPresets').map((x, i) => (
-                <li key={i} className="plain">
-                  {x.message}
-                </li>
-              ))}
-            </ul>
+            <div id="f-netpresets-err" role="alert">
+              <ul className="field-errors">
+                {e('networkPresets').map((x, i) => (
+                  <li key={i} className="plain">
+                    {x.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
         </fieldset>
         <FormField
@@ -884,13 +925,15 @@ function TemplateFormPane(props: {
       {e('other').length > 0 ? (
         <>
           <h3 className="h-small">{t('tpl.f.other')}</h3>
-          <ul className="field-errors" role="alert">
-            {e('other').map((x, i) => (
-              <li key={i} className="plain">
-                {x.path ? <code>{x.path}</code> : null} {x.message}
-              </li>
-            ))}
-          </ul>
+          <div role="alert">
+            <ul className="field-errors">
+              {e('other').map((x, i) => (
+                <li key={i} className="plain">
+                  {x.path ? <code>{x.path}</code> : null} {x.message}
+                </li>
+              ))}
+            </ul>
+          </div>
         </>
       ) : null}
     </fieldset>
@@ -925,20 +968,24 @@ function ToolsSection(props: {
       <h3 className="h-small">{t('tpl.f.tools')}</h3>
       <p className="muted small">{t('tpl.f.toolsHint')}</p>
       {props.errors.length > 0 ? (
-        <ul className="field-errors" role="alert">
-          {props.errors.map((x, i) => (
-            <li key={i} className="plain">
-              {x.message}
-            </li>
-          ))}
-        </ul>
+        <div role="alert">
+          <ul className="field-errors">
+            {props.errors.map((x, i) => (
+              <li key={i} className="plain">
+                {x.message}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       <div className="tool-grid">
         {(catalog?.tools ?? []).map((tool) => {
           const ref = refOf(tool.name);
           const selected = ref !== undefined;
           const version = ref?.includes('@') ? ref.slice(ref.indexOf('@') + 1) : '';
-          const warn = props.warnings.find((w) => w.tool === ref && w.reason === 'no-preset-for-os');
+          const warn = props.warnings.find(
+            (w) => w.tool === ref && w.reason === 'no-preset-for-os',
+          );
           return (
             <div key={tool.name} className="tool-row" data-tool={tool.name}>
               <label className="inline">
@@ -956,7 +1003,9 @@ function ToolsSection(props: {
                   <input
                     type="text"
                     className="tool-version"
-                    placeholder={tool.version === 'required' ? t('tpl.f.versionRequired') : t('tpl.f.version')}
+                    placeholder={
+                      tool.version === 'required' ? t('tpl.f.versionRequired') : t('tpl.f.version')
+                    }
                     title={tool.versionHint}
                     value={version}
                     disabled={!selected}
@@ -996,7 +1045,11 @@ function ToolsSection(props: {
   );
 }
 
-function MountsSection(props: { form: TemplateForm; errors: FieldIssue[]; patch(p: FormPatch): void }) {
+function MountsSection(props: {
+  form: TemplateForm;
+  errors: FieldIssue[];
+  patch(p: FormPatch): void;
+}) {
   const { t } = useApp();
   const { form } = props;
   const set = (i: number, k: 'source' | 'target' | 'access', v: string) =>
@@ -1006,13 +1059,15 @@ function MountsSection(props: { form: TemplateForm; errors: FieldIssue[]; patch(
       <h3 className="h-small">{t('tpl.f.mounts')}</h3>
       <p className="muted small">{t('tpl.f.mountsHint')}</p>
       {props.errors.length > 0 ? (
-        <ul className="field-errors" role="alert">
-          {props.errors.map((x, i) => (
-            <li key={i} className="plain">
-              {x.path ? <code>{x.path}</code> : null} {x.message}
-            </li>
-          ))}
-        </ul>
+        <div role="alert">
+          <ul className="field-errors">
+            {props.errors.map((x, i) => (
+              <li key={i} className="plain">
+                {x.path ? <code>{x.path}</code> : null} {x.message}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       {form.mounts.map((m, i) => (
         <div key={i} className="row-fields">
@@ -1060,7 +1115,9 @@ function MountsSection(props: { form: TemplateForm; errors: FieldIssue[]; patch(
       <button
         type="button"
         onClick={() =>
-          props.patch({ mounts: [...form.mounts, { source: '~/', target: '/mnt/data', access: 'ro' }] })
+          props.patch({
+            mounts: [...form.mounts, { source: '~/', target: '/mnt/data', access: 'ro' }],
+          })
         }
       >
         {t('tpl.f.mountAdd')}
@@ -1069,7 +1126,11 @@ function MountsSection(props: { form: TemplateForm; errors: FieldIssue[]; patch(
   );
 }
 
-function EnvSection(props: { form: TemplateForm; errors: FieldIssue[]; patch(p: FormPatch): void }) {
+function EnvSection(props: {
+  form: TemplateForm;
+  errors: FieldIssue[];
+  patch(p: FormPatch): void;
+}) {
   const { t } = useApp();
   // Rows being edited can be incomplete (empty key): they live here, and only complete rows reach the YAML.
   const [rows, setRows] = useState<EnvRow[]>(props.form.env);
@@ -1090,13 +1151,15 @@ function EnvSection(props: { form: TemplateForm; errors: FieldIssue[]; patch(p: 
       <h3 className="h-small">{t('tpl.f.env')}</h3>
       <p className="muted small">{t('tpl.f.envHint')}</p>
       {props.errors.length > 0 ? (
-        <ul className="field-errors" role="alert">
-          {props.errors.map((x, i) => (
-            <li key={i} className="plain">
-              {x.path ? <code>{x.path}</code> : null} {x.message}
-            </li>
-          ))}
-        </ul>
+        <div role="alert">
+          <ul className="field-errors">
+            {props.errors.map((x, i) => (
+              <li key={i} className="plain">
+                {x.path ? <code>{x.path}</code> : null} {x.message}
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       {rows.map((r, i) => (
         <div key={i} className="row-fields">
@@ -1138,7 +1201,11 @@ function EnvSection(props: { form: TemplateForm; errors: FieldIssue[]; patch(p: 
 
 // -- build and test ---------------------------------------------------------------------------------------------------
 
-function useProgress(key: string): { lines: string[]; reset(): void; ref: React.RefObject<HTMLPreElement | null> } {
+function useProgress(key: string): {
+  lines: string[];
+  reset(): void;
+  ref: React.RefObject<HTMLPreElement | null>;
+} {
   const [lines, setLines] = useState<string[]>([]);
   const ref = useRef<HTMLPreElement>(null);
   useEffect(
@@ -1189,11 +1256,21 @@ function BuildDialog(props: { name: string; onClose(): void }) {
       wide
       footer={
         <>
-          <button type="button" onClick={props.onClose} disabled={phase === 'running'} autoFocus={phase !== 'ask'}>
+          <button
+            type="button"
+            onClick={props.onClose}
+            disabled={phase === 'running'}
+            autoFocus={phase !== 'ask'}
+          >
             {phase === 'done' ? t('common.close') : t('common.cancel')}
           </button>
           {phase === 'ask' || phase === 'error' ? (
-            <button type="button" className="primary" onClick={() => void run()} autoFocus={phase === 'ask'}>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void run()}
+              autoFocus={phase === 'ask'}
+            >
               {t('tpl.build.start')}
             </button>
           ) : null}
@@ -1210,7 +1287,13 @@ function BuildDialog(props: { name: string; onClose(): void }) {
         </>
       ) : null}
       {phase !== 'ask' ? (
-        <pre className="log plain" ref={progress.ref} tabIndex={0} aria-live="polite" aria-label={t('tpl.build.log')}>
+        <pre
+          className="log plain"
+          ref={progress.ref}
+          tabIndex={0}
+          aria-live="polite"
+          aria-label={t('tpl.build.log')}
+        >
           {progress.lines.join('\n')}
         </pre>
       ) : null}
@@ -1287,7 +1370,12 @@ function TestDialog(props: { name: string; onClose(): void }) {
       {phase === 'running' ? (
         <>
           <p role="status">{t('tpl.test.running')}</p>
-          <pre className="log plain" ref={progress.ref} tabIndex={0} aria-label={t('tpl.build.log')}>
+          <pre
+            className="log plain"
+            ref={progress.ref}
+            tabIndex={0}
+            aria-label={t('tpl.build.log')}
+          >
             {progress.lines.join('\n')}
           </pre>
         </>
@@ -1349,7 +1437,9 @@ function TestDialog(props: { name: string; onClose(): void }) {
                         <Badge tone={x.ok ? 'ok' : 'danger'}>
                           {x.ok ? t('tpl.test.ok') : t('tpl.test.fail')}
                         </Badge>
-                        {x.exitCode !== null ? <span className="muted small"> exit {x.exitCode}</span> : null}
+                        {x.exitCode !== null ? (
+                          <span className="muted small"> exit {x.exitCode}</span>
+                        ) : null}
                       </td>
                       <td>
                         <pre className="log plain small-log">{x.output || '—'}</pre>

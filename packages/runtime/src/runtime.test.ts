@@ -12,9 +12,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MemorySecretStore, type ProviderFactory } from '@abox/core';
+import { MemorySecretStore, defaultConfig, type ProviderFactory } from '@abox/core';
 import {
   INSTANCE_ID_FILE,
+  configuredRuntime,
   engineSocket,
   loadInstanceId,
   openAbox,
@@ -210,5 +211,32 @@ describe('instance id', () => {
       .instanceId;
     expect(idB).toMatch(/^[0-9a-f]{16}$/);
     expect(idB).not.toBe(idA);
+  });
+});
+
+describe('hardened runtime from config', () => {
+  const cfg = (backends: Record<string, unknown>) =>
+    ({ ...defaultConfig(), backends: { ...defaultConfig().backends, ...backends } }) as never;
+  const host = { host: 'local', kind: 'local' } as const;
+
+  it('reads backends.<engine>.runtime defensively', () => {
+    expect(configuredRuntime('docker', cfg({}))).toBeUndefined();
+    expect(configuredRuntime('docker', cfg({ docker: { runtime: 'runsc' } }))).toBe('runsc');
+    expect(configuredRuntime('podman', cfg({ podman: { runtime: ' kata ' } }))).toBe('kata');
+    expect(configuredRuntime('docker', cfg({ docker: { runtime: '' } }))).toBeUndefined();
+    expect(configuredRuntime('docker', cfg({ docker: { runtime: 42 } }))).toBeUndefined();
+    expect(configuredRuntime('docker', cfg({ docker: undefined }))).toBeUndefined();
+  });
+
+  it('is passed to the docker, podman and python providers', () => {
+    const f = providerFactories({
+      env,
+      config: cfg({ docker: { runtime: 'runsc' }, podman: { runtime: 'kata' } }),
+    });
+    const rt = (p: unknown) => (p as { hardenedRuntime?: string }).hardenedRuntime;
+    expect(rt(f.docker!(host))).toBe('runsc');
+    expect(rt(f.podman!(host))).toBe('kata');
+    expect(rt(f.python!(host))).toBe('runsc');
+    expect(rt(providerFactories({ env, config: cfg({}) }).docker!(host))).toBeUndefined();
   });
 });

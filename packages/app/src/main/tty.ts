@@ -41,8 +41,7 @@ export interface TtyDeps {
 }
 
 export type TtyTarget =
-  | ({ kind: 'sandbox'; id: string } & TtySize)
-  | ({ kind: 'ssh'; host: string } & TtySize);
+  ({ kind: 'sandbox'; id: string } & TtySize) | ({ kind: 'ssh'; host: string } & TtySize);
 
 interface Session {
   backend: TerminalBackend;

@@ -586,6 +586,16 @@ describe('validateTemplate', () => {
       'network: { mode: allowlist, allow: [example.org] }\nsecrets:\n  - { ref: gh, hosts: [github.com] }\n',
     );
     expect(uncovered.warnings.join('\n')).toContain('not covered');
+    // like the egress proxy: `*.github.com` is subdomains only, the apex needs its own entry
+    const apex = await check(
+      'network: { mode: allowlist, allow: ["*.github.com"] }\nsecrets:\n  - { ref: gh, hosts: [github.com] }\n',
+    );
+    expect(apex.warnings.join('\n')).toContain('not covered');
+    // a non-default port entry does not cover the default ports
+    const port = await check(
+      'network: { mode: allowlist, allow: ["github.com:8443"] }\nsecrets:\n  - { ref: gh, hosts: [github.com] }\n',
+    );
+    expect(port.warnings.join('\n')).toContain('not covered');
   });
 
   describe('capabilities', () => {

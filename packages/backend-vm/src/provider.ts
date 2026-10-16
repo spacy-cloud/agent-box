@@ -6,6 +6,7 @@ import { join, posix, resolve } from 'node:path';
 import {
   AboxError,
   isolationAtLeast,
+  parseSize,
   type BackendStatus,
   type DirEntry,
   type ExecEvent,
@@ -200,6 +201,20 @@ chmod -- "$mode" "$f" && chown "$uid:$uid" -- "$f"
 interface Loaded {
   short: string;
   meta: SandboxMeta;
+}
+
+/**
+ * Virtual size of a sandbox's disk: the largest of the prepared image's size, `resources.disk`
+ * (including an override at creation) and the template's `vm.diskSize`. Neither can shrink the
+ * disk below the image; the root filesystem is grown to the result at boot.
+ */
+export function effectiveDiskBytes(
+  imageBytes: number,
+  resourcesDiskBytes: number | undefined,
+  vmDiskSize: string | undefined,
+): number {
+  const fromVm = vmDiskSize !== undefined ? parseSize(vmDiskSize) : 0;
+  return Math.max(imageBytes, resourcesDiskBytes ?? 0, fromVm);
 }
 
 export class VmProvider implements SandboxProvider {
@@ -655,7 +670,11 @@ export class VmProvider implements SandboxProvider {
     }
     const cpus = Math.max(1, Math.min(64, Math.ceil(spec.resources.cpus || 1)));
     const memoryMiB = memoryToMiB(spec.resources.memoryBytes || 512 * 1024 * 1024);
-    const diskBytes = Math.max(imageHeader.virtualSize, spec.resources.diskBytes ?? 0);
+    const diskBytes = effectiveDiskBytes(
+      imageHeader.virtualSize,
+      spec.resources.diskBytes,
+      spec.template.vm?.diskSize,
+    );
     const pids = Math.max(16, Math.floor(spec.resources.pids || 256));
     let copySource: string | undefined;
     if (workspace.kind === 'copy') {

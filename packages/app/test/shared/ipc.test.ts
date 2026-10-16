@@ -94,12 +94,20 @@ describe('IPC contract', () => {
   describe('terminals', () => {
     const SID = '3f2b8a52-6c0e-4d7b-9a43-0d9f1d3c7a11';
     it('open takes a target and a size, nothing that could name a command or a path', () => {
-      expect(ok('tty:open', { kind: 'sandbox', id: 'local/ab12cd34', cols: 80, rows: 24 })).toBe(true);
+      expect(ok('tty:open', { kind: 'sandbox', id: 'local/ab12cd34', cols: 80, rows: 24 })).toBe(
+        true,
+      );
       expect(ok('tty:open', { kind: 'ssh', host: 'my-server', cols: 120, rows: 40 })).toBe(true);
-      expect(ok('tty:open', { kind: 'ssh', host: 'my-server', cols: 80, rows: 24, argv: ['id'] })).toBe(false);
-      expect(ok('tty:open', { kind: 'sandbox', id: 'x', cols: 80, rows: 24, command: 'id' })).toBe(false);
+      expect(
+        ok('tty:open', { kind: 'ssh', host: 'my-server', cols: 80, rows: 24, argv: ['id'] }),
+      ).toBe(false);
+      expect(ok('tty:open', { kind: 'sandbox', id: 'x', cols: 80, rows: 24, command: 'id' })).toBe(
+        false,
+      );
       expect(ok('tty:open', { kind: 'local', cols: 80, rows: 24 })).toBe(false);
-      expect(ok('tty:open', { kind: 'ssh', host: '-oProxyCommand=id', cols: 80, rows: 24 })).toBe(false);
+      expect(ok('tty:open', { kind: 'ssh', host: '-oProxyCommand=id', cols: 80, rows: 24 })).toBe(
+        false,
+      );
       expect(ok('tty:open', { kind: 'ssh', host: 'Bad Host', cols: 80, rows: 24 })).toBe(false);
       expect(ok('tty:open', { kind: 'sandbox', id: 'x', cols: 0, rows: 24 })).toBe(false);
       expect(ok('tty:open', { kind: 'sandbox', id: 'x', cols: 80, rows: 100000 })).toBe(false);
@@ -118,11 +126,19 @@ describe('IPC contract', () => {
 
   describe('hosts', () => {
     it('profiles have no field for secrets', () => {
-      expect(ok('hosts:add', { id: 'srv', hostname: 'server.example.org', user: 'abox', zone: 'shared' })).toBe(
-        true,
-      );
+      expect(
+        ok('hosts:add', {
+          id: 'srv',
+          hostname: 'server.example.org',
+          user: 'abox',
+          zone: 'shared',
+        }),
+      ).toBe(true);
       for (const secret of ['password', 'passphrase', 'privateKey', 'token']) {
-        expect(ok('hosts:add', { id: 'srv', hostname: 'h.example.org', [secret]: 'x' }), secret).toBe(false);
+        expect(
+          ok('hosts:add', { id: 'srv', hostname: 'h.example.org', [secret]: 'x' }),
+          secret,
+        ).toBe(false);
         expect(ok('hosts:update', { id: 'srv', patch: { [secret]: 'x' } }), secret).toBe(false);
       }
     });

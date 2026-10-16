@@ -131,7 +131,11 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     'processes:list': (i) => abox.listProcesses(HUMAN, i.id),
     'processes:logs': (i) => abox.processLogs(HUMAN, i.processId, clean({ tail: i.tail ?? 200 })),
     'sandboxes:logs': async (i) => ({
-      content: await abox.sandboxLogs(HUMAN, i.id, clean({ tail: i.tail ?? 300, sinceTs: i.sinceTs })),
+      content: await abox.sandboxLogs(
+        HUMAN,
+        i.id,
+        clean({ tail: i.tail ?? 300, sinceTs: i.sinceTs }),
+      ),
     }),
     'snapshots:list': (i) => abox.listSnapshots(HUMAN, i.id),
     'snapshots:create': (i) => abox.snapshot(HUMAN, i.id, i.name),

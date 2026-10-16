@@ -104,7 +104,10 @@ function Shell() {
               >
                 <span>{t(n.key)}</span>
                 {n.view === 'hosts' && ssh.tabs.length > 0 ? (
-                  <span className="count" aria-label={t('hosts.openTerminals', { count: ssh.tabs.length })}>
+                  <span
+                    className="count"
+                    aria-label={t('hosts.openTerminals', { count: ssh.tabs.length })}
+                  >
                     {ssh.tabs.length}
                   </span>
                 ) : null}

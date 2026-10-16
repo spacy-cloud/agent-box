@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cliVersion } from '../version.js';
-import { makeEnv, run, writePolicy, type TestEnv } from './harness.js';
+import { makeEnv, run, writeConfig, writePolicy, type TestEnv } from './harness.js';
 
 let t: TestEnv;
 beforeEach(() => {
@@ -150,7 +150,7 @@ describe('basics', () => {
     const create = await run(t, ['create', 'alpine-min', '--workspace', '.', '--json'], { env });
     expect(create.code).toBe(4);
     const doctor = await run(t, ['doctor', '--json'], { env });
-    expect(doctor.code).toBe(4);
+    expect(doctor.code).toBe(1); // any failed check is exit 1, backend or not
     expect(doctor.json.ok).toBe(false);
     expect(
       doctor.json.details.report.backends.some(
@@ -248,5 +248,31 @@ describe('policy', () => {
     expect(none.stdout).toContain('no changes');
     const noEditor = await run(t, ['policy', 'edit', '--yes'], { env: {} });
     expect(noEditor.code).toBe(2);
+  });
+});
+
+describe('config.yaml defaults', () => {
+  it('create without a template needs defaults.template; with it the default is used', async () => {
+    const none = await run(t, ['create', '--yes', '--json']);
+    expect(none.code).toBe(2);
+    expect(none.json).toMatchObject({ ok: false, code: 'invalid_input' });
+    expect(none.json.hint).toContain('defaults.template');
+    writeConfig(t, 'defaults:\n  template: host-shell\n');
+    const ok = await run(t, ['create', '--yes', '--json']);
+    expect(ok.code, ok.stderr).toBe(0);
+    expect(ok.json.data.sandbox.template).toBe('host-shell');
+    await run(t, ['rm', '--force', ok.json.data.sandbox.id]);
+  });
+
+  it('backends.default was removed: the config is refused with an explanation', async () => {
+    writeConfig(t, 'backends:\n  default: podman\n');
+    const r = await run(t, ['ls', '--json']);
+    expect(r.code).not.toBe(0);
+    expect(r.json.message).toContain('backends.default was removed');
+  });
+
+  it('doctor documents its exit rule', async () => {
+    const h = await run(t, ['doctor', '--help']);
+    expect(h.stdout).toContain('exit 1');
   });
 });

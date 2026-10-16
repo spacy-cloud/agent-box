@@ -54,7 +54,15 @@ describe('confine / file API confinement', () => {
     root = join(tmpRoot, 'data');
     provider = createProcessProvider({ host: 'local', kind: 'local' }, { dataDir: root });
     const template = makeTestTemplate();
-    const spec = await makeTestSpec(provider, template, { network: { mode: 'open', allow: [], blockPrivate: true, privateExceptions: [], injections: [] } });
+    const spec = await makeTestSpec(provider, template, {
+      network: {
+        mode: 'open',
+        allow: [],
+        blockPrivate: true,
+        privateExceptions: [],
+        injections: [],
+      },
+    });
     id = spec.id;
     const info = await provider.create(spec);
     await provider.start(id);
@@ -62,7 +70,10 @@ describe('confine / file API confinement', () => {
     // plant escape routes the way a hostile process inside the sandbox could
     await symlink(join(outside, 'secret.txt'), join(sandboxRoot, 'workspace', 'abs-file'));
     await symlink(outside, join(sandboxRoot, 'workspace', 'abs-dir'));
-    await symlink(relative(join(sandboxRoot, 'workspace'), join(outside, 'secret.txt')), join(sandboxRoot, 'workspace', 'rel-file'));
+    await symlink(
+      relative(join(sandboxRoot, 'workspace'), join(outside, 'secret.txt')),
+      join(sandboxRoot, 'workspace', 'rel-file'),
+    );
     await symlink(join(tmpRoot, 'does-not-exist-yet'), join(sandboxRoot, 'workspace', 'dangling'));
     await symlink('inside.txt', join(sandboxRoot, 'workspace', 'inner-link'));
     await writeFile(join(sandboxRoot, 'workspace', 'inside.txt'), 'inside');
@@ -73,8 +84,12 @@ describe('confine / file API confinement', () => {
   });
 
   it('readFile rejects ".." escapes and absolute-looking host paths stay inside the root', async () => {
-    expect(await codeOf(provider.readFile(id, '/workspace/../../etc/passwd', 100))).toBe('invalid_input');
-    expect(await codeOf(provider.readFile(id, '../../../../etc/passwd', 100))).toBe('invalid_input');
+    expect(await codeOf(provider.readFile(id, '/workspace/../../etc/passwd', 100))).toBe(
+      'invalid_input',
+    );
+    expect(await codeOf(provider.readFile(id, '../../../../etc/passwd', 100))).toBe(
+      'invalid_input',
+    );
     // A host path is just a path in the sandbox: it does not exist there.
     expect(await codeOf(provider.readFile(id, join(outside, 'secret.txt'), 100))).toBe('not_found');
   });
@@ -82,15 +97,25 @@ describe('confine / file API confinement', () => {
   it('readFile rejects symlinks pointing outside the root (absolute, relative, directory)', async () => {
     expect(await codeOf(provider.readFile(id, '/workspace/abs-file', 100))).toBe('invalid_input');
     expect(await codeOf(provider.readFile(id, '/workspace/rel-file', 100))).toBe('invalid_input');
-    expect(await codeOf(provider.readFile(id, '/workspace/abs-dir/secret.txt', 100))).toBe('invalid_input');
+    expect(await codeOf(provider.readFile(id, '/workspace/abs-dir/secret.txt', 100))).toBe(
+      'invalid_input',
+    );
     expect(await codeOf(provider.listDir(id, '/workspace/abs-dir'))).toBe('invalid_input');
   });
 
   it('writeFile never writes through an outside symlink, dangling or not', async () => {
-    expect(await codeOf(provider.writeFile(id, '/workspace/abs-file', Buffer.from('pwned')))).toBe('invalid_input');
-    expect(await codeOf(provider.writeFile(id, '/workspace/abs-dir/new.txt', Buffer.from('pwned')))).toBe('invalid_input');
-    expect(await codeOf(provider.writeFile(id, '/workspace/dangling', Buffer.from('pwned')))).toBe('invalid_input');
-    expect(await codeOf(provider.writeFile(id, '/workspace/dangling/sub/f', Buffer.from('pwned')))).toBe('invalid_input');
+    expect(await codeOf(provider.writeFile(id, '/workspace/abs-file', Buffer.from('pwned')))).toBe(
+      'invalid_input',
+    );
+    expect(
+      await codeOf(provider.writeFile(id, '/workspace/abs-dir/new.txt', Buffer.from('pwned'))),
+    ).toBe('invalid_input');
+    expect(await codeOf(provider.writeFile(id, '/workspace/dangling', Buffer.from('pwned')))).toBe(
+      'invalid_input',
+    );
+    expect(
+      await codeOf(provider.writeFile(id, '/workspace/dangling/sub/f', Buffer.from('pwned'))),
+    ).toBe('invalid_input');
     expect((await readFile(join(outside, 'secret.txt'))).toString()).toBe('host-secret');
     await expect(readFile(join(tmpRoot, 'does-not-exist-yet'))).rejects.toThrow();
   });
@@ -98,14 +123,22 @@ describe('confine / file API confinement', () => {
   it('copyIn/copyOut cannot be steered outside via symlinks', async () => {
     const dest = join(tmpRoot, 'copied-out');
     expect(await codeOf(provider.copyOut(id, '/workspace/abs-dir', dest))).toBe('invalid_input');
-    expect(await codeOf(provider.copyIn(id, join(outside, 'secret.txt'), '/workspace/abs-dir/dropped.txt'))).toBe('invalid_input');
+    expect(
+      await codeOf(
+        provider.copyIn(id, join(outside, 'secret.txt'), '/workspace/abs-dir/dropped.txt'),
+      ),
+    ).toBe('invalid_input');
     await expect(readFile(join(outside, 'dropped.txt'))).rejects.toThrow();
   });
 
   it('symlinks that stay inside the root work', async () => {
-    expect((await provider.readFile(id, '/workspace/inner-link', 100)).data.toString()).toBe('inside');
+    expect((await provider.readFile(id, '/workspace/inner-link', 100)).data.toString()).toBe(
+      'inside',
+    );
     await provider.writeFile(id, '/workspace/inner-link', Buffer.from('rewritten'));
-    expect((await provider.readFile(id, '/workspace/inside.txt', 100)).data.toString()).toBe('rewritten');
+    expect((await provider.readFile(id, '/workspace/inside.txt', 100)).data.toString()).toBe(
+      'rewritten',
+    );
   });
 
   it('a symlink is reported as a symlink by listDir, not followed', async () => {
@@ -117,7 +150,12 @@ describe('confine / file API confinement', () => {
   });
 
   it('confine: ".." that stays inside is fine and resolves to the real path', async () => {
-    const c = await confine(sandboxRoot, '/workspace/../workspace/inside.txt', '/workspace', 'existing');
+    const c = await confine(
+      sandboxRoot,
+      '/workspace/../workspace/inside.txt',
+      '/workspace',
+      'existing',
+    );
     expect(c.sandboxPath).toBe('/workspace/inside.txt');
     expect(c.hostPath.endsWith('/root/workspace/inside.txt')).toBe(true);
   });
@@ -128,12 +166,18 @@ describe('confine / file API confinement', () => {
   });
 
   it('confine: a file used as a directory is invalid_input', async () => {
-    expect(await codeOf(confine(sandboxRoot, '/workspace/inside.txt/x', '/workspace', 'create'))).toBe('invalid_input');
-    expect(await codeOf(confine(sandboxRoot, '/workspace/inside.txt/x', '/workspace', 'existing'))).toBe('invalid_input');
+    expect(
+      await codeOf(confine(sandboxRoot, '/workspace/inside.txt/x', '/workspace', 'create')),
+    ).toBe('invalid_input');
+    expect(
+      await codeOf(confine(sandboxRoot, '/workspace/inside.txt/x', '/workspace', 'existing')),
+    ).toBe('invalid_input');
   });
 
   it('writeFile outside the workspace but inside the root works and writes below root/', async () => {
     await provider.writeFile(id, '/var/lib/ct/data.txt', Buffer.from('deep'));
-    expect((await readFile(join(sandboxRoot, 'var', 'lib', 'ct', 'data.txt'))).toString()).toBe('deep');
+    expect((await readFile(join(sandboxRoot, 'var', 'lib', 'ct', 'data.txt'))).toString()).toBe(
+      'deep',
+    );
   });
 });

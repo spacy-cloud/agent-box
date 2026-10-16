@@ -17,13 +17,13 @@ and the files abox uses are around it.
 
 Global options (valid before or after the command):
 
-| Option             | Meaning |
-| ------------------ | ------- |
-| `-V, --version`    | print the version |
-| `--json`           | machine-readable output, see below |
-| `-q, --quiet`      | print only the essentials (ids); errors are still shown |
-| `--host <id>`      | host to use (default `local`), see [hosts and SSH](hosts-ssh.md) |
-| `--project <dir>`  | project directory for `.sandbox/*.yaml` templates (default: the current directory) |
+| Option            | Meaning                                                                            |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| `-V, --version`   | print the version                                                                  |
+| `--json`          | machine-readable output, see below                                                 |
+| `-q, --quiet`     | print only the essentials (ids); errors are still shown                            |
+| `--host <id>`     | host to use (default `local`), see [hosts and SSH](hosts-ssh.md)                   |
+| `--project <dir>` | project directory for `.sandbox/*.yaml` templates (default: the current directory) |
 
 **Sandbox references.** Wherever a command takes `<id>`, you can pass the full id
 (`local/7faf91da`), the 8 hex characters (the host comes from `--host`, default `local`) or a
@@ -75,22 +75,22 @@ Failure (the exit code is set as usual):
 The shape of `data` per command (field names are camelCase; timestamps are milliseconds since the
 epoch):
 
-| Command                         | `data` |
-| ------------------------------- | ------ |
-| `create`                        | `{status, sandbox, idempotent, warnings, durationMs}`; `sandbox` is the object below |
-| `ls`                            | `{sandboxes: [...], orphans: [...], unreachableHosts: [...]}` |
-| `inspect`                       | the sandbox object plus `processes`, `pendingApprovals` and `effective` (`policy`: what was granted, `provider`: what the backend reports) |
-| `start`, `stop`                 | `{results: [{id, sandbox}]}` |
-| `exec`                          | `{status: "completed", exitCode, stdout, stderr, truncated, timedOut, durationMs, logRef}` |
-| `export`                        | `{format, files, flagged, stats, warnings, content, sandboxId, ...}`; `branch`/`commit` or `outDir`/`written` depending on the format |
-| `approvals ls`                  | `{approvals: [...]}` |
-| `audit`                         | `{entries: [{seq, ts, actor, action, sandboxId, decision, details, prevHash, hash}]}` (with `--jsonl`: one entry per line instead) |
-| `template ls`                   | `{templates: [...], problems: [...]}` |
-| `template validate`             | `{ok, issues, warnings, name, source, policy: {decision, reasons}}` |
-| `policy show`                   | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}` |
-| `token ls`                      | `{tokens: [{id, contextId, label, createdAt, lastUsedAt, revokedAt}]}` |
-| `doctor`                        | on problems, an error body with `details.report`; see [troubleshooting](troubleshooting.md#abox-doctor) |
-| `gc`, `reconcile`               | the report objects (`dryRun`, `sandboxes`, `workspaces`, `images`, `logs`, ...; `orphans`, `ghosts`, `interrupted`, `expired`, `unreachable`, `applied`) |
+| Command             | `data`                                                                                                                                                   |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create`            | `{status, sandbox, idempotent, warnings, durationMs}`; `sandbox` is the object below                                                                     |
+| `ls`                | `{sandboxes: [...], orphans: [...], unreachableHosts: [...]}`                                                                                            |
+| `inspect`           | the sandbox object plus `processes`, `pendingApprovals` and `effective` (`policy`: what was granted, `provider`: what the backend reports)               |
+| `start`, `stop`     | `{results: [{id, sandbox}]}`                                                                                                                             |
+| `exec`              | `{status: "completed", exitCode, stdout, stderr, truncated, timedOut, durationMs, logRef}`                                                               |
+| `export`            | `{format, files, flagged, stats, warnings, content, sandboxId, ...}`; `branch`/`commit` or `outDir`/`written` depending on the format                    |
+| `approvals ls`      | `{approvals: [...]}`                                                                                                                                     |
+| `audit`             | `{entries: [{seq, ts, actor, action, sandboxId, decision, details, prevHash, hash}]}` (with `--jsonl`: one entry per line instead)                       |
+| `template ls`       | `{templates: [...], problems: [...]}`                                                                                                                    |
+| `template validate` | `{ok, issues, warnings, name, source, policy: {decision, reasons}}`                                                                                      |
+| `policy show`       | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}`                                                                            |
+| `token ls`          | `{tokens: [{id, contextId, label, createdAt, lastUsedAt, revokedAt}]}`                                                                                   |
+| `doctor`            | on problems, an error body with `details.report`; see [troubleshooting](troubleshooting.md#abox-doctor)                                                  |
+| `gc`, `reconcile`   | the report objects (`dryRun`, `sandboxes`, `workspaces`, `images`, `logs`, ...; `orphans`, `ghosts`, `interrupted`, `expired`, `unreachable`, `applied`) |
 
 The sandbox object has `id`, `name`, `host`, `owner`, `template`, `templateHash`, `backend`,
 `isolation`, `state`, `createdAt`, `expiresAt`, `ttlRemainingMs`, `expired`, `stale`,
@@ -107,33 +107,33 @@ until the first release.
 
 ## Exit codes
 
-| Code | Meaning |
-| ---- | ------- |
-| 0    | success |
-| 1    | internal error, or a check found problems (`audit verify`, and `doctor` when the problem is not a backend problem) |
+| Code | Meaning                                                                                                                                                                                    |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | success                                                                                                                                                                                    |
+| 1    | internal error, or a check found problems (`doctor` with a failed check, `audit verify` with a broken chain)                                                                               |
 | 2    | invalid input; also an unknown id (`not_found`), an operation the backend cannot do (`unsupported`), an invalid template, a conflict (for example removing a running sandbox without `-f`) |
-| 3    | denied by policy, approval denied or expired, an untrusted template, or confirmation missing (use `--yes`) |
-| 4    | a backend or host is unavailable or failed (`doctor` also uses 4 when a required backend is not usable; unusable optional backends are only warnings) |
-| 5    | timeout |
-| 130  | interrupted with Ctrl-C |
+| 3    | denied by policy, approval denied or expired, an untrusted template, or confirmation missing (use `--yes`)                                                                                 |
+| 4    | a backend or host is unavailable or failed                                                                                                                                                 |
+| 5    | timeout                                                                                                                                                                                    |
+| 130  | interrupted with Ctrl-C                                                                                                                                                                    |
 
 `abox exec` and `abox ssh` exit with the exit code of the command they ran; a command that was
 killed by the timeout gives 5. A reader that goes away (`abox ls | head -1`) is not an error.
 
 ## Files and environment
 
-| Location | Content |
-| -------- | ------- |
-| `~/.config/abox/config.yaml` | optional settings, see below |
-| `~/.config/abox/policy.yaml` | the policy; without it a built-in conservative policy applies (see [security](security.md#policy-model)) |
-| `~/.config/abox/templates/` | your templates |
-| `~/.config/abox/hosts.yaml` | host profiles (metadata only, no keys or passwords) |
-| `~/.config/abox/known_hosts` | host keys you confirmed in abox |
-| `~/.local/share/abox/state.db` | SQLite state: sandboxes, approvals, audit log, template trust, tokens |
-| `~/.local/share/abox/logs/` | per-sandbox command output (mode 0600, rotated, three days by default) |
-| `~/.local/share/abox/sandboxes/`, `exports/` | workspace staging per sandbox; exports made by agents |
-| `~/.cache/abox/` | disposable caches (for example VM base images) |
-| `$XDG_RUNTIME_DIR/abox/` | sockets and pid files (fallback `/tmp/abox-<uid>`) |
+| Location                                     | Content                                                                                                  |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `~/.config/abox/config.yaml`                 | optional settings, see below                                                                             |
+| `~/.config/abox/policy.yaml`                 | the policy; without it a built-in conservative policy applies (see [security](security.md#policy-model)) |
+| `~/.config/abox/templates/`                  | your templates                                                                                           |
+| `~/.config/abox/hosts.yaml`                  | host profiles (metadata only, no keys or passwords)                                                      |
+| `~/.config/abox/known_hosts`                 | host keys you confirmed in abox                                                                          |
+| `~/.local/share/abox/state.db`               | SQLite state: sandboxes, approvals, audit log, template trust, tokens                                    |
+| `~/.local/share/abox/logs/`                  | per-sandbox command output (mode 0600, rotated, three days by default)                                   |
+| `~/.local/share/abox/sandboxes/`, `exports/` | workspace staging per sandbox; exports made by agents                                                    |
+| `~/.cache/abox/`                             | disposable caches (for example VM base images)                                                           |
+| `$XDG_RUNTIME_DIR/abox/`                     | sockets and pid files (fallback `/tmp/abox-<uid>`)                                                       |
 
 Directories are created with mode 0700. `ABOX_HOME=<dir>` moves everything to
 `<dir>/{config,data,cache,run}`; this is how the test suites and this documentation isolate
@@ -151,24 +151,31 @@ Every key is optional; unknown keys are errors.
 
 ```yaml
 backends:
-  docker: { socket: /var/run/docker.sock }     # overrides DOCKER_HOST and the default
+  docker: { socket: /var/run/docker.sock } # overrides DOCKER_HOST and the default
   podman: { socket: /run/user/1000/podman/podman.sock }
+  # runtime: runsc            # optional per engine: OCI runtime for isolation `hardened` (gVisor/Kata)
 limits:
-  execMaxOutputBytes: 65536     # output cap per stream for agents (humans may raise it per call)
-  execTimeoutMs: 120000         # default command timeout
-  approvalWaitMs: 30000         # how long an agent call waits for your decision
-  approvalTtlMs: 900000         # how long a request / an approval stays valid (15 min)
+  execMaxOutputBytes: 65536 # output cap per stream for agents (humans may raise it per call)
+  execTimeoutMs: 120000 # default command timeout
+  approvalWaitMs: 30000 # how long an agent call waits for your decision
+  approvalTtlMs: 900000 # how long a request / an approval stays valid (15 min)
 logs:
   retentionDays: 3
-secrets:                        # per secret reference: how the proxy places it
+defaults:
+  template: node-dev # optional: used by `abox create` / `sandbox_create` without a template
+secrets: # per secret reference: how the proxy places it
   github-token:
-    scheme: basic-x-access-token   # bearer | basic-x-access-token | raw
+    scheme: basic-x-access-token # bearer | basic-x-access-token | raw
     header: Authorization
-    hosts: [github.com]            # can only narrow the hosts a template declares
+    hosts: [github.com] # can only narrow the hosts a template declares
 ```
 
-`backends.default` and `defaults.template` are accepted by the schema but have no effect at the
-moment.
+`backends.default` no longer exists and is rejected with an explanatory error: every template names
+its own backend (`backend:`); only the engine socket paths are configured here. `defaults.template`
+is optional; without it a template argument is required. `backends.docker.runtime` and `backends.podman.runtime` name an OCI runtime (for example `runsc`
+or `kata`) for isolation `hardened`; it is used only if the engine really lists it. Otherwise the
+backend stays at `container` and `abox doctor` warns (the Python backend uses the Docker setting).
+See [backends](backends.md#docker-and-podman).
 
 ## Command reference
 
@@ -190,9 +197,9 @@ List available templates (builtin, user, project)
 
 Show a resolved template
 
-| Argument | Meaning |
-| --- | --- |
-| `name` | template name |
+| Argument | Meaning       |
+| -------- | ------------- |
+| `name`   | template name |
 
 #### `abox template validate`
 
@@ -200,8 +207,8 @@ Show a resolved template
 
 Validate a template by name or YAML file
 
-| Argument | Meaning |
-| --- | --- |
+| Argument     | Meaning               |
+| ------------ | --------------------- |
 | `name\|file` | template name or path |
 
 #### `abox template build`
@@ -210,14 +217,14 @@ Validate a template by name or YAML file
 
 Build (or fetch) the environment image of a template
 
-| Argument | Meaning |
-| --- | --- |
-| `name` | template name |
+| Argument | Meaning       |
+| -------- | ------------- |
+| `name`   | template name |
 
-| Option | Meaning |
-| --- | --- |
-| `--update` | ignore the pinned base and the cache; fetch the newest base |
-| `-y, --yes` | also build an unapproved project template |
+| Option      | Meaning                                                     |
+| ----------- | ----------------------------------------------------------- |
+| `--update`  | ignore the pinned base and the cache; fetch the newest base |
+| `-y, --yes` | also build an unapproved project template                   |
 
 #### `abox template gc`
 
@@ -227,27 +234,27 @@ Remove environment images no template or sandbox uses any more
 
 ### `abox create`
 
-`abox create [options] <template>`
+`abox create [options] [template]`
 
 Create a sandbox from a template
 
-| Argument | Meaning |
-| --- | --- |
-| `template` | template name (see "abox template ls") |
+| Argument   | Meaning                                                                           |
+| ---------- | --------------------------------------------------------------------------------- |
+| `template` | template name (see "abox template ls"); default: defaults.template of config.yaml |
 
-| Option | Meaning |
-| --- | --- |
-| `--name <name>` | sandbox name |
-| `-w, --workspace <path>` | host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared |
-| `--mode <mode>` | how the workspace is delivered (default: the template's mode with --workspace, "empty" without) (choices: "mount", "clone", "worktree", "copy", "empty", "sync") |
-| `--ref <ref>` | git ref for clone/worktree workspaces (needs --workspace) |
-| `--net <mode>` | network mode (choices: "none", "allowlist", "open") |
-| `--allow <domains>` | extra allowed destinations, comma separated (with --net allowlist) |
-| `--ttl <duration>` | lifetime, e.g. 2h |
-| `--cpus <n>` | CPU limit |
-| `--memory <size>` | memory limit, e.g. 4g |
-| `--request-id <id>` | idempotency key: repeating the call returns the same sandbox |
-| `-y, --yes` | confirm risky settings without asking (required when not interactive) |
+| Option                   | Meaning                                                                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--name <name>`          | sandbox name                                                                                                                                                     |
+| `-w, --workspace <path>` | host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared                         |
+| `--mode <mode>`          | how the workspace is delivered (default: the template's mode with --workspace, "empty" without) (choices: "mount", "clone", "worktree", "copy", "empty", "sync") |
+| `--ref <ref>`            | git ref for clone/worktree workspaces (needs --workspace)                                                                                                        |
+| `--net <mode>`           | network mode (choices: "none", "allowlist", "open")                                                                                                              |
+| `--allow <domains>`      | extra allowed destinations, comma separated (with --net allowlist)                                                                                               |
+| `--ttl <duration>`       | lifetime, e.g. 2h                                                                                                                                                |
+| `--cpus <n>`             | CPU limit                                                                                                                                                        |
+| `--memory <size>`        | memory limit, e.g. 4g                                                                                                                                            |
+| `--request-id <id>`      | idempotency key: repeating the call returns the same sandbox                                                                                                     |
+| `-y, --yes`              | confirm risky settings without asking (required when not interactive)                                                                                            |
 
 ### `abox ls`
 
@@ -255,10 +262,10 @@ Create a sandbox from a template
 
 List sandboxes
 
-| Option | Meaning |
-| --- | --- |
+| Option            | Meaning                                                                                                              |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `--state <state>` | only this state (choices: "requested", "preparing", "created", "running", "stopped", "failed", "expired", "removed") |
-| `-a, --all` | include removed and failed sandboxes |
+| `-a, --all`       | include removed and failed sandboxes                                                                                 |
 
 ### `abox inspect`
 
@@ -266,9 +273,9 @@ List sandboxes
 
 Show everything about one sandbox
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
+| Argument | Meaning            |
+| -------- | ------------------ |
+| `id`     | sandbox id or name |
 
 ### `abox start`
 
@@ -276,9 +283,9 @@ Show everything about one sandbox
 
 Start a sandbox
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id(s) or name(s) |
+| Argument | Meaning                  |
+| -------- | ------------------------ |
+| `id`     | sandbox id(s) or name(s) |
 
 ### `abox stop`
 
@@ -286,9 +293,9 @@ Start a sandbox
 
 Stop a sandbox
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id(s) or name(s) |
+| Argument | Meaning                  |
+| -------- | ------------------------ |
+| `id`     | sandbox id(s) or name(s) |
 
 ### `abox rm`
 
@@ -296,12 +303,12 @@ Stop a sandbox
 
 Remove sandboxes and everything that belongs to them
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id(s) or name(s) |
+| Argument | Meaning                  |
+| -------- | ------------------------ |
+| `id`     | sandbox id(s) or name(s) |
 
-| Option | Meaning |
-| --- | --- |
+| Option        | Meaning                                                |
+| ------------- | ------------------------------------------------------ |
 | `-f, --force` | also remove running sandboxes (they are stopped first) |
 
 ### `abox extend`
@@ -310,13 +317,13 @@ Remove sandboxes and everything that belongs to them
 
 Give a sandbox more time (added to its current expiry)
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
+| Argument   | Meaning                  |
+| ---------- | ------------------------ |
+| `id`       | sandbox id or name       |
 | `duration` | additional time, e.g. 1h |
 
-| Option | Meaning |
-| --- | --- |
+| Option      | Meaning                |
+| ----------- | ---------------------- |
 | `-y, --yes` | confirm without asking |
 
 ### `abox exec`
@@ -325,18 +332,18 @@ Give a sandbox more time (added to its current expiry)
 
 Run a command in a sandbox (exit code = the command's exit code)
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
-| `cmd` | command and arguments (put "--" before them) |
+| Argument | Meaning                                      |
+| -------- | -------------------------------------------- |
+| `id`     | sandbox id or name                           |
+| `cmd`    | command and arguments (put "--" before them) |
 
-| Option | Meaning |
-| --- | --- |
-| `--cwd <dir>` | working directory inside the sandbox |
-| `-e, --env <K=V>` | environment variable (repeatable) |
+| Option                 | Meaning                                                            |
+| ---------------------- | ------------------------------------------------------------------ |
+| `--cwd <dir>`          | working directory inside the sandbox                               |
+| `-e, --env <K=V>`      | environment variable (repeatable)                                  |
 | `--timeout <duration>` | kill the command after this time, e.g. 30s (default: config limit) |
-| `-i, --stdin` | send standard input to the command |
-| `-y, --yes` | confirm without asking (when the manager asks) |
+| `-i, --stdin`          | send standard input to the command                                 |
+| `-y, --yes`            | confirm without asking (when the manager asks)                     |
 
 ### `abox shell`
 
@@ -344,12 +351,12 @@ Run a command in a sandbox (exit code = the command's exit code)
 
 Open an interactive shell in a sandbox
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
+| Argument | Meaning            |
+| -------- | ------------------ |
+| `id`     | sandbox id or name |
 
-| Option | Meaning |
-| --- | --- |
+| Option            | Meaning                                       |
+| ----------------- | --------------------------------------------- |
 | `--cmd <program>` | run this program instead of the default shell |
 
 ### `abox cp`
@@ -358,10 +365,10 @@ Open an interactive shell in a sandbox
 
 Copy files or directories between host and sandbox (<id>:/path on either side)
 
-| Argument | Meaning |
-| --- | --- |
-| `src` | source: a host path or <id>:/path |
-| `dst` | destination: a host path or <id>:/path |
+| Argument | Meaning                                |
+| -------- | -------------------------------------- |
+| `src`    | source: a host path or <id>:/path      |
+| `dst`    | destination: a host path or <id>:/path |
 
 ### `abox logs`
 
@@ -369,14 +376,14 @@ Copy files or directories between host and sandbox (<id>:/path on either side)
 
 Show the output of the sandbox's main process
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
+| Argument | Meaning            |
+| -------- | ------------------ |
+| `id`     | sandbox id or name |
 
-| Option | Meaning |
-| --- | --- |
+| Option         | Meaning                                   |
+| -------------- | ----------------------------------------- |
 | `-f, --follow` | keep printing new output (Ctrl-C to stop) |
-| `--tail <n>` | only the last N lines |
+| `--tail <n>`   | only the last N lines                     |
 
 ### `abox process`
 
@@ -390,16 +397,16 @@ Background processes in a sandbox
 
 Start a process that keeps running after the command returns
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
-| `cmd` | command and arguments (put "--" before them) |
+| Argument | Meaning                                      |
+| -------- | -------------------------------------------- |
+| `id`     | sandbox id or name                           |
+| `cmd`    | command and arguments (put "--" before them) |
 
-| Option | Meaning |
-| --- | --- |
-| `--cwd <dir>` | working directory inside the sandbox |
-| `-e, --env <K=V>` | environment variable (repeatable) |
-| `-y, --yes` | confirm without asking (when the manager asks) |
+| Option            | Meaning                                        |
+| ----------------- | ---------------------------------------------- |
+| `--cwd <dir>`     | working directory inside the sandbox           |
+| `-e, --env <K=V>` | environment variable (repeatable)              |
+| `-y, --yes`       | confirm without asking (when the manager asks) |
 
 #### `abox process ls`
 
@@ -407,9 +414,9 @@ Start a process that keeps running after the command returns
 
 List the processes of a sandbox
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
+| Argument | Meaning            |
+| -------- | ------------------ |
+| `id`     | sandbox id or name |
 
 #### `abox process logs`
 
@@ -417,13 +424,13 @@ List the processes of a sandbox
 
 Show the output of a background process
 
-| Argument | Meaning |
-| --- | --- |
+| Argument     | Meaning         |
+| ------------ | --------------- |
 | `process-id` | process id (p…) |
 
-| Option | Meaning |
-| --- | --- |
-| `--tail <n>` | only the last N lines |
+| Option         | Meaning                                   |
+| -------------- | ----------------------------------------- |
+| `--tail <n>`   | only the last N lines                     |
 | `-f, --follow` | keep printing new output (Ctrl-C to stop) |
 
 #### `abox process stop`
@@ -432,8 +439,8 @@ Show the output of a background process
 
 Stop a background process (and its children)
 
-| Argument | Meaning |
-| --- | --- |
+| Argument     | Meaning         |
+| ------------ | --------------- |
 | `process-id` | process id (p…) |
 
 ### `abox snapshot`
@@ -442,10 +449,10 @@ Stop a background process (and its children)
 
 Take a named snapshot of a sandbox (backends that support it)
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
-| `name` | snapshot name |
+| Argument | Meaning            |
+| -------- | ------------------ |
+| `id`     | sandbox id or name |
+| `name`   | snapshot name      |
 
 ### `abox restore`
 
@@ -453,10 +460,10 @@ Take a named snapshot of a sandbox (backends that support it)
 
 Restore a sandbox to a snapshot
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
-| `name` | snapshot name or id (as printed by "abox snapshot") |
+| Argument | Meaning                                             |
+| -------- | --------------------------------------------------- |
+| `id`     | sandbox id or name                                  |
+| `name`   | snapshot name or id (as printed by "abox snapshot") |
 
 ### `abox export`
 
@@ -464,17 +471,17 @@ Restore a sandbox to a snapshot
 
 Get the changes of a sandbox out (never applies anything to your project)
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | sandbox id or name |
+| Argument | Meaning            |
+| -------- | ------------------ |
+| `id`     | sandbox id or name |
 
-| Option | Meaning |
-| --- | --- |
+| Option              | Meaning                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--format <format>` | diff and patch print text, branch creates a git branch, files copies changed files (choices: "diff", "patch", "branch", "files", default: "diff") |
-| `-o, --out <path>` | diff/patch: write to this file; files: target directory |
-| `--branch <name>` | branch format: branch name (default abox/<id>-export) |
-| `--paths <list>` | only these paths, comma separated (relative to the workspace) |
-| `--force` | branch format: overwrite an existing export branch |
+| `-o, --out <path>`  | diff/patch: write to this file; files: target directory                                                                                           |
+| `--branch <name>`   | branch format: branch name (default abox/<id>-export)                                                                                             |
+| `--paths <list>`    | only these paths, comma separated (relative to the workspace)                                                                                     |
+| `--force`           | branch format: overwrite an existing export branch                                                                                                |
 
 ### `abox approvals`
 
@@ -488,8 +495,8 @@ Requests from agents that wait for your decision
 
 List pending approvals
 
-| Option | Meaning |
-| --- | --- |
+| Option      | Meaning                            |
+| ----------- | ---------------------------------- |
 | `-a, --all` | also show decided and expired ones |
 
 #### `abox approvals show`
@@ -498,9 +505,9 @@ List pending approvals
 
 Show everything about one approval before you decide
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | approval id |
+| Argument | Meaning     |
+| -------- | ----------- |
+| `id`     | approval id |
 
 #### `abox approvals approve`
 
@@ -508,12 +515,12 @@ Show everything about one approval before you decide
 
 Approve a request (one-time, bound to the exact request)
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | approval id |
+| Argument | Meaning     |
+| -------- | ----------- |
+| `id`     | approval id |
 
-| Option | Meaning |
-| --- | --- |
+| Option          | Meaning                       |
+| --------------- | ----------------------------- |
 | `--note <text>` | note stored with the decision |
 
 #### `abox approvals deny`
@@ -522,12 +529,12 @@ Approve a request (one-time, bound to the exact request)
 
 Deny a request
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | approval id |
+| Argument | Meaning     |
+| -------- | ----------- |
+| `id`     | approval id |
 
-| Option | Meaning |
-| --- | --- |
+| Option          | Meaning                       |
+| --------------- | ----------------------------- |
 | `--note <text>` | note stored with the decision |
 
 ### `abox policy`
@@ -542,8 +549,8 @@ What agents may do (human only)
 
 Show the active policy: profiles, agent contexts, where it comes from
 
-| Option | Meaning |
-| --- | --- |
+| Option           | Meaning                                        |
+| ---------------- | ---------------------------------------------- |
 | `--context <id>` | show the resolved rights of this agent context |
 
 #### `abox policy validate`
@@ -552,9 +559,9 @@ Show the active policy: profiles, agent contexts, where it comes from
 
 Check a policy file without changing anything (default: the active policy.yaml)
 
-| Argument | Meaning |
-| --- | --- |
-| `file` | policy file |
+| Argument | Meaning     |
+| -------- | ----------- |
+| `file`   | policy file |
 
 #### `abox policy edit`
 
@@ -562,8 +569,8 @@ Check a policy file without changing anything (default: the active policy.yaml)
 
 Edit policy.yaml in $VISUAL/$EDITOR; validated, shown as a diff and confirmed before it is saved
 
-| Option | Meaning |
-| --- | --- |
+| Option      | Meaning                                                                        |
+| ----------- | ------------------------------------------------------------------------------ |
 | `-y, --yes` | save without the final question (the edit itself still happens in your editor) |
 
 ### `abox audit`
@@ -572,14 +579,14 @@ Edit policy.yaml in $VISUAL/$EDITOR; validated, shown as a diff and confirmed be
 
 Show the audit log (who did what, tamper-evident)
 
-| Option | Meaning |
-| --- | --- |
-| `--sandbox <id>` | only entries about this sandbox |
-| `--since <when>` | only newer entries: a duration (1h, 2d) or an ISO date |
-| `--action <name>` | only this action (repeatable) |
-| `--actor <who>` | only this actor (human, agent:<id>, system) |
-| `--limit <n>` | at most N entries (newest) (default: "50") |
-| `--jsonl` | print entries as JSON Lines (one object per line) |
+| Option            | Meaning                                                |
+| ----------------- | ------------------------------------------------------ |
+| `--sandbox <id>`  | only entries about this sandbox                        |
+| `--since <when>`  | only newer entries: a duration (1h, 2d) or an ISO date |
+| `--action <name>` | only this action (repeatable)                          |
+| `--actor <who>`   | only this actor (human, agent:<id>, system)            |
+| `--limit <n>`     | at most N entries (newest) (default: "50")             |
+| `--jsonl`         | print entries as JSON Lines (one object per line)      |
 
 #### `abox audit verify`
 
@@ -591,7 +598,7 @@ Check the hash chain of the audit log for tampering
 
 `abox doctor [options]`
 
-Check backends, permissions, the audit chain and leftovers (non-zero exit when something is wrong)
+Check backends, permissions, the audit chain and leftovers (exit 1 when any check fails; warnings do not change the exit code)
 
 ### `abox reconcile`
 
@@ -599,10 +606,10 @@ Check backends, permissions, the audit chain and leftovers (non-zero exit when s
 
 Compare the registry with the backends; with --apply, clean up leftovers
 
-| Option | Meaning |
-| --- | --- |
-| `--apply` | repair: remove leftovers of interrupted creates, mark missing sandboxes removed |
-| `--remove-orphans` | with --apply: also remove backend sandboxes unknown to the registry |
+| Option             | Meaning                                                                         |
+| ------------------ | ------------------------------------------------------------------------------- |
+| `--apply`          | repair: remove leftovers of interrupted creates, mark missing sandboxes removed |
+| `--remove-orphans` | with --apply: also remove backend sandboxes unknown to the registry             |
 
 ### `abox gc`
 
@@ -610,8 +617,8 @@ Compare the registry with the backends; with --apply, clean up leftovers
 
 Remove expired sandboxes, stale workspaces, unused images and old logs
 
-| Option | Meaning |
-| --- | --- |
+| Option      | Meaning                         |
+| ----------- | ------------------------------- |
 | `--dry-run` | only show what would be removed |
 
 ### `abox token`
@@ -626,12 +633,12 @@ Tokens for the MCP HTTP server (one per client)
 
 Create a token for an agent context; the token is shown once
 
-| Argument | Meaning |
-| --- | --- |
+| Argument  | Meaning                                    |
+| --------- | ------------------------------------------ |
 | `context` | agent context from policy.yaml (e.g. orca) |
 
-| Option | Meaning |
-| --- | --- |
+| Option           | Meaning                                                           |
+| ---------------- | ----------------------------------------------------------------- |
 | `--label <text>` | what the token is for (default: "created with abox token create") |
 
 #### `abox token ls`
@@ -646,9 +653,9 @@ List tokens (never their values)
 
 Revoke a token
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | token id |
+| Argument | Meaning  |
+| -------- | -------- |
+| `id`     | token id |
 
 ### `abox mcp`
 
@@ -662,10 +669,10 @@ Model Context Protocol server for agents
 
 Run the MCP server: stdio (the agent starts it) or --http on loopback
 
-| Option | Meaning |
-| --- | --- |
-| `--http <host:port>` | serve Streamable HTTP on a loopback address, e.g. 127.0.0.1:8765 (token required) |
-| `--agent <context>` | agent context from policy.yaml for stdio (default: "default") (default: "default") |
+| Option               | Meaning                                                                            |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| `--http <host:port>` | serve Streamable HTTP on a loopback address, e.g. 127.0.0.1:8765 (token required)  |
+| `--agent <context>`  | agent context from policy.yaml for stdio (default: "default") (default: "default") |
 
 ### `abox init`
 
@@ -673,10 +680,10 @@ Run the MCP server: stdio (the agent starts it) or --http on loopback
 
 Set up .sandbox/ with an example project template and show how to connect an agent
 
-| Option | Meaning |
-| --- | --- |
+| Option           | Meaning                                                                                        |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
 | `--agent <name>` | print the MCP configuration for this agent (choices: "claude-code", "codex", "cursor", "orca") |
-| `--force` | overwrite an existing example template |
+| `--force`        | overwrite an existing example template                                                         |
 
 ### `abox host`
 
@@ -696,24 +703,24 @@ List host profiles
 
 Add an SSH host profile (metadata only; keys stay with ssh-agent / your key files)
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | short id, e.g. vps (a-z, 0-9, -) |
+| Argument | Meaning                          |
+| -------- | -------------------------------- |
+| `id`     | short id, e.g. vps (a-z, 0-9, -) |
 
-| Option | Meaning |
-| --- | --- |
-| `--hostname <name>` | DNS name or IP address |
-| `--user <name>` | login user (use a dedicated unprivileged one) |
-| `--port <n>` | ssh port |
-| `--zone <zone>` | trust zone: workstation, lab, shared, restricted (choices: "workstation", "lab", "shared", "restricted") |
-| `--backend <kind>` | container engine / backend on the host (repeatable or comma separated) |
-| `--engine-socket <path>` | engine socket path ON THE HOST (rootless docker/podman) |
-| `--identity-file <path>` | private key path (never its contents) |
-| `--ssh-alias <alias>` | use this Host alias from ~/.ssh/config |
-| `--proxy-jump <hops>` | jump hosts, [user@]host[:port], comma separated |
-| `--min-isolation <level>` | minimum isolation required on this host (choices: "none", "container", "hardened", "vm") |
-| `--data-dir <path>` | working directory root on the host (process/vm backends) |
-| `--tag <tag>` | tag (repeatable) |
+| Option                    | Meaning                                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `--hostname <name>`       | DNS name or IP address                                                                                   |
+| `--user <name>`           | login user (use a dedicated unprivileged one)                                                            |
+| `--port <n>`              | ssh port                                                                                                 |
+| `--zone <zone>`           | trust zone: workstation, lab, shared, restricted (choices: "workstation", "lab", "shared", "restricted") |
+| `--backend <kind>`        | container engine / backend on the host (repeatable or comma separated)                                   |
+| `--engine-socket <path>`  | engine socket path ON THE HOST (rootless docker/podman)                                                  |
+| `--identity-file <path>`  | private key path (never its contents)                                                                    |
+| `--ssh-alias <alias>`     | use this Host alias from ~/.ssh/config                                                                   |
+| `--proxy-jump <hops>`     | jump hosts, [user@]host[:port], comma separated                                                          |
+| `--min-isolation <level>` | minimum isolation required on this host (choices: "none", "container", "hardened", "vm")                 |
+| `--data-dir <path>`       | working directory root on the host (process/vm backends)                                                 |
+| `--tag <tag>`             | tag (repeatable)                                                                                         |
 
 #### `abox host rm`
 
@@ -722,8 +729,8 @@ Add an SSH host profile (metadata only; keys stay with ssh-agent / your key file
 Remove a host profile (its sandboxes are not touched)
 
 | Argument | Meaning |
-| --- | --- |
-| `id` | host id |
+| -------- | ------- |
+| `id`     | host id |
 
 #### `abox host test`
 
@@ -731,9 +738,9 @@ Remove a host profile (its sandboxes are not touched)
 
 Check reachability, host key, login and available backends
 
-| Argument | Meaning |
-| --- | --- |
-| `id` | host id (default: --host) |
+| Argument | Meaning                   |
+| -------- | ------------------------- |
+| `id`     | host id (default: --host) |
 
 #### `abox host trust`
 
@@ -742,11 +749,11 @@ Check reachability, host key, login and available backends
 Confirm the SSH host key of a host (compare its fingerprint first)
 
 | Argument | Meaning |
-| --- | --- |
-| `id` | host id |
+| -------- | ------- |
+| `id`     | host id |
 
-| Option | Meaning |
-| --- | --- |
+| Option                     | Meaning                                                     |
+| -------------------------- | ----------------------------------------------------------- |
 | `--fingerprint <SHA256:…>` | the fingerprint you verified; required when not interactive |
 
 #### `abox host forget-key`
@@ -756,8 +763,8 @@ Confirm the SSH host key of a host (compare its fingerprint first)
 Forget the stored host key (needed after a legitimate server key change)
 
 | Argument | Meaning |
-| --- | --- |
-| `id` | host id |
+| -------- | ------- |
+| `id`     | host id |
 
 #### `abox host import-ssh-config`
 
@@ -765,9 +772,9 @@ Forget the stored host key (needed after a legitimate server key change)
 
 Propose host profiles from ~/.ssh/config (read-only; imported hosts start in zone "shared")
 
-| Option | Meaning |
-| --- | --- |
-| `--dry-run` | only show what would be imported |
+| Option          | Meaning                                 |
+| --------------- | --------------------------------------- |
+| `--dry-run`     | only show what would be imported        |
 | `--path <file>` | ssh config file (default ~/.ssh/config) |
 
 ### `abox ssh`
@@ -776,9 +783,9 @@ Propose host profiles from ~/.ssh/config (read-only; imported hosts start in zon
 
 Open an SSH session to a host profile (uses the system ssh, abox's own known_hosts)
 
-| Argument | Meaning |
-| --- | --- |
-| `host` | host id |
+| Argument  | Meaning                             |
+| --------- | ----------------------------------- |
+| `host`    | host id                             |
 | `command` | remote command (put "--" before it) |
 
 ### `abox secret`
@@ -793,9 +800,9 @@ Secrets in your keyring (referenced by name from templates)
 
 Store a secret; the value is read from stdin or a prompt, never from arguments
 
-| Argument | Meaning |
-| --- | --- |
-| `ref` | secret reference, e.g. github-token |
+| Argument | Meaning                             |
+| -------- | ----------------------------------- |
+| `ref`    | secret reference, e.g. github-token |
 
 #### `abox secret ls`
 
@@ -809,9 +816,9 @@ List secret references (never values)
 
 Delete a secret from the keyring
 
-| Argument | Meaning |
-| --- | --- |
-| `ref` | secret reference |
+| Argument | Meaning          |
+| -------- | ---------------- |
+| `ref`    | secret reference |
 
 ### `abox completion`
 
@@ -819,10 +826,9 @@ Delete a secret from the keyring
 
 Print a shell completion script (bash, zsh or fish)
 
-| Argument | Meaning |
-| --- | --- |
-| `shell` | target shell (choices: "bash", "zsh", "fish") |
-
+| Argument | Meaning                                       |
+| -------- | --------------------------------------------- |
+| `shell`  | target shell (choices: "bash", "zsh", "fish") |
 
 ## Notes on selected commands
 
@@ -835,8 +841,8 @@ Print a shell completion script (bash, zsh or fish)
   audit entries.
 - **`abox shell`** needs an interactive terminal and fails with exit code 2 otherwise.
 - **`abox export`** never applies anything; see [quickstart](quickstart.md#workspace-modes).
-- **`abox snapshot` / `restore`** depend on the backend. With Docker, `restore` needs the snapshot
-  id printed by `snapshot` (`abox-snap/<id>:<name>`), not just the name.
+- **`abox snapshot` / `restore`** depend on the backend. `restore` accepts the snapshot name or its id
+  (as printed by `snapshot`); it discards everything changed since the snapshot.
 - **`abox approvals approve`** is bound to the exact request; see [quickstart](quickstart.md#approvals).
 - **`abox policy edit`** opens `policy.yaml` in `$VISUAL`/`$EDITOR`, validates, shows a diff and
   asks before saving. The change is versioned in the audit log. Agents cannot do any of this.

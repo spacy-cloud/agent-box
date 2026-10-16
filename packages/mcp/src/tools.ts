@@ -54,6 +54,27 @@ const envSchema = z
   .optional()
   .describe('Extra environment variables. Never put secrets here.');
 
+/**
+ * No workspace given -> an empty one. The server's own working directory is never shared by default
+ * (same rule as `abox create`); sharing a project needs an explicit `path`.
+ */
+function resolveWorkspace(
+  w:
+    | { mode?: string; path?: string; ref?: string; access?: 'ro' | 'rw'; exclude?: string[] }
+    | undefined,
+): NonNullable<CreateSandboxRequest['workspace']> {
+  if (!w || (w.mode === undefined && w.path === undefined && w.ref === undefined)) {
+    return { mode: 'empty', ...(w?.access ? { access: w.access } : {}) };
+  }
+  if (w.path === undefined && w.mode !== 'empty') {
+    throw invalidInput(
+      `workspace${w.mode ? ` mode "${w.mode}"` : ''} needs a project path`,
+      'Pass workspace.path (the host project directory), or omit workspace (or use mode "empty") for an empty workspace.',
+    );
+  }
+  return w as NonNullable<CreateSandboxRequest['workspace']>;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Registration helper
 // ---------------------------------------------------------------------------------------------
@@ -261,9 +282,14 @@ export function registerTools(register: Register): void {
     name: 'sandbox_create',
     title: 'Create sandbox',
     description:
-      'Create an isolated sandbox from a template. Pass a fresh request_id so a retry returns the same sandbox. If it answers status=pending_approval, tell the human to approve, then repeat the identical call.',
+      'Create an isolated sandbox from a template (without workspace the sandbox starts empty; pass workspace.path to share a project). Pass a fresh request_id so a retry returns the same sandbox. If it answers status=pending_approval, tell the human to approve, then repeat the identical call.',
     input: {
-      template: z.string().min(1).max(64).describe('Template name from template_list.'),
+      template: z
+        .string()
+        .min(1)
+        .max(64)
+        .optional()
+        .describe('Template name from template_list (default: defaults.template of the config).'),
       name: z.string().max(64).optional().describe('Short label (letters, digits, . _ -).'),
       host: z
         .string()
@@ -371,11 +397,18 @@ export function registerTools(register: Register): void {
         };
       }
       if (o?.mounts) overrides.mounts = o.mounts;
+      const template = args.template ?? rt.abox.config.defaults.template;
+      if (!template) {
+        throw invalidInput(
+          'template is required',
+          'Pick one from template_list; no default template is configured.',
+        );
+      }
       const req: CreateSandboxRequest = {
-        template: args.template,
+        template,
         ...(args.name !== undefined ? { name: args.name } : {}),
         ...(args.host !== undefined ? { host: args.host } : {}),
-        ...(args.workspace ? { workspace: args.workspace } : {}),
+        workspace: resolveWorkspace(args.workspace),
         ...(Object.keys(overrides).length ? { overrides } : {}),
         ...(args.request_id !== undefined ? { requestId: args.request_id } : {}),
       };

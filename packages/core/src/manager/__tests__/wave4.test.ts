@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseConfig } from '../../config/config.js';
 import { AboxError } from '../../errors.js';
 import { FakeProvider } from './fake-provider.js';
 import type { NetworkEvent } from '../../types.js';
@@ -547,11 +546,30 @@ describe('listSnapshots', () => {
     await a.snapshot(A, id, 'two');
     const list = await a.listSnapshots(A, id);
     expect(list.map((s) => s.name)).toEqual(['one', 'two']);
-    expect(list[0]).toMatchObject({ id: 'one', name: 'one', createdAt: expect.any(Number) });
+    expect(list[0]).toMatchObject({ id: 'snap-1-one', name: 'one', createdAt: expect.any(Number) });
     await expect(a.listSnapshots(B, id)).rejects.toMatchObject({ code: 'not_found' });
     expect((await a.listSnapshots(HUMAN, id)).length).toBe(2);
     await a.removeSandbox(A, id);
     await expect(a.listSnapshots(A, id)).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
+describe('restore by snapshot name', () => {
+  it('accepts the name or the id; the newest snapshot of a name wins; unknown stays not_found', async () => {
+    const a = await setup({ fake: { capabilities: { snapshots: true } } });
+    const id = await newBox(a, A);
+    await a.writeFile(A, id, '/workspace/f.txt', 'v1');
+    const first = await a.snapshot(A, id, 'ckpt');
+    await a.writeFile(A, id, '/workspace/f.txt', 'v2');
+    const second = await a.snapshot(A, id, 'ckpt');
+    await a.writeFile(A, id, '/workspace/f.txt', 'v3');
+    expect((await a.restore(A, id, 'ckpt')).restored).toBe(second.snapshotId);
+    expect((await a.readFile(A, id, '/workspace/f.txt')).content).toBe('v2');
+    expect((await a.restore(A, id, first.snapshotId)).restored).toBe(first.snapshotId);
+    expect((await a.readFile(A, id, '/workspace/f.txt')).content).toBe('v1');
+    await expect(a.restore(A, id, 'never-taken')).rejects.toMatchObject({ code: 'not_found' });
+    const audit = await actionsOf(a, 'sandbox.restore');
+    expect(audit[0]).toMatchObject({ snapshotId: second.snapshotId, requested: 'ckpt' });
   });
 });
 
@@ -593,6 +611,13 @@ describe('doctor and optional backends', () => {
     return p;
   };
 
+  const brokenDocker = (host: ConstructorParameters<typeof FakeProvider>[0]): FakeProvider => {
+    const p = new FakeProvider(host, { kind: 'docker', now: env.clock.now });
+    p.status = () =>
+      Promise.resolve({ ok: false, version: '', details: [], warnings: ['docker socket missing'] });
+    return p;
+  };
+
   it('an unusable Podman nobody needs is a warning, not a failure', async () => {
     const a = await setup({ providers: { podman: brokenPodman } });
     const d = await a.doctor(HUMAN);
@@ -603,13 +628,23 @@ describe('doctor and optional backends', () => {
     expect(d.checks.filter((x) => x.level === 'error')).toEqual([]);
   });
 
-  it('is an error when podman is the default backend', async () => {
+  it('a Podman-only machine: the unusable Docker is only a warning', async () => {
+    const goodPodman = (host: ConstructorParameters<typeof FakeProvider>[0]): FakeProvider =>
+      new FakeProvider(host, { kind: 'podman', now: env.clock.now });
+    const a = await setup({ bare: true, providers: { podman: goodPodman, docker: brokenDocker } });
+    const d = await a.doctor(HUMAN);
+    expect(d.checks.find((x) => x.id === 'backend.local.docker')!.level).toBe('warn');
+    expect(d.ok).toBe(true);
+  });
+
+  it('no container engine at all: the Docker check is an error', async () => {
     const a = await setup({
-      providers: { podman: brokenPodman },
-      config: parseConfig('backends:\n  default: podman\n'),
+      bare: true,
+      providers: { podman: brokenPodman, docker: brokenDocker },
     });
     const d = await a.doctor(HUMAN);
-    expect(d.checks.find((x) => x.id === 'backend.local.podman')!.level).toBe('error');
+    expect(d.checks.find((x) => x.id === 'backend.local.docker')!.level).toBe('error');
+    expect(d.checks.find((x) => x.id === 'backend.local.podman')!.level).toBe('warn');
     expect(d.ok).toBe(false);
   });
 

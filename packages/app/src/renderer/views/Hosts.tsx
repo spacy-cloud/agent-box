@@ -21,12 +21,7 @@ import {
   primaryFingerprint,
 } from '../../shared/host-key-flow';
 import { formatDuration, formatTimestamp } from '../../shared/format';
-import {
-  FORWARD_KINDS,
-  HOST_BACKENDS,
-  HOST_ZONES,
-  ISOLATION_LEVELS,
-} from '../../shared/constants';
+import { FORWARD_KINDS, HOST_BACKENDS, HOST_ZONES, ISOLATION_LEVELS } from '../../shared/constants';
 import type {
   ForwardState,
   HostProfile,
@@ -57,7 +52,13 @@ export function HostsView() {
     const list = rows.filter(
       (r) =>
         f === '' ||
-        [r.profile.id, r.profile.hostname, r.profile.sshConfigAlias, r.profile.user, ...r.profile.tags]
+        [
+          r.profile.id,
+          r.profile.hostname,
+          r.profile.sshConfigAlias,
+          r.profile.user,
+          ...r.profile.tags,
+        ]
           .filter(Boolean)
           .join(' ')
           .toLowerCase()
@@ -101,7 +102,10 @@ export function HostsView() {
 
   async function toggleFavorite(row: HostRow) {
     try {
-      await call('hosts:update', { id: row.profile.id, patch: { favorite: !row.profile.favorite } });
+      await call('hosts:update', {
+        id: row.profile.id,
+        patch: { favorite: !row.profile.favorite },
+      });
       await q.reload();
     } catch (e) {
       notify('error', (e as Error).message);
@@ -271,7 +275,12 @@ function targetText(p: HostProfile, thisComputer: string): string {
   }`;
 }
 
-const ZONE_TONE = { workstation: 'neutral', lab: 'info', shared: 'warn', restricted: 'danger' } as const;
+const ZONE_TONE = {
+  workstation: 'neutral',
+  lab: 'info',
+  shared: 'warn',
+  restricted: 'danger',
+} as const;
 
 function HostLine(props: {
   row: HostRow;
@@ -364,7 +373,9 @@ function HostLine(props: {
             </button>
             <button type="button" onClick={props.onForwards}>
               {t('hosts.action.forwards')}
-              {p.portForwards.length > 0 ? ` (${row.forwardsRunning}/${p.portForwards.length})` : ''}
+              {p.portForwards.length > 0
+                ? ` (${row.forwardsRunning}/${p.portForwards.length})`
+                : ''}
               <span className="sr-only"> {p.id}</span>
             </button>
             <button type="button" onClick={props.onEdit}>
@@ -503,7 +514,9 @@ function HostDialog(props: {
           ...(d.proxyJump.trim() ? { proxyJump: d.proxyJump.trim() } : {}),
           ...(d.identityFile.trim() ? { identityFile: d.identityFile.trim() } : {}),
           zone: d.zone,
-          ...(d.minIsolation ? { minIsolation: d.minIsolation as (typeof ISOLATION_LEVELS)[number] } : {}),
+          ...(d.minIsolation
+            ? { minIsolation: d.minIsolation as (typeof ISOLATION_LEVELS)[number] }
+            : {}),
           backends: d.backends as Array<(typeof HOST_BACKENDS)[number]>,
           ...(d.engineSocket.trim() ? { engineSocket: d.engineSocket.trim() } : {}),
           tags,
@@ -1059,7 +1072,8 @@ export function HostKeyDialog(props: {
             <dd>
               {state.stored.map((k) => (
                 <div key={k.fingerprint}>
-                  <span className="muted small">{k.type}</span> <code className="fp">{k.fingerprint}</code>
+                  <span className="muted small">{k.type}</span>{' '}
+                  <code className="fp">{k.fingerprint}</code>
                 </div>
               ))}
             </dd>
@@ -1067,13 +1081,18 @@ export function HostKeyDialog(props: {
             <dd>
               {state.presented.map((k) => (
                 <div key={k.fingerprint}>
-                  <span className="muted small">{k.type}</span> <code className="fp">{k.fingerprint}</code>
+                  <span className="muted small">{k.type}</span>{' '}
+                  <code className="fp">{k.fingerprint}</code>
                 </div>
               ))}
             </dd>
           </dl>
           {state.forget === 'none' ? (
-            <button type="button" className="danger" onClick={() => dispatch({ type: 'forgetRequest' })}>
+            <button
+              type="button"
+              className="danger"
+              onClick={() => dispatch({ type: 'forgetRequest' })}
+            >
               {t('hosts.key.forget')}
             </button>
           ) : (
@@ -1111,7 +1130,8 @@ export function HostKeyDialog(props: {
           </Banner>
           {state.keys.map((k) => (
             <div key={k.fingerprint}>
-              <span className="muted small">{k.type}</span> <code className="fp">{k.fingerprint}</code>
+              <span className="muted small">{k.type}</span>{' '}
+              <code className="fp">{k.fingerprint}</code>
             </div>
           ))}
         </>
@@ -1206,7 +1226,9 @@ function ForwardsDialog(props: {
                           <button
                             type="button"
                             onClick={() =>
-                              void run(() => call('hosts:forwardStop', { id: host.id, name: f.name }))
+                              void run(() =>
+                                call('hosts:forwardStop', { id: host.id, name: f.name }),
+                              )
                             }
                           >
                             {t('hosts.fw.stop')}

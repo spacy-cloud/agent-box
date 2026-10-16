@@ -1,7 +1,8 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 
-const pkg = (name: string) => fileURLToPath(new URL(`./packages/${name}/src/index.ts`, import.meta.url));
+const pkg = (name: string) =>
+  fileURLToPath(new URL(`./packages/${name}/src/index.ts`, import.meta.url));
 
 // Tests run against TypeScript sources directly; `pnpm build` is not required for tests.
 export const alias = {

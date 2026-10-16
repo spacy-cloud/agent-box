@@ -254,7 +254,10 @@ function TerminalTab(props: { id: string; name: string; state: string }) {
   const { t } = useApp();
   if (props.state !== 'running') {
     return (
-      <EmptyState title={t('detail.terminal.notRunning.title')} text={t('detail.terminal.notRunning.text')} />
+      <EmptyState
+        title={t('detail.terminal.notRunning.title')}
+        text={t('detail.terminal.notRunning.text')}
+      />
     );
   }
   return (
@@ -373,6 +376,7 @@ function FilesTab(props: { id: string }) {
   const [expBusy, setExpBusy] = useState(false);
   const [branch, setBranch] = useState(`abox/${shortId(props.id)}`);
   const [branchConfirm, setBranchConfirm] = useState(false);
+  const [copyTarget, setCopyTarget] = useState('');
 
   const entries = (dir.data ?? []) as DirEntry[];
   const parts = path.split('/').filter(Boolean);
@@ -393,6 +397,31 @@ function FilesTab(props: { id: string }) {
     try {
       const r = await call('export:save', { id: props.id, format });
       if (r.saved) notify('ok', t('detail.files.saved', { path: r.saved }));
+    } catch (e) {
+      notify('error', (e as Error).message);
+    }
+  }
+
+  async function copyIn() {
+    try {
+      const target = path ? `${path}/` : '';
+      const r = await call('files:copyIn', {
+        id: props.id,
+        sandboxPath: copyTarget || target || '.',
+      });
+      if (r.copied) {
+        notify('ok', t('detail.files.copiedIn', { path: r.copied }));
+        await dir.reload();
+      }
+    } catch (e) {
+      notify('error', (e as Error).message);
+    }
+  }
+
+  async function copyOut(sandboxPath: string) {
+    try {
+      const r = await call('files:copyOut', { id: props.id, sandboxPath });
+      if (r.copied) notify('ok', t('detail.files.copiedOut', { path: r.copied }));
     } catch (e) {
       notify('error', (e as Error).message);
     }
@@ -442,6 +471,7 @@ function FilesTab(props: { id: string }) {
                   <th scope="col">{t('detail.files.name')}</th>
                   <th scope="col">{t('detail.files.size')}</th>
                   <th scope="col">{t('detail.files.modified')}</th>
+                  <th scope="col">{t('sandboxes.col.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -465,6 +495,17 @@ function FilesTab(props: { id: string }) {
                     </th>
                     <td>{e.type === 'file' ? formatBytes(e.size) : ''}</td>
                     <td className="mono">{formatTimestamp(e.mtimeMs)}</td>
+                    <td>
+                      {e.type === 'file' || e.type === 'dir' ? (
+                        <button
+                          type="button"
+                          onClick={() => void copyOut(path ? `${path}/${e.name}` : e.name)}
+                        >
+                          {t('detail.files.copyOut')}
+                          <span className="sr-only"> {e.name}</span>
+                        </button>
+                      ) : null}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -472,6 +513,24 @@ function FilesTab(props: { id: string }) {
           </div>
         )
       ) : null}
+
+      <div className="with-button">
+        <Field label={t('detail.files.copyInTarget')} hint={t('detail.files.copyInHint')}>
+          {(id) => (
+            <input
+              id={id}
+              type="text"
+              value={copyTarget}
+              placeholder={path ? `${path}/` : '.'}
+              onChange={(e) => setCopyTarget(e.target.value)}
+              spellCheck={false}
+            />
+          )}
+        </Field>
+        <button type="button" onClick={() => void copyIn()}>
+          {t('detail.files.copyIn')}
+        </button>
+      </div>
 
       <h2 className="h-small">{t('detail.files.changes')}</h2>
       <p className="muted">{t('detail.files.changesHint')}</p>
@@ -700,7 +759,9 @@ function LogsTab(props: { id: string }) {
           >
             {logs.data?.content ?? ''}
           </pre>
-          {logs.data?.truncated ? <p className="muted small">{t('detail.logs.truncated')}</p> : null}
+          {logs.data?.truncated ? (
+            <p className="muted small">{t('detail.logs.truncated')}</p>
+          ) : null}
         </>
       )}
     </>

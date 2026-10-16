@@ -78,15 +78,20 @@ export function SshPanel(props: { visible: boolean }) {
   const { t } = useApp();
   const { tabs, active, close, select } = useSshTabs();
   if (tabs.length === 0) return null;
+  const activeTab = tabs.find((x) => x.key === active);
 
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const idx = tabs.findIndex((x) => x.key === active);
-    let next = idx;
+    let next: number;
     if (e.key === 'ArrowRight') next = (idx + 1) % tabs.length;
     else if (e.key === 'ArrowLeft') next = (idx - 1 + tabs.length) % tabs.length;
     else if (e.key === 'Home') next = 0;
     else if (e.key === 'End') next = tabs.length - 1;
-    else return;
+    else if (e.key === 'Delete' && active) {
+      e.preventDefault();
+      close(active);
+      return;
+    } else return;
     e.preventDefault();
     const target = tabs[next];
     if (target) {
@@ -98,18 +103,22 @@ export function SshPanel(props: { visible: boolean }) {
   return (
     <section aria-labelledby="h-ssh" hidden={!props.visible} className="ssh-panel">
       <h2 id="h-ssh">{t('hosts.terminals')}</h2>
-      <div role="tablist" aria-label={t('hosts.terminals')} className="ssh-tabs" onKeyDown={onKey}>
-        {tabs.map((tab) => (
-          <span
-            key={tab.key}
-            className="ssh-tab"
-            data-active={tab.key === active}
-            style={{ '--term-accent': hostColor(tab.host) } as CSSProperties}
-          >
+      <div className="ssh-bar">
+        <div
+          role="tablist"
+          aria-label={t('hosts.terminals')}
+          className="ssh-tabs"
+          onKeyDown={onKey}
+        >
+          {tabs.map((tab) => (
             <button
+              key={tab.key}
               id={`ssh-tab-${tab.key}`}
               type="button"
               role="tab"
+              className="ssh-tab"
+              data-active={tab.key === active}
+              style={{ '--term-accent': hostColor(tab.host) } as CSSProperties}
               aria-selected={tab.key === active}
               aria-controls={`ssh-panel-${tab.key}`}
               tabIndex={tab.key === active ? 0 : -1}
@@ -119,16 +128,13 @@ export function SshPanel(props: { visible: boolean }) {
               SSH {tab.host}
               {tab.n > 1 ? ` #${tab.n}` : ''}
             </button>
-            <button
-              type="button"
-              className="linklike"
-              aria-label={t('hosts.closeTerminal', { host: tab.host })}
-              onClick={() => close(tab.key)}
-            >
-              ×
-            </button>
-          </span>
-        ))}
+          ))}
+        </div>
+        {activeTab ? (
+          <button type="button" onClick={() => close(activeTab.key)}>
+            {t('hosts.closeTerminal', { host: activeTab.host })}
+          </button>
+        ) : null}
       </div>
       {tabs.map((tab) => (
         <div

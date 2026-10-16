@@ -132,7 +132,10 @@ const hostFields = {
   limits: z
     .object({
       cpus: z.number().positive().max(1024).optional(),
-      memory: z.string().regex(/^\d{1,6}(\.\d+)?[kmgt]?b?$/i).optional(),
+      memory: z
+        .string()
+        .regex(/^\d{1,6}(\.\d+)?[kmgt]?b?$/i)
+        .optional(),
       sandboxes: z.number().int().min(1).max(10_000).optional(),
     })
     .strict(),
@@ -206,6 +209,9 @@ export const IPC = {
   'templates:show': z.object({ name: shortText }).strict(),
 
   'files:list': z.object({ id, path: z.string().max(4096).optional() }).strict(),
+  /** The host side is chosen in a native dialog by the human, never passed by the renderer. */
+  'files:copyIn': z.object({ id, sandboxPath: z.string().min(1).max(4096) }).strict(),
+  'files:copyOut': z.object({ id, sandboxPath: z.string().min(1).max(4096) }).strict(),
   'export:run': z
     .object({
       id,
@@ -289,9 +295,7 @@ export const IPC = {
     z.object({ kind: z.literal('sandbox'), id, ...ttySize }).strict(),
     z.object({ kind: z.literal('ssh'), host: hostId, ...ttySize }).strict(),
   ]),
-  'tty:input': z
-    .object({ sessionId, data: z.string().min(1).max(TTY_MAX_INPUT) })
-    .strict(),
+  'tty:input': z.object({ sessionId, data: z.string().min(1).max(TTY_MAX_INPUT) }).strict(),
   'tty:resize': z.object({ sessionId, ...ttySize }).strict(),
   'tty:close': z.object({ sessionId }).strict(),
 
@@ -306,7 +310,10 @@ export const IPC = {
   'templates:test': z
     .object({ name: shortText, progressKey, confirmed: z.boolean().optional() })
     .strict(),
-  'templates:export': z.object({ name: shortText, yaml: yamlText }).strict(),
+  /** `dockerfile`: renders the Dockerfile of the SAVED template `name` (the yaml field is ignored for it). */
+  'templates:export': z
+    .object({ name: shortText, yaml: yamlText, format: z.enum(['yaml', 'dockerfile']).optional() })
+    .strict(),
 
   // -- hosts and ssh (human only: these channels exist only in the GUI, never in MCP) ---------------------------
   'hosts:list': none,

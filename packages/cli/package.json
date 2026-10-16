@@ -25,6 +25,8 @@
   "dependencies": {
     "@abox/backend-docker": "workspace:*",
     "@abox/backend-process": "workspace:*",
+    "@abox/backend-python": "workspace:*",
+    "@abox/backend-vm": "workspace:*",
     "@abox/core": "workspace:*",
     "@abox/mcp": "workspace:*",
     "@abox/runtime": "workspace:*",

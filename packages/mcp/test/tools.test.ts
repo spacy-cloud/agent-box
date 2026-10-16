@@ -150,6 +150,37 @@ describe('templates, create, list, inspect, delete', () => {
     expect((s.s['sandbox'] as { state: string }).state).toBe('stopped');
   });
 
+  it('without a workspace the sandbox starts empty; a mode that needs a path is refused', async () => {
+    const c = await a.call('sandbox_create', { template: 'fake-box' });
+    expect(c.s['ok']).toBe(true);
+    expect((c.s['sandbox'] as { workspace: { mode: string } }).workspace.mode).toBe('empty');
+    const noPath = await a.call('sandbox_create', {
+      template: 'fake-box',
+      workspace: { mode: 'copy' },
+    });
+    expect(noPath.isError).toBe(true);
+    expect(noPath.s['code']).toBe('invalid_input');
+    expect(String(noPath.s['hint'])).toContain('workspace.path');
+    const withRef = await a.call('sandbox_create', {
+      template: 'fake-box',
+      workspace: { ref: 'main' },
+    });
+    expect(withRef.s['code']).toBe('invalid_input');
+  });
+
+  it('without a template the config default is used, else the call is refused', async () => {
+    const none = await a.call('sandbox_create', { workspace: { mode: 'empty' } });
+    expect(none.isError).toBe(true);
+    expect(none.s['code']).toBe('invalid_input');
+    await a.close();
+    abox.close();
+    abox = await openAbox(env, { config: 'defaults:\n  template: fake-box\n' });
+    a = await connect(abox, 'agent-a');
+    const ok = await a.call('sandbox_create', { workspace: { mode: 'empty' } });
+    expect(ok.s['ok']).toBe(true);
+    expect((ok.s['sandbox'] as { template: string }).template).toBe('fake-box');
+  });
+
   it('start resumes a stopped sandbox, is idempotent, and refuses expired ones', async () => {
     const c = await a.call('sandbox_create', {
       template: 'fake-box',

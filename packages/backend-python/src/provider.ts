@@ -153,6 +153,11 @@ export class PythonProvider implements SandboxProvider {
     return this.container.instanceId;
   }
 
+  /** The configured hardened OCI runtime of the container mode, if any. */
+  get hardenedRuntime(): string | undefined {
+    return this.container.hardenedRuntime;
+  }
+
   /** Isolation of the default (container) mode. Venv sandboxes report `none` in their `SandboxInfo`. */
   get isolation(): IsolationLevel {
     return this.container.isolation;

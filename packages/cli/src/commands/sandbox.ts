@@ -42,7 +42,10 @@ export function registerSandbox(program: Command, cli: Cli): void {
   program
     .command('create')
     .description('Create a sandbox from a template')
-    .argument('<template>', 'template name (see "abox template ls")')
+    .argument(
+      '[template]',
+      'template name (see "abox template ls"); default: defaults.template of config.yaml',
+    )
     .option('--name <name>', 'sandbox name')
     .option(
       '-w, --workspace <path>',
@@ -67,7 +70,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
     .option('-y, --yes', 'confirm risky settings without asking (required when not interactive)')
     .action(
       async (
-        template: string,
+        templateArg: string | undefined,
         o: {
           name?: string;
           workspace?: string;
@@ -83,6 +86,13 @@ export function registerSandbox(program: Command, cli: Cli): void {
         },
       ) => {
         const rt = await cli.rt();
+        const template = templateArg ?? rt.abox.config.defaults.template;
+        if (!template) {
+          throw invalid(
+            'no template given',
+            'Pass a template ("abox template ls" lists them), or set defaults.template in config.yaml.',
+          );
+        }
         const network: NonNullable<NonNullable<CreateSandboxRequest['overrides']>['network']> = {};
         if (o.net) network.mode = o.net;
         const allow = commaList(o.allow);

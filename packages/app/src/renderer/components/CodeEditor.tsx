@@ -1,7 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { EditorState } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
-import { EditorView, drawSelection, highlightActiveLine, keymap, lineNumbers } from '@codemirror/view';
+import {
+  EditorView,
+  drawSelection,
+  highlightActiveLine,
+  keymap,
+  lineNumbers,
+} from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import {
   HighlightStyle,
@@ -102,6 +108,10 @@ export function YamlEditor(props: {
       parent: host.current,
     });
     view.current = v;
+    // A scrollable region must be reachable by keyboard (also when the editor is read-only).
+    v.scrollDOM.tabIndex = 0;
+    v.scrollDOM.setAttribute('role', 'group');
+    v.scrollDOM.setAttribute('aria-label', props.label);
     return () => {
       v.destroy();
       view.current = null;

@@ -81,7 +81,9 @@ test('detail tabs: activity, files (directory + diff export), logs, snapshots, t
     // the process backend has no terminal: the tab says so instead of showing a dead screen
     await page.getByRole('tab', { name: 'Terminal' }).click();
     await expect(page.getByRole('tabpanel').getByRole('alert')).toBeVisible();
-    await expect(page.getByRole('tabpanel').getByRole('button', { name: 'Neu verbinden' })).toBeEnabled();
+    await expect(
+      page.getByRole('tabpanel').getByRole('button', { name: 'Neu verbinden' }),
+    ).toBeEnabled();
 
     await page.getByRole('tab', { name: 'Aktivität' }).click();
     await expect(page.getByRole('tabpanel')).toContainText('sandbox.create');

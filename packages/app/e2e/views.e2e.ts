@@ -50,7 +50,10 @@ test('policy: read-only profiles, edit with live validation, diff and confirmati
     await expect(rows.first()).toContainText('aktuell');
     await expect(rows.first()).toContainText('Mensch (GUI/CLI)');
     // the older revision shows the old content and the difference to the current policy
-    await rows.last().getByRole('button', { name: /Ansehen/ }).click();
+    await rows
+      .last()
+      .getByRole('button', { name: /Ansehen/ })
+      .click();
     const dlg = page.getByRole('dialog', { name: /Policy-Revision/ });
     await expect(dlg.locator('pre.code')).toContainText('ttl: 4h');
     await expect(dlg.getByLabel('Diff zwischen Revision und aktueller Policy')).toContainText(
@@ -128,8 +131,10 @@ test('settings: backend status, doctor, MCP configuration, token create/revoke, 
   try {
     await page.getByRole('button', { name: 'Einstellungen' }).click();
     const backends = page.getByRole('table', { name: 'Backends' });
-    await expect(backends.locator('tr', { hasText: 'process' })).toContainText('verfügbar');
-    await expect(backends.locator('tr', { hasText: 'docker' })).toContainText('nicht verfügbar');
+    const backendRow = (name: string) =>
+      backends.locator('tr').filter({ has: page.getByRole('cell', { name, exact: true }) });
+    await expect(backendRow('process')).toContainText('verfügbar');
+    await expect(backendRow('docker')).toContainText('nicht verfügbar');
     await expect(page.getByText('Prüfungen')).toBeVisible();
 
     // MCP: the command to copy, for the agent contexts of the policy

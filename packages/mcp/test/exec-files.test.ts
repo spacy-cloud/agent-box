@@ -244,6 +244,13 @@ describe('snapshots and access requests', () => {
     expect((await a.call('sandbox_read_file', { id, path: '/workspace/s.txt' })).s['content']).toBe(
       'v1',
     );
+    // by name (the backend's snapshot id is not the name)
+    await a.call('sandbox_write_file', { id, path: '/workspace/s.txt', content: 'v3' });
+    const byName = await a.call('sandbox_restore', { id, name: 'before' });
+    expect(byName.s['ok']).toBe(true);
+    expect((await a.call('sandbox_read_file', { id, path: '/workspace/s.txt' })).s['content']).toBe(
+      'v1',
+    );
   });
 
   it('access_request beyond the profile queues an approval, within the profile applies', async () => {

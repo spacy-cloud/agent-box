@@ -19,7 +19,8 @@ const view = (status: HostKeyView['status']): HostKeyView => ({
     { type: 'ssh-rsa', fingerprint: FP2 },
     { type: 'ssh-ed25519', fingerprint: FP1 },
   ],
-  trusted: status === 'changed' ? [{ type: 'ssh-ed25519', fingerprint: 'SHA256:' + 'c'.repeat(43) }] : [],
+  trusted:
+    status === 'changed' ? [{ type: 'ssh-ed25519', fingerprint: 'SHA256:' + 'c'.repeat(43) }] : [],
 });
 const run = (...actions: Parameters<typeof hostKeyReducer>[1][]): HostKeyState =>
   actions.reduce(hostKeyReducer, initialHostKeyState);
@@ -49,7 +50,11 @@ describe('host key dialog state', () => {
   });
 
   it('un-ticking the confirmation disables trusting again', () => {
-    let s = run({ type: 'check' }, { type: 'checked', view: view('unknown') }, { type: 'confirm', value: true });
+    let s = run(
+      { type: 'check' },
+      { type: 'checked', view: view('unknown') },
+      { type: 'confirm', value: true },
+    );
     s = hostKeyReducer(s, { type: 'confirm', value: false });
     expect(canTrust(s)).toBe(false);
   });

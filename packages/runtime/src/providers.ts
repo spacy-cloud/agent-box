@@ -25,6 +25,19 @@ export type ProviderFactoryMaker = (ctx: ProviderContext) => ProviderFactory;
 
 const registry = new Map<BackendKind, ProviderFactoryMaker>();
 
+/**
+ * The stronger OCI runtime configured for an engine (`config.yaml` `backends.docker.runtime` /
+ * `backends.podman.runtime`, e.g. `runsc` or `kata`), read defensively: absent or not a non-empty
+ * string means none. The provider only reports isolation `hardened` when the engine really has it.
+ */
+export function configuredRuntime(
+  kind: 'docker' | 'podman',
+  config: AboxConfig,
+): string | undefined {
+  const v = (config.backends[kind] as { runtime?: unknown } | undefined)?.runtime;
+  return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+}
+
 /** Socket of a container engine: config.yaml, then the environment, then the default location. */
 export function engineSocket(
   kind: 'docker' | 'podman',
@@ -47,6 +60,11 @@ export function engineSocket(
   return join(runtime, 'podman', 'podman.sock');
 }
 
+function hardened(kind: 'docker' | 'podman', ctx: ProviderContext): { hardenedRuntime?: string } {
+  const rt = configuredRuntime(kind, ctx.config);
+  return rt ? { hardenedRuntime: rt } : {};
+}
+
 // The container backends stamp the id of this abox installation on everything they create and only
 // see objects carrying it (`DockerProviderOptions.instanceId`). Read lazily: only when a provider
 // is built, so commands that never touch an engine do not create the file.
@@ -56,6 +74,7 @@ registry.set(
     createDockerProvider(host, {
       socketPath: engineSocket('docker', ctx, host.engineSocket),
       instanceId: loadInstanceId(ctx.paths.dataDir),
+      ...hardened('docker', ctx),
     }),
 );
 registry.set(
@@ -64,6 +83,7 @@ registry.set(
     createPodmanProvider(host, {
       socketPath: engineSocket('podman', ctx, host.engineSocket),
       instanceId: loadInstanceId(ctx.paths.dataDir),
+      ...hardened('podman', ctx),
     }),
 );
 registry.set(
@@ -86,6 +106,7 @@ registry.set(
       docker: {
         socketPath: engineSocket('docker', ctx, host.engineSocket),
         instanceId: loadInstanceId(ctx.paths.dataDir),
+        ...hardened('docker', ctx),
       },
       dataDir: host.dataDir ?? ctx.paths.dataDir,
     }),

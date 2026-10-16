@@ -1,9 +1,9 @@
 # Security
 
 This document describes the security model of abox: what it tries to protect, how, and where the
-limits are. abox is in early development. **Most of what is described here is design intent;
-implementation status varies by component and is not independently audited.** See
-[Known limitations and not verified](#known-limitations-and-not-verified).
+limits are. abox is pre-release software and has **not been independently audited**. The
+mechanisms below are implemented and covered by tests unless the text says otherwise; what is not
+verified is listed honestly in [Known limitations and not verified](#known-limitations-and-not-verified).
 
 To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 
@@ -48,7 +48,9 @@ Plain statements:
 - A `container` sandbox is **not** a security boundary against a determined attacker with a kernel
   exploit. It is good protection against accidents, careless agents and most untrusted scripts.
 - `none` provides no protection at all. It exists for trusted code and as a reference backend.
-- Stronger levels need additional software that abox does not install for you.
+- Stronger levels need additional software that abox does not install for you: `hardened` needs a
+  stronger OCI runtime in the engine, selected with `backends.docker.runtime` in `config.yaml`
+  (not verified, see below), `vm` needs KVM and QEMU (see [backends](backends.md#vm)).
 
 ## Container hardening defaults
 
@@ -106,13 +108,16 @@ Exceptions are possible only per destination and with approval.
 **Limits:**
 
 - Only **HTTP(S)** is supported (plain HTTP and `CONNECT` tunnelling). No SSH, raw TCP or UDP, no
-  DNS for the sandbox itself.
+  DNS for the sandbox itself. An allowlist entry without a port allows 80 and 443; `host:port`
+  allows exactly that port.
 - Filtering is **domain-level**. A permitted domain can still be used to exfiltrate data.
 - **No TLS content inspection**, except for hosts configured for secret injection (see below).
 - Programs that do not honor proxy settings **fail** (there is no other route). That is intended
   but can surprise users.
 - Network mode `open` has no filtering and should require a strong isolation level.
-- For VMs the same principle needs a separate virtual network or host firewall rules.
+- For VMs the same proxy runs on the host and is reached through a unix socket and QEMU's
+  `guestfwd`; see [backends](backends.md#vm) for the trade-offs (reduced QEMU seccomp filter in
+  `allowlist` mode, and `open` mode reaching the host's loopback and LAN).
 
 The proxy contract is in `docs/internal/proxy-contract.md`.
 
@@ -217,7 +222,8 @@ does not stop an attacker with full write access to the database from rewriting 
 
 ## Remote hosts and SSH
 
-These rules apply once sandboxes run on a remote host (planned).
+These rules apply to sandboxes on a remote host. Remote hosts are implemented but experimental;
+see [hosts and SSH](hosts-ssh.md) for setup and the list of what has been verified.
 
 - **Agents never manage hosts.** They cannot create, read or change host profiles. An agent
   context lists the hosts it may use (default: only `local`).
@@ -247,40 +253,111 @@ These rules apply once sandboxes run on a remote host (planned).
 
 ## Verification
 
-Security assumptions are meant to be captured as executable tests, not only prose. The planned and
-partly implemented security suite covers, among others:
+Security claims are captured as executable tests, not only prose. `packages/e2e` drives the real
+Docker backend through the real manager and checks, among others:
 
-- A sandbox cannot read `~/.ssh`, also not through a symlink in the workspace.
-- Access to the container engine socket fails.
-- Network `none`: no DNS, no connections. `allowlist`: only allowed domains; others are denied and
-  logged; direct IP access fails.
-- Fork bombs and memory hogs are stopped by limits.
+- A sandbox cannot read `~/.ssh`, also not through a symlink in the workspace or one the sandbox
+  planted itself; the engine socket is not reachable; `.git` is read-only in `mount` mode.
+- Network `none`: no DNS, no connections. `allowlist`: only allowed domains, others are denied and
+  audited; direct IP access, private ranges, the Docker host and other sandboxes are unreachable.
+- Fork bombs and memory hogs are stopped by limits; the TTL is enforced.
 - Agent context A can neither see nor influence sandboxes of context B.
-- `policy.yaml` cannot be changed through MCP, and the attempt is logged.
+- `policy.yaml` cannot be changed through the agent path, and the attempt is audited.
 - Path canonicalization: `..`, symlinks, case, Unicode tricks.
-- Remote: agents cannot read or change host profiles; creating a sandbox on a disallowed host is
-  rejected; a changed host key blocks the connection; the SSH agent is unreachable from a sandbox;
-  host quotas hold; routers, private addresses and cloud metadata are unreachable (also via DNS
-  rebinding); a `shared` host requires approval and minimum isolation.
+- `inject: proxy`: the token never appears in the sandbox, the registry, the audit log, logs or
+  engine metadata; the sandbox cannot override the injected header.
+- Approvals: reuse, one-time use, binding to the request and the policy hash, expiry, concurrency.
+- Project template trust by content hash.
+- Remote policy rules (agents cannot use a host outside their context, zone minimums, host quotas)
+  against a provider stub.
+
+The tests run only with `ABOX_TEST_DOCKER=1` against a local engine and are not part of the
+default `pnpm test`. A failing test there is a finding, not noise.
 
 ## Known limitations and not verified
 
-abox is pre-release software and has not been independently audited. In particular:
+abox is pre-release software and has not been independently audited. Everything below is a
+statement of what is **not** guaranteed or **not** verified. The list is meant to be complete as
+of this documentation; it will be published per release alongside the changelog.
 
-- Container isolation shares the host kernel. Kernel or runtime vulnerabilities can defeat it.
-- `hardened` and `vm` levels depend on additional software that must be installed and configured
-  separately, and their behavior on a given system has not been verified for every setup.
-- Rootless engine behavior and networking differ between Docker and Podman versions and
-  distributions; not every combination has been tested.
-- Output masking of secrets is best effort.
-- The egress proxy does not cover non-HTTP(S) protocols, does not inspect TLS content (except for
-  injection hosts), and cannot stop data leaving through an allowed domain.
-- The audit hash chain does not protect against an attacker who can rewrite the entire database.
-- GUI applications, browsers, audio and GPU access inside sandboxes are out of scope for now.
-- Remote host support and the VM and Python backends are not yet implemented; the rules above
-  describe the intended behavior.
-- Multi-agent quotas (per agent versus global) are not finalized.
+### Isolation
 
-A concrete list of known limitations and unverified claims will be published **per release**
-alongside the changelog. Until the first release, treat every claim in this document as a design
-goal that is verified only to the extent that a corresponding test exists in the repository.
+- **Container isolation shares the host kernel.** A kernel or runtime vulnerability can defeat it.
+  Only the `vm` level helps against that, and then only as far as QEMU/KVM does.
+- **Podman and rootless engines are not verified.** The Podman provider differs from the Docker
+  one only in the default socket; its tests are skipped without a Podman socket. With a rootless
+  engine, writable bind mounts may be read-only for the sandbox user (use `copy` workspaces).
+- **Hardened runtimes (gVisor, Kata) are not verified.** `backends.docker.runtime` /
+  `backends.podman.runtime` in `config.yaml` select one, and without it in the engine the
+  backend stays at `container`, but no stronger runtime has been installed and tested with abox.
+- A rootful Docker daemon is root-equivalent for everyone who can reach its socket. `abox doctor`
+  warns about it.
+- **Disk quotas are unsupported on `overlayfs`** (they need xfs with project quotas, btrfs or
+  zfs). A template with `resources.disk` is rejected there, so disk exhaustion by a sandbox is not
+  contained on such engines.
+- **The `process` backend (and the Python venv mode) has no isolation at all.** Commands run as
+  your user; limits, network rules and mounts do not apply. abox only makes sure you confirm it.
+- **VM backend:** `allowlist` mode runs QEMU with a _reduced_ seccomp sandbox, because the
+  `guestfwd` relay needs `fork`; `open` mode gives the guest access to the host's loopback
+  (`10.0.2.2`) and your LAN; image checksum lists are fetched over HTTPS but their GPG signatures
+  are not verified; x86_64 with `/dev/kvm` only. VM tests run on the developer machine, not in CI.
+- A sandbox can see and use what its workspace contains. `copy`/`sync` copy `.git` (history,
+  remote URLs, hooks) unless excluded; `mount` lets the sandbox edit your real files.
+- Repository-controlled git filter drivers configured in the user's own repository config run for
+  `mount` and `worktree` workspaces on the host (hooks, fsmonitor, pagers, editors and diff
+  drivers are neutralised).
+- GUI applications, browsers, audio and GPU access inside sandboxes are out of scope.
+
+### Network and secrets
+
+- The egress proxy handles **HTTP(S) only** and filters by **domain**. A permitted domain can
+  still be used to exfiltrate data, and **domain fronting** through an allowed CDN is possible.
+- For hosts that are _not_ configured for secret injection, tunnels (`CONNECT`) are **opaque**:
+  abox cannot inspect or restrict what goes through them.
+- TLS interception (for `inject: proxy`) speaks **HTTP/1.1 only**; clients that insist on HTTP/2
+  or pin certificates fail for those hosts.
+- Programs that ignore proxy settings simply fail in `allowlist` mode (intended).
+- **Secret masking in output is best effort.** Known values and their base64/URL/JSON forms are
+  masked; transformed or partial values are not. `inject: env` and `inject: file` expose the
+  value to code in the sandbox by design.
+- Secrets need a Secret Service keyring; there is no fallback store.
+
+### Policy, audit and agents
+
+- **The audit hash chain detects modification but cannot detect truncation at the tail.** Someone
+  with write access to the database can drop the newest entries, or recompute the whole chain.
+- There is no command blocklist: `npm test` can run anything. The limits are those of the
+  environment.
+- Multi-agent quotas (per agent versus global) are not finalised.
+- TOCTOU between a path check and its use is out of scope; providers must not follow symlinks in
+  the final component.
+- Approvals protect against agents, not against yourself: an overly broad `policy.yaml` or a hasty
+  "Allow" remains your responsibility.
+
+### Remote hosts
+
+- Remote hosts are **only verified against a local `sshd` container with a fake engine socket**
+  (host-key handling, tunnel, ControlMaster, zone and quota rules with a provider stub). Real
+  sandboxes on a real remote rootless Docker or Podman engine have not been exercised.
+- DNS rebinding resistance of the proxy is covered by unit tests of the resolve-then-connect
+  logic, not by an end-to-end test with a flipping DNS server.
+
+### Integrations
+
+- **The Orca plugin has not been tested in a running Orca**; it was validated against Orca's own
+  manifest parser and exercised with mocks, and it was written against the CLI source.
+- **The agent-kit skill's triggering has not been evaluated interactively**: the structure is
+  tested, whether Claude invokes `use-sandbox` for the right tasks is not (five manual scenarios
+  are listed and marked "not yet run").
+- The desktop app is unreleased; its end-to-end tests exist but were not run for this release
+  candidate documentation.
+
+### Platform and project
+
+- **Linux only.** macOS and Windows are not supported.
+- No telemetry, no accounts, no cloud service: also no automatic update and no signed releases yet.
+- The file formats (templates, `policy.yaml`, `hosts.yaml`, JSON output, MCP results) are not
+  stable until the first release.
+
+Until the first release, treat every claim in this document as verified only to the extent that a
+corresponding test exists in the repository.

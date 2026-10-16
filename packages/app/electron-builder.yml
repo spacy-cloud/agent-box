@@ -1,0 +1,46 @@
+# abox desktop app: Linux x64 AppImage (and an unpacked "dir" build).
+# No auto-update, no telemetry: nothing in the app phones home, and no update feed is configured.
+appId: cloud.spacy.abox
+productName: abox
+copyright: Copyright (c) abox contributors
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+  # node-pty: only what runs (JS + the compiled N-API addon); no sources, no Windows/macOS prebuilds
+  - '!**/node_modules/node-pty/{src,deps,third_party,scripts,typings,prebuilds}/**'
+  - '!**/node_modules/node-pty/build/{obj.target,node_addon_api*,Makefile,config.gypi,pty.target.mk,binding.Makefile}'
+  - '!**/node_modules/node-pty/build/Release/{obj.target,.deps}/**'
+  - '!**/node_modules/node-pty/binding.gyp'
+  - '!**/node_modules/**/{test,tests,__tests__}/**'
+  - '!**/node_modules/**/*.{ts,d.ts,md,markdown}'
+asar: true
+# native addons cannot be dlopen()ed from inside the archive
+asarUnpack:
+  - '**/node_modules/node-pty/build/Release/*.node'
+# The addon is N-API (ABI stable): the binary built against the system Node runs in Electron, so nothing is rebuilt here.
+npmRebuild: false
+nodeGypRebuild: false
+buildDependenciesFromSource: false
+publish: null
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: dir
+      arch: [x64]
+  category: Development
+  synopsis: Agent Sandbox Manager
+  description: Local sandboxes for AI agents - approvals, templates, hosts and terminals.
+  artifactName: abox-${version}-${arch}.${ext}
+  executableName: abox
+  maintainer: abox contributors <noreply@spacy.cloud>
+  desktop:
+    entry:
+      Name: abox
+      Comment: Agent Sandbox Manager
+      Categories: Development;Utility;
+      Terminal: 'false'

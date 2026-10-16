@@ -10,15 +10,15 @@ give an agent anything you cannot afford to lose.
 
 ## Requirements
 
-| What                    | Needed for                                            |
-| ----------------------- | ----------------------------------------------------- |
-| Linux                   | everything (macOS and Windows are not supported)      |
-| Node.js >= 24           | running abox                                          |
-| pnpm 10                 | building from source (`corepack enable` provides it)  |
-| git                     | building, and the workspace modes `clone`/`worktree`  |
-| Docker or Podman        | the container backends (the default for most templates) |
-| `secret-tool` (libsecret) | optional: secrets in your desktop keyring           |
-| `/dev/kvm`, QEMU        | optional: the VM backend, see [backends](backends.md) |
+| What                      | Needed for                                              |
+| ------------------------- | ------------------------------------------------------- |
+| Linux                     | everything (macOS and Windows are not supported)        |
+| Node.js >= 24             | running abox                                            |
+| pnpm 10                   | building from source (`corepack enable` provides it)    |
+| git                       | building, and the workspace modes `clone`/`worktree`    |
+| Docker or Podman          | the container backends (the default for most templates) |
+| `secret-tool` (libsecret) | optional: secrets in your desktop keyring               |
+| `/dev/kvm`, QEMU          | optional: the VM backend, see [backends](backends.md)   |
 
 `abox doctor` checks what is available on your machine (see
 [troubleshooting](troubleshooting.md#abox-doctor)).
@@ -30,7 +30,6 @@ git clone https://github.com/spacy-cloud/agent-box.git
 cd agent-box
 pnpm install
 pnpm build
-chmod +x packages/cli/dist/bin.js        # the root build does not set the executable bit
 mkdir -p ~/.local/bin
 ln -sf "$PWD/packages/cli/dist/bin.js" ~/.local/bin/abox
 abox --version
@@ -111,16 +110,21 @@ running sandbox unless you pass `-f`.
 
 A sandbox sees a **workspace**: a directory at `/workspace` (the default) inside the sandbox. The
 mode decides how your project directory gets there. You choose it with `--mode` together with
-`--workspace <dir>` (use `.` for the current directory); templates can set a default.
+`--workspace <dir>` (use `.` for the current directory).
 
-| Mode       | What happens                                                          | Git inside the sandbox | Typical use                              |
-| ---------- | --------------------------------------------------------------------- | ---------------------- | ---------------------------------------- |
-| `copy`     | the directory is copied in (symlinks are not followed)               | whatever you copied    | unknown code, maximum separation (default) |
-| `clone`    | an independent clone on a new branch `abox/<id>`, uncommitted changes are not included | works      | work on a repo without touching the checkout |
-| `worktree` | a git worktree on a new branch `abox/<id>`, bound read-write          | does not work          | parallel agents on one repo              |
-| `mount`    | your directory is bind-mounted; `.git` is read-only                   | read-only              | fast iteration; **edits your real files** |
-| `empty`    | an empty directory                                                    | -                      | experiments with no input                |
-| `sync`     | one-way initial copy, meant for remote hosts                          | whatever you copied    | remote hosts                             |
+- **Without `--workspace`** the workspace is `empty`: nothing of the current directory is shared.
+- **With `--workspace` and no `--mode`** the mode of the template is used (`copy` for all built-in
+  templates).
+- `--mode` or `--ref` without `--workspace` is an `invalid_input` error (except `--mode empty`).
+
+| Mode       | What happens                                                                           | Git inside the sandbox | Typical use                                         |
+| ---------- | -------------------------------------------------------------------------------------- | ---------------------- | --------------------------------------------------- |
+| `copy`     | the directory is copied in (symlinks are not followed)                                 | whatever you copied    | unknown code, maximum separation (template default) |
+| `clone`    | an independent clone on a new branch `abox/<id>`, uncommitted changes are not included | works                  | work on a repo without touching the checkout        |
+| `worktree` | a git worktree on a new branch `abox/<id>`, bound read-write                           | does not work          | parallel agents on one repo                         |
+| `mount`    | your directory is bind-mounted; `.git` is read-only                                    | read-only              | fast iteration; **edits your real files**           |
+| `empty`    | an empty directory                                                                     | -                      | experiments with no input                           |
+| `sync`     | one-way initial copy, meant for remote hosts                                           | whatever you copied    | remote hosts                                        |
 
 Things to know:
 
@@ -147,12 +151,12 @@ $ abox rm -f try1
 
 Export formats:
 
-| Format   | Result                                                                   |
-| -------- | ------------------------------------------------------------------------ |
-| `diff`   | unified diff on standard output (or `-o <file>`)                         |
-| `patch`  | like `diff`, as a mail-style patch for `git am`/`git apply` (use `-o <file>`) |
+| Format   | Result                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `diff`   | unified diff on standard output (or `-o <file>`)                                                                         |
+| `patch`  | like `diff`, as a mail-style patch for `git am`/`git apply` (use `-o <file>`)                                            |
 | `branch` | a branch `abox/<id>-export` (or `--branch <name>`) in your repository containing the changes; your checkout is untouched |
-| `files`  | the changed files copied to a directory (`-o <dir>`)                     |
+| `files`  | the changed files copied to a directory (`-o <dir>`)                                                                     |
 
 abox flags changed files that can run code on your machine later (CI workflows, git hooks,
 `Makefile`, `package.json` scripts, `.envrc`, editor tasks and so on). Review these especially
@@ -161,7 +165,7 @@ carefully. There is no command that applies a result to your project; that step 
 ## Approvals
 
 abox has two kinds of callers. **You** (the `human` context) are trusted: abox asks you to confirm
-risky settings, and `--yes` answers for you. An **agent** works under a *profile* in `policy.yaml`.
+risky settings, and `--yes` answers for you. An **agent** works under a _profile_ in `policy.yaml`.
 Whatever the profile allows runs without asking (in the default approval mode), whatever goes
 beyond it needs a decision from you, and whatever the profile forbids is denied outright.
 
@@ -200,6 +204,10 @@ Without a `policy.yaml`, a conservative built-in policy applies, with the agent 
 sandboxes, 4 CPUs, 8 GB, 4 hours, the templates `node-dev`, `py-dev`, `py-offline` and
 `alpine-min`, workspace modes `worktree`, `clone`, `copy`, `empty`, network `none` or `allowlist`
 with the `npm`, `pypi` and `github` presets, no extra mounts, no secrets.
+
+**A `policy.yaml` replaces the built-in policy entirely.** Once you write one, the built-in agent
+contexts are gone: define every context you need (`contexts:`) and the profiles they use. See
+[MCP: identity and contexts](mcp.md#identity-and-contexts).
 
 ## Connect Claude Code
 

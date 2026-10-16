@@ -69,6 +69,7 @@ export class FakeProvider implements SandboxProvider {
   readonly ttyExits: Array<(code: number) => void> = [];
   private readonly seenHashes = new Set<string>();
   private pinCounter = 0;
+  private snapCounter = 0;
   readonly opts: FakeOptions;
   private readonly caps: ProviderCapabilities;
   updateNetwork?: SandboxProvider['updateNetwork'];
@@ -126,8 +127,10 @@ export class FakeProvider implements SandboxProvider {
     if (this.caps.snapshots) {
       this.snapshot = (id, name) => {
         const sb = this.get(id);
-        sb.snapshots.set(name, new Map(sb.files));
-        return Promise.resolve(name);
+        // like the Docker backend: the id is not the name
+        const snapshotId = `snap-${++this.snapCounter}-${name}`;
+        sb.snapshots.set(snapshotId, new Map(sb.files));
+        return Promise.resolve(snapshotId);
       };
       this.restore = (id, snap) => {
         const sb = this.get(id);

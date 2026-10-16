@@ -18,12 +18,13 @@ import {
   type HostConnection,
   type HostResolver,
   type HostTargetResolver,
+  type ProviderFactory,
   type HostsEnv,
   type SandboxProvider,
   type SecretStore,
 } from '@abox/core';
 import { readFileSync } from 'node:fs';
-import { providerFactories } from './providers.js';
+import { configuredRuntime, providerFactories } from './providers.js';
 
 export interface OpenAboxOptions {
   /** Environment for path resolution (default `process.env`; `ABOX_HOME=<dir>` isolates everything). */
@@ -131,6 +132,8 @@ export async function openAbox(opts: OpenAboxOptions = {}): Promise<AboxRuntime>
     resolveTarget = async (hostId) => (await resolver(hostId)).connection;
   }
 
+  await initHardenedProviders(factories, config, resolveTarget);
+
   let abox: Abox;
   try {
     abox = await Abox.open({
@@ -209,5 +212,33 @@ function localIsDefined(hostsFile: string): boolean {
     return /^[ \t]*local[ \t]*:/m.test(readFileSync(hostsFile, 'utf8'));
   } catch {
     return false;
+  }
+}
+
+/**
+ * `capabilities()` is synchronous and the manager checks a template's isolation against it before
+ * anything else touches the engine. A configured hardened runtime (runsc, kata) is only known to be
+ * present after asking the engine, so those providers are built and initialised up front (once, for
+ * the local host) and the factory hands out that instance. Without a configured runtime nothing
+ * connects to an engine here. An unreachable engine is not an error: isolation stays `container`.
+ */
+async function initHardenedProviders(
+  factories: Partial<Record<BackendKind, ProviderFactory>>,
+  config: AboxConfig,
+  resolveTarget: ((hostId: string) => Promise<HostConnection>) | undefined,
+): Promise<void> {
+  const wanted = (['docker', 'podman', 'python'] as const).filter(
+    (k) => factories[k] && configuredRuntime(k === 'podman' ? 'podman' : 'docker', config),
+  );
+  if (wanted.length === 0) return;
+  const local = resolveTarget
+    ? await resolveTarget('local').catch(() => undefined)
+    : ({ host: 'local', kind: 'local' } as HostConnection);
+  if (!local) return;
+  for (const kind of wanted) {
+    const factory = factories[kind] as ProviderFactory;
+    const ready = factory(local) as SandboxProvider & { init?: () => Promise<void> };
+    await ready.init?.().catch(() => undefined);
+    factories[kind] = (h) => (h.host === local.host ? ready : factory(h));
   }
 }

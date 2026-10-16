@@ -10,7 +10,7 @@
   },
   "packageManager": "pnpm@10.34.7",
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node scripts/postbuild.mjs",
     "clean": "tsc -b --clean",
     "typecheck": "tsc -b",
     "test": "vitest run",

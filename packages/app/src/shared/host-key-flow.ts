@@ -48,7 +48,9 @@ export function hostKeyReducer(state: HostKeyState, action: HostKeyAction): Host
       return { phase: 'changed', presented: v.keys, stored: v.trusted, forget: 'none' };
     }
     case 'confirm':
-      return state.phase === 'unknown' && !state.busy ? { ...state, confirmed: action.value } : state;
+      return state.phase === 'unknown' && !state.busy
+        ? { ...state, confirmed: action.value }
+        : state;
     case 'trust':
       // Without the explicit confirmation nothing happens.
       return state.phase === 'unknown' && state.confirmed && !state.busy
@@ -63,10 +65,14 @@ export function hostKeyReducer(state: HostKeyState, action: HostKeyAction): Host
         ? { ...state, forget: 'ask' }
         : state;
     case 'forgetCancel':
-      return state.phase === 'changed' && state.forget === 'ask' ? { ...state, forget: 'none' } : state;
+      return state.phase === 'changed' && state.forget === 'ask'
+        ? { ...state, forget: 'none' }
+        : state;
     case 'forgetConfirm':
       // Only the second confirmation (stage `ask`) starts the removal.
-      return state.phase === 'changed' && state.forget === 'ask' ? { ...state, forget: 'busy' } : state;
+      return state.phase === 'changed' && state.forget === 'ask'
+        ? { ...state, forget: 'busy' }
+        : state;
     case 'forgotten':
       return state.phase === 'changed' && state.forget === 'busy' ? { phase: 'checking' } : state;
     case 'failed':

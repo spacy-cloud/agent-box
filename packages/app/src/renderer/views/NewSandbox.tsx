@@ -14,6 +14,8 @@ const STEPS: Step[] = ['template', 'options', 'summary'];
 interface Form {
   template: string;
   name: string;
+  /** Host profile id; empty = this computer. */
+  host?: string;
   workspaceMode: string;
   workspacePath: string;
   cpus: string;
@@ -27,6 +29,7 @@ interface Form {
 const EMPTY_FORM: Form = {
   template: '',
   name: '',
+  host: '',
   workspaceMode: '',
   workspacePath: '',
   cpus: '',
@@ -62,6 +65,7 @@ export function buildCreateInput(f: Form): IpcInput<'sandboxes:create'> {
   return {
     template: f.template,
     ...(f.name.trim() ? { name: f.name.trim() } : {}),
+    ...(f.host && f.host !== 'local' ? { host: f.host } : {}),
     ...(Object.keys(workspace).length > 0 ? { workspace } : {}),
     ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
   };
@@ -71,6 +75,7 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
   const { t, notify } = useApp();
   const templates = useQuery('templates:list', undefined, { live: false });
   const policy = useQuery('policy:get', undefined, { live: false });
+  const hosts = useQuery('hosts:list', undefined, { live: false });
   const [step, setStep] = useState<Step>('template');
   const [form, setForm] = useState<Form>(EMPTY_FORM);
   const [progress, setProgress] = useState<string[]>([]);
@@ -282,6 +287,20 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
               />
             )}
           </Field>
+          <Field label={t('new.host')} hint={t('new.hostHint')}>
+            {(id) => (
+              <select id={id} value={form.host ?? ''} onChange={(e) => set('host', e.target.value)}>
+                <option value="">{t('hosts.thisComputer')}</option>
+                {(hosts.data ?? [])
+                  .filter((r) => r.profile.kind === 'ssh' && r.profile.backends.length > 0)
+                  .map((r) => (
+                    <option key={r.profile.id} value={r.profile.id}>
+                      {r.profile.id} ({t(`hosts.zone.${r.profile.zone}`)})
+                    </option>
+                  ))}
+              </select>
+            )}
+          </Field>
           <Field label={t('new.workspaceMode')}>
             {(id) => (
               <select
@@ -416,6 +435,8 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
             </dd>
             <dt>{t('new.name')}</dt>
             <dd className="plain">{form.name || t('new.auto')}</dd>
+            <dt>{t('new.host')}</dt>
+            <dd className="plain">{form.host || t('hosts.thisComputer')}</dd>
             <dt>{t('new.workspaceMode')}</dt>
             <dd className="plain">
               {form.workspaceMode ? t(`workspace.${form.workspaceMode}`) : t('new.templateDefault')}{' '}

@@ -98,7 +98,7 @@ Implementation notes and deviations (`packages/proxy`, first implementation):
   ("container rootfs is marked read-only"). Working recipe (verified in
   `src/docker.test.ts`): `--read-only --tmpfs /run/abox-proxy:uid=10001,mode=0700 -v /etc/abox-proxy`
   (anonymous volume; remove with `docker rm -v`), create, `docker cp config.json
-  <c>:/etc/abox-proxy/config.json`, start. The tar entry should be owned by uid 10001 with
+<c>:/etc/abox-proxy/config.json`, start. The tar entry should be owned by uid 10001 with
   mode 0600 (the file contains secrets); a 0644 file owned by another uid still works but is
   world-readable inside the container. The image pre-creates both directories owned by 10001.
 - **Reading `ca.crt`:** `docker cp` cannot read tmpfs mounts. Fetch the CA with exec:

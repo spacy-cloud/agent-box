@@ -67,7 +67,11 @@ export interface SandboxProvider {
   copyIn(id: SandboxId, hostPath: string, sandboxPath: string): Promise<void>;
   /** Copy a sandbox file or directory (recursively) to the host. */
   copyOut(id: SandboxId, sandboxPath: string, hostPath: string): Promise<void>;
-  readFile(id: SandboxId, sandboxPath: string, maxBytes: number): Promise<{ data: Buffer; truncated: boolean; size: number }>;
+  readFile(
+    id: SandboxId,
+    sandboxPath: string,
+    maxBytes: number,
+  ): Promise<{ data: Buffer; truncated: boolean; size: number }>;
   writeFile(id: SandboxId, sandboxPath: string, data: Buffer, mode?: number): Promise<void>;
   listDir(id: SandboxId, sandboxPath: string): Promise<DirEntry[]>;
 

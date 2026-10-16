@@ -34,6 +34,9 @@ importers:
 
   packages/app:
     dependencies:
+      '@abox/backend-docker':
+        specifier: workspace:*
+        version: link:../backend-docker
       '@abox/core':
         specifier: workspace:*
         version: link:../core
@@ -207,6 +210,12 @@ importers:
       '@abox/backend-process':
         specifier: workspace:*
         version: link:../backend-process
+      '@abox/backend-python':
+        specifier: workspace:*
+        version: link:../backend-python
+      '@abox/backend-vm':
+        specifier: workspace:*
+        version: link:../backend-vm
       '@abox/core':
         specifier: workspace:*
         version: link:../core

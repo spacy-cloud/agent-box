@@ -51,7 +51,9 @@ export type FormPatch = Partial<Omit<TemplateForm, 'valid' | 'yamlError'>>;
 const str = (v: unknown): string =>
   typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '';
 const strList = (v: unknown): string[] =>
-  Array.isArray(v) ? v.filter((x) => typeof x === 'string' || typeof x === 'number').map(String) : [];
+  Array.isArray(v)
+    ? v.filter((x) => typeof x === 'string' || typeof x === 'number').map(String)
+    : [];
 
 export function emptyForm(): TemplateForm {
   return {
@@ -81,7 +83,11 @@ export function parseForm(text: string): TemplateForm {
   const doc = parseDocument(text, { uniqueKeys: true });
   const form = emptyForm();
   if (doc.errors.length > 0) {
-    return { ...form, valid: false, yamlError: doc.errors[0]!.message.split('\n')[0] ?? 'YAML error' };
+    return {
+      ...form,
+      valid: false,
+      yamlError: doc.errors[0]!.message.split('\n')[0] ?? 'YAML error',
+    };
   }
   if (doc.contents === null) return form;
   if (!isMap(doc.contents)) {
@@ -187,10 +193,8 @@ export function applyForm(text: string, patch: FormPatch): string {
   if (patch.disk !== undefined) setOrDelete(doc, ['resources', 'disk'], patch.disk.trim());
   if (patch.pids !== undefined) setOrDelete(doc, ['resources', 'pids'], numeric(patch.pids));
   if (patch.ttl !== undefined) setOrDelete(doc, ['resources', 'ttl'], patch.ttl.trim());
-  if (patch.networkMode !== undefined)
-    setOrDelete(doc, ['network', 'mode'], patch.networkMode);
-  if (patch.networkAllow !== undefined)
-    setOrDelete(doc, ['network', 'allow'], patch.networkAllow);
+  if (patch.networkMode !== undefined) setOrDelete(doc, ['network', 'mode'], patch.networkMode);
+  if (patch.networkAllow !== undefined) setOrDelete(doc, ['network', 'allow'], patch.networkAllow);
   if (patch.networkPresets !== undefined)
     setOrDelete(doc, ['network', 'presets'], patch.networkPresets);
   if (patch.mounts !== undefined) {

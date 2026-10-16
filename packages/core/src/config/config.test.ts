@@ -23,8 +23,14 @@ describe('config', () => {
       approvalTtlMs: 15 * 60_000,
     });
     expect(cfg.logs.retentionDays).toBe(3);
-    expect(cfg.backends.default).toBe('docker');
+    expect(cfg.defaults.template).toBeUndefined();
     expect(cfg.secrets).toEqual({});
+  });
+
+  it('backends.default was removed and says so', () => {
+    expect(() => parseConfig('backends:\n  default: podman\n')).toThrowError(
+      /backends\.default was removed/,
+    );
   });
 
   it('empty file yields defaults', () => {
@@ -40,7 +46,6 @@ describe('config', () => {
       file,
       `
 backends:
-  default: podman
   docker: { socket: /run/user/1000/docker.sock }
   podman: { socket: /run/user/1000/podman/podman.sock }
 defaults:
@@ -59,7 +64,6 @@ secrets:
 `,
     );
     const cfg = loadConfig(file);
-    expect(cfg.backends.default).toBe('podman');
     expect(cfg.backends.docker.socket).toBe('/run/user/1000/docker.sock');
     expect(cfg.defaults.template).toBe('node-dev');
     expect(cfg.limits.execTimeoutMs).toBe(5000);

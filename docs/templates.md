@@ -1,10 +1,10 @@
 # Template handbook
 
 A **template** describes an environment in YAML: base system, packages, tools, resources, network
-and mounts. From a template abox builds an *environment image* once (cached by content hash) and
+and mounts. From a template abox builds an _environment image_ once (cached by content hash) and
 then creates any number of sandboxes from it.
 
-Templates are the place where you decide *what is possible*. Who may use them, and with which
+Templates are the place where you decide _what is possible_. Who may use them, and with which
 limits, is decided separately by the policy (see [security](security.md#policy-model)). A template
 can never grant itself more than the policy allows.
 
@@ -55,44 +55,47 @@ abox template build node-lts            # optional: create does it on first use
 abox create node-lts --mode copy --workspace ~/projects/my-app
 ```
 
+If you set `defaults.template` in `config.yaml` (see [CLI](cli.md#configyaml)), `abox create` without a
+template argument uses it; it is optional and there is no built-in default.
+
 ## Field reference
 
 All keys are **strict**: an unknown key is an error with file, line and column. YAML values that
 look like numbers or booleans but must be text (`memory: 4g` is fine, `env: {PORT: 3000}` is not)
 have to be quoted.
 
-| Field         | Type                   | Default                       | Required | Notes |
-| ------------- | ---------------------- | ----------------------------- | -------- | ----- |
-| `apiVersion`  | integer                | -                             | yes      | must be `1` |
-| `name`        | string                 | -                             | yes      | `^[a-z0-9]([a-z0-9-]{0,62})$` |
-| `description` | string, max 2000 chars | empty                         | no       | shown to agents; `validate` warns below 20 characters |
-| `backend`     | `docker` `podman` `process` `python` `vm` | -          | yes      | also required when the template uses `extends` |
-| `isolation`   | `none` `container` `hardened` `vm` | natural level of the backend | no | a **minimum**: backends that deliver less are rejected |
-| `base`        | object                 | `{}`                          | depends  | see below |
-| `packages`    | object                 | none                          | no       | per package manager |
-| `tools`       | list of strings        | none                          | no       | tool presets, `name` or `name@version` |
-| `setup`       | list of `{run: text}`  | none                          | no       | shell commands run at build time |
-| `user`        | object                 | `agent`, uid 1000, no sudo    | no       | never root |
-| `workspace`   | object                 | `copy`, `/workspace`, `rw`    | no       | |
-| `resources`   | object                 | see below                     | no       | |
-| `network`     | object                 | mode `none`                   | no       | |
-| `mounts`      | list                   | none                          | no       | extra host directories, each explicit |
-| `env`         | map of strings         | none                          | no       | no secrets |
-| `secrets`     | list                   | none                          | no       | references into your keyring |
-| `labels`      | map of strings         | none                          | no       | free metadata; `use-for` is shown to agents |
-| `extends`     | template name          | none                          | no       | see [inheritance](#inheritance-with-extends) |
-| `python`      | object                 | none                          | no       | only for `backend: python` |
-| `vm`          | object                 | none                          | no       | only for `backend: vm` |
+| Field         | Type                                      | Default                      | Required | Notes                                                  |
+| ------------- | ----------------------------------------- | ---------------------------- | -------- | ------------------------------------------------------ |
+| `apiVersion`  | integer                                   | -                            | yes      | must be `1`                                            |
+| `name`        | string                                    | -                            | yes      | `^[a-z0-9]([a-z0-9-]{0,62})$`                          |
+| `description` | string, max 2000 chars                    | empty                        | no       | shown to agents; `validate` warns below 20 characters  |
+| `backend`     | `docker` `podman` `process` `python` `vm` | -                            | yes      | also required when the template uses `extends`         |
+| `isolation`   | `none` `container` `hardened` `vm`        | natural level of the backend | no       | a **minimum**: backends that deliver less are rejected |
+| `base`        | object                                    | `{}`                         | depends  | see below                                              |
+| `packages`    | object                                    | none                         | no       | per package manager                                    |
+| `tools`       | list of strings                           | none                         | no       | tool presets, `name` or `name@version`                 |
+| `setup`       | list of `{run: text}`                     | none                         | no       | shell commands run at build time                       |
+| `user`        | object                                    | `agent`, uid 1000, no sudo   | no       | never root                                             |
+| `workspace`   | object                                    | `copy`, `/workspace`, `rw`   | no       |                                                        |
+| `resources`   | object                                    | see below                    | no       |                                                        |
+| `network`     | object                                    | mode `none`                  | no       |                                                        |
+| `mounts`      | list                                      | none                         | no       | extra host directories, each explicit                  |
+| `env`         | map of strings                            | none                         | no       | no secrets                                             |
+| `secrets`     | list                                      | none                         | no       | references into your keyring                           |
+| `labels`      | map of strings                            | none                         | no       | free metadata; `use-for` is shown to agents            |
+| `extends`     | template name                             | none                         | no       | see [inheritance](#inheritance-with-extends)           |
+| `python`      | object                                    | none                         | no       | only for `backend: python`                             |
+| `vm`          | object                                    | none                         | no       | only for `backend: vm`                                 |
 
 The natural isolation level is `container` for `docker`, `podman` and `python`, `none` for
 `process` and `vm` for `vm`.
 
 ### `base`
 
-| Key          | Meaning |
-| ------------ | ------- |
+| Key          | Meaning                                                                                                                                                                                                                                 |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `os`         | An image reference such as `ubuntu:24.04`, `alpine:3.22`, `python:3.13-slim-bookworm` (letters, digits and `. _ / : @ + -`, must not start with `-`). For `vm` it is a distro name, see [OS selection](#choosing-the-operating-system). |
-| `dockerfile` | A path **relative to the template file**. The directory of the Dockerfile is the build context. Container backends `docker` and `podman` only; not supported by `python`. |
+| `dockerfile` | A path **relative to the template file**. The directory of the Dockerfile is the build context. Container backends `docker` and `podman` only; not supported by `python`.                                                               |
 
 `os` and `dockerfile` are mutually exclusive. `docker` and `podman` need one of them. `process`
 must have neither. `vm` needs `base.os` or `vm.image`. For a template with its own Dockerfile the
@@ -121,43 +124,43 @@ code.
 
 ### `user`
 
-| Key    | Default | Meaning |
-| ------ | ------- | ------- |
-| `name` | `agent` | `^[a-z_][a-z0-9_-]{0,31}$` |
-| `uid`  | `1000`  | 0 to 65534; **root (uid 0 or name `root`) is rejected** |
+| Key    | Default | Meaning                                                                                                                                               |
+| ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name` | `agent` | `^[a-z_][a-z0-9_-]{0,31}$`                                                                                                                            |
+| `uid`  | `1000`  | 0 to 65534; **root (uid 0 or name `root`) is rejected**                                                                                               |
 | `sudo` | `false` | `true` adds a sudoers entry and produces a warning. It is inert inside containers (no new privileges, all capabilities dropped); it works inside VMs. |
 
 ### `workspace`
 
-| Key      | Default      | Meaning |
-| -------- | ------------ | ------- |
-| `mode`   | `copy`       | `mount` `clone` `worktree` `copy` `empty` `sync`, see [quickstart](quickstart.md#workspace-modes) |
+| Key      | Default      | Meaning                                                                                                                                        |
+| -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`   | `copy`       | `mount` `clone` `worktree` `copy` `empty` `sync`, see [quickstart](quickstart.md#workspace-modes)                                              |
 | `path`   | `/workspace` | absolute path inside the sandbox, no `..`; must not be below `/proc`, `/sys`, `/dev`, `/etc`, `/run`, `/boot`, `/bin`, `/sbin`, `/usr`, `/lib` |
-| `access` | `rw`         | `ro` or `rw` (for `mount`) |
-| `ref`    | none         | git ref for `clone` and `worktree` |
+| `access` | `rw`         | `ro` or `rw` (for `mount`)                                                                                                                     |
+| `ref`    | none         | git ref for `clone` and `worktree`                                                                                                             |
 
 `create` can override mode, path and ref (`--mode`, `--workspace`, `--ref`); the policy decides
 which modes and which host directories are allowed.
 
 ### `resources`
 
-| Key      | Default | Constraints |
-| -------- | ------- | ----------- |
-| `cpus`   | `2`     | greater than 0, at most 256 (fractions are fine for containers; the VM backend rounds up) |
-| `memory` | `2g`    | size string (`512m`, `4g`, `1.5g`), at least 16 MiB |
+| Key      | Default | Constraints                                                                                                                                                                     |
+| -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cpus`   | `2`     | greater than 0, at most 256 (fractions are fine for containers; the VM backend rounds up)                                                                                       |
+| `memory` | `2g`    | size string (`512m`, `4g`, `1.5g`), at least 16 MiB                                                                                                                             |
 | `disk`   | none    | size string. Only some backends can enforce it, see [backends](backends.md); elsewhere a template that sets it is rejected as `unsupported`. The VM backend needs at least 10g. |
-| `pids`   | `512`   | integer from 8 to 4194304 |
-| `ttl`    | `2h`    | duration (`30s`, `15m`, `2h`, `1d`, `1h30m`); the lifetime of a sandbox, capped by the profile |
+| `pids`   | `512`   | integer from 8 to 4194304                                                                                                                                                       |
+| `ttl`    | `2h`    | duration (`30s`, `15m`, `2h`, `1d`, `1h30m`); the lifetime of a sandbox, capped by the profile                                                                                  |
 
 Sizes use powers of 1024 (`k`, `m`, `g`, `t`, optionally followed by `b` or `ib`).
 
 ### `network`
 
-| Key       | Default | Meaning |
-| --------- | ------- | ------- |
-| `mode`    | `none`  | `none`: no network. `allowlist`: HTTP(S) to the listed destinations through the egress proxy. `open`: unfiltered. |
-| `allow`   | none    | destinations: `example.org`, `*.example.org` (subdomains only, not the apex) or `host:port`. At least two labels; bare TLD wildcards (`*.com`) and IP addresses are rejected. |
-| `presets` | none    | named bundles of destinations, see [Network presets](#network-presets) |
+| Key       | Default | Meaning                                                                                                                                                                                           |
+| --------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`    | `none`  | `none`: no network. `allowlist`: HTTP(S) to the listed destinations through the egress proxy. `open`: unfiltered.                                                                                 |
+| `allow`   | none    | destinations: `example.org`, `*.example.org` (subdomains only, not the apex) or `host:port` (exactly that port). At least two labels; bare TLD wildcards (`*.com`) and IP addresses are rejected. |
+| `presets` | none    | named bundles of destinations, see [Network presets](#network-presets)                                                                                                                            |
 
 `allow` and `presets` are only valid together with `mode: allowlist`; an `allowlist` without any
 entry is an error. An entry without port allows ports 80 and 443; `host:port` allows exactly that
@@ -168,9 +171,9 @@ port. What the proxy can and cannot do is described in
 
 ```yaml
 mounts:
-  - source: ~/datasets/images     # absolute path or ~/...
-    target: /data                 # absolute path inside the sandbox
-    access: ro                    # default ro
+  - source: ~/datasets/images # absolute path or ~/...
+    target: /data # absolute path inside the sandbox
+    access: ro # default ro
 ```
 
 Mounts are never implicit and are checked twice: statically when the template is validated, and
@@ -199,16 +202,16 @@ reference**.
 
 ```yaml
 secrets:
-  - ref: github-token          # [a-z0-9-]+
-    inject: proxy              # proxy (default) | env | file
-    hosts: [github.com]        # required for proxy
+  - ref: github-token # [a-z0-9-]+
+    inject: proxy # proxy (default) | env | file
+    hosts: [github.com] # required for proxy
 ```
 
-| `inject` | What happens | Requirements |
-| -------- | ------------ | ------------ |
-| `proxy`  | The egress proxy adds the credential to requests for the listed hosts. **The sandbox never sees the value.** | `network.mode: allowlist`, at least one host (an exact host name, no wildcard or port), which must also be allowlisted |
-| `env`    | The value becomes an environment variable inside the sandbox (default name derived from the ref, `github-token` becomes `GITHUB_TOKEN`). Code in the sandbox can read and leak it. | needs an approval and shows a warning |
-| `file`   | The value is written to `path` inside the sandbox. Code in the sandbox can read and leak it. | `path` (absolute) is required; needs an approval |
+| `inject` | What happens                                                                                                                                                                       | Requirements                                                                                                           |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `proxy`  | The egress proxy adds the credential to requests for the listed hosts. **The sandbox never sees the value.**                                                                       | `network.mode: allowlist`, at least one host (an exact host name, no wildcard or port), which must also be allowlisted |
+| `env`    | The value becomes an environment variable inside the sandbox (default name derived from the ref, `github-token` becomes `GITHUB_TOKEN`). Code in the sandbox can read and leak it. | needs an approval and shows a warning                                                                                  |
+| `file`   | The value is written to `path` inside the sandbox. Code in the sandbox can read and leak it.                                                                                       | `path` (absolute) is required; needs an approval                                                                       |
 
 How the credential is placed into the header can be tuned per secret in `config.yaml` (see
 [CLI](cli.md#files-and-environment)); the default is `Authorization: Basic ...` for GitHub and
@@ -224,9 +227,9 @@ starting with `abox.` are reserved. Two labels have a meaning: **`use-for`** is 
 
 ### `python` (backend `python` only)
 
-| Key       | Meaning |
-| --------- | ------- |
-| `version` | `3.13` or `3.13.1`; derived from a `python:<version>` base image if omitted |
+| Key       | Meaning                                                                                                                                                     |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version` | `3.13` or `3.13.1`; derived from a `python:<version>` base image if omitted                                                                                 |
 | `project` | directory (relative to the template file) with a `pyproject.toml` and optionally a `uv.lock`; its dependencies are installed into a virtualenv in the image |
 
 See [backends](backends.md#python) for the exact behaviour, including why a `uv.lock` is
@@ -234,27 +237,27 @@ recommended.
 
 ### `vm` (backend `vm` only)
 
-| Key         | Meaning |
-| ----------- | ------- |
-| `image`     | distro name (`debian-12`, `ubuntu-24.04`); alternative to `base.os` |
-| `cloudInit` | accepted by the schema but **rejected** by the backend: the backend owns the first-boot setup |
-| `diskSize`  | accepted by the schema but currently **ignored**; use `resources.disk` |
+| Key         | Meaning                                                                                                                                |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `image`     | distro name (`debian-12`, `ubuntu-24.04`); alternative to `base.os`                                                                    |
+| `cloudInit` | accepted by the schema but **rejected** by the backend: the backend owns the first-boot setup                                          |
+| `diskSize`  | size of the virtual disk (for example `40g`); the disk is `max(image, resources.disk, vm.diskSize)`, so it only ever enlarges the disk |
 
 ## Defaults are restrictive
 
 Everything a template leaves out falls back to the safe side:
 
-| Aspect          | Default |
-| --------------- | ------- |
-| network         | `none` (no interface besides loopback) |
-| user            | non-root `agent`, uid 1000, no sudo |
-| workspace       | a **copy** of the project at `/workspace`; nothing is mounted from the host |
-| extra mounts    | none |
-| secrets         | none |
-| resources       | 2 CPUs, 2 GiB memory, 512 processes, 2 hours lifetime |
-| privileges      | no capabilities, no new privileges, default seccomp, private IPC, no devices (container backends) |
+| Aspect       | Default                                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------------- |
+| network      | `none` (no interface besides loopback)                                                            |
+| user         | non-root `agent`, uid 1000, no sudo                                                               |
+| workspace    | a **copy** of the project at `/workspace`; nothing is mounted from the host                       |
+| extra mounts | none                                                                                              |
+| secrets      | none                                                                                              |
+| resources    | 2 CPUs, 2 GiB memory, 512 processes, 2 hours lifetime                                             |
+| privileges   | no capabilities, no new privileges, default seccomp, private IPC, no devices (container backends) |
 
-The policy applies on top of this: a template can only *request*. If it asks for more than the
+The policy applies on top of this: a template can only _request_. If it asks for more than the
 caller's profile allows, `create` is denied or needs an approval, and `abox template validate`
 prints the outcome of that check as `policy:`.
 
@@ -281,7 +284,7 @@ conditions, no templating):
 
 ```yaml
 apiVersion: 1
-name: node-dev                 # shadows the built-in template of the same name
+name: node-dev # shadows the built-in template of the same name
 backend: docker
 extends: node-dev
 description: node-dev plus the GitHub CLI.
@@ -296,18 +299,18 @@ the upstream publishes one, verify the download against a SHA-256 checksum. Thes
 from the same HTTPS origin as the artifact: that protects against corruption and mirror problems,
 not against a compromised upstream.
 
-| Preset         | Version | What you get |
-| -------------- | ------- | ------------ |
-| `node@<v>`     | required: `24` or `24.11.0` | Node.js and npm from the official tarball (Alpine: musl builds from `unofficial-builds.nodejs.org`) |
-| `pnpm[@<v>]`   | optional | pnpm via npm (needs `node`) |
-| `python@<v>`   | required: `3.13` or `3.13.1` | CPython (python-build-standalone, installed by uv) plus uv (pinned version, SHA-256 verified); `python` and `python3` in `/usr/local/bin` |
-| `rust[@<v>]`   | optional: `stable`, `beta`, `nightly`, `1.82` | rustup, minimal profile, system-wide in `/opt/rust`, with a linker (`gcc`) |
-| `go@<v>`       | required: `1.24` or `1.24.5` | the official Go tarball, checksum from go.dev |
-| `java@<v>`     | required: major, e.g. `21` | OpenJDK headless from the distribution (which majors exist depends on the base image) |
-| `git`          | none | git and CA certificates from the distribution |
-| `gh`           | none | GitHub CLI from the distribution (version depends on the base) |
-| `playwright[@<v>]` | optional: `1.50.0` | Playwright with Chromium and system dependencies in `/opt/ms-playwright`; Debian/Ubuntu only; needs `node` |
-| `docker-cli`   | none | the Docker **client** only. No daemon, no socket: the sandbox cannot reach any engine. Debian/Ubuntu: from Docker's apt repository (signing key fingerprint pinned); Alpine: `docker-cli` package |
+| Preset             | Version                                       | What you get                                                                                                                                                                                      |
+| ------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node@<v>`         | required: `24` or `24.11.0`                   | Node.js and npm from the official tarball (Alpine: musl builds from `unofficial-builds.nodejs.org`)                                                                                               |
+| `pnpm[@<v>]`       | optional                                      | pnpm via npm (needs `node`)                                                                                                                                                                       |
+| `python@<v>`       | required: `3.13` or `3.13.1`                  | CPython (python-build-standalone, installed by uv) plus uv (pinned version, SHA-256 verified); `python` and `python3` in `/usr/local/bin`                                                         |
+| `rust[@<v>]`       | optional: `stable`, `beta`, `nightly`, `1.82` | rustup, minimal profile, system-wide in `/opt/rust`, with a linker (`gcc`)                                                                                                                        |
+| `go@<v>`           | required: `1.24` or `1.24.5`                  | the official Go tarball, checksum from go.dev                                                                                                                                                     |
+| `java@<v>`         | required: major, e.g. `21`                    | OpenJDK headless from the distribution (which majors exist depends on the base image)                                                                                                             |
+| `git`              | none                                          | git and CA certificates from the distribution                                                                                                                                                     |
+| `gh`               | none                                          | GitHub CLI from the distribution (version depends on the base)                                                                                                                                    |
+| `playwright[@<v>]` | optional: `1.50.0`                            | Playwright with Chromium and system dependencies in `/opt/ms-playwright`; Debian/Ubuntu only; needs `node`                                                                                        |
+| `docker-cli`       | none                                          | the Docker **client** only. No daemon, no socket: the sandbox cannot reach any engine. Debian/Ubuntu: from Docker's apt repository (signing key fingerprint pinned); Alpine: `docker-cli` package |
 
 Presets exist for the OS families **Debian/Ubuntu** and **Alpine** only. Using one on Fedora, Arch
 or an unknown base fails with a clear message; install tools yourself with `setup:` there.
@@ -317,13 +320,13 @@ What is verified: the preset scripts are exercised by `packages/core/src/templat
 (a basic Debian check always, the full matrix with `ABOX_TEST_DOCKER_FULL=1`). On the machine used
 for the release-candidate documentation the matrix result was:
 
-| Preset / base                                         | Result |
-| ----------------------------------------------------- | ------ |
+| Preset / base                                                                            | Result                              |
+| ---------------------------------------------------------------------------------------- | ----------------------------------- |
 | `node@24`, `pnpm@10`, `git`, `python@3.13`, `apt`/`pip`/`npm` packages on `ubuntu:24.04` | built, versions checked as uid 1000 |
-| `go@1.24`, `rust` (compiles a crate), `java@21`+`gh`, `docker-cli` on `ubuntu:24.04` | built and checked |
-| `python@3.13`, `go@1.24` on `alpine:3.22`             | built and checked |
-| `node@24`+`playwright` on `debian:12`                 | failed (see below) |
-| `node@24`+`pnpm@10`+`git`, `rust`, `java@21`+`gh`+`docker-cli` on `alpine:3.22` | failed (see below) |
+| `go@1.24`, `rust` (compiles a crate), `java@21`+`gh`, `docker-cli` on `ubuntu:24.04`     | built and checked                   |
+| `python@3.13`, `go@1.24` on `alpine:3.22`                                                | built and checked                   |
+| `node@24`+`playwright` on `debian:12`                                                    | failed (see below)                  |
+| `node@24`+`pnpm@10`+`git`, `rust`, `java@21`+`gh`+`docker-cli` on `alpine:3.22`          | failed (see below)                  |
 
 Four combinations failed on that machine and are **not verified**: `node@24`+`playwright` on
 `debian:12` (the Debian mirror closed the connection during the Chromium dependency download),
@@ -331,34 +334,34 @@ Four combinations failed on that machine and are **not verified**: `node@24`+`pl
 extracting into the engine's containerd/overlay store, an environment problem that also reproduced
 through the CLI), and `rust` on `alpine:3.22` (a build step exited with code 3; not diagnosed).
 Treat Alpine presets other than `python` and `go` as unverified. Note that the Java preset
-reports "not available in this Alpine release" for *any* `apk` failure, which can be misleading.
+reports "not available in this Alpine release" for _any_ `apk` failure, which can be misleading.
 
 ## Network presets
 
 `network.presets` (and `allow_presets` in the policy) name bundles of destinations:
 
-| Preset       | Destinations |
-| ------------ | ------------ |
-| `npm`        | `registry.npmjs.org`, `registry.yarnpkg.com` |
-| `pypi`       | `pypi.org`, `files.pythonhosted.org` |
+| Preset       | Destinations                                                                                                        |
+| ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `npm`        | `registry.npmjs.org`, `registry.yarnpkg.com`                                                                        |
+| `pypi`       | `pypi.org`, `files.pythonhosted.org`                                                                                |
 | `github`     | `github.com`, `api.github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `raw.githubusercontent.com` |
-| `apt-ubuntu` | `archive.ubuntu.com`, `security.ubuntu.com`, `ports.ubuntu.com` |
-| `apt-debian` | `deb.debian.org`, `security.debian.org` |
-| `alpine`     | `dl-cdn.alpinelinux.org` |
-| `crates`     | `crates.io`, `index.crates.io`, `static.crates.io` |
-| `go`         | `proxy.golang.org`, `sum.golang.org` |
+| `apt-ubuntu` | `archive.ubuntu.com`, `security.ubuntu.com`, `ports.ubuntu.com`                                                     |
+| `apt-debian` | `deb.debian.org`, `security.debian.org`                                                                             |
+| `alpine`     | `dl-cdn.alpinelinux.org`                                                                                            |
+| `crates`     | `crates.io`, `index.crates.io`, `static.crates.io`                                                                  |
+| `go`         | `proxy.golang.org`, `sum.golang.org`                                                                                |
 
 Presets are expanded into plain domains when the template is resolved; `abox template show <name>`
 prints the resulting list. Unknown preset names are an error.
 
 ## Choosing the operating system
 
-| Backend            | How you choose | Notes |
-| ------------------ | -------------- | ----- |
-| `docker`, `podman` | any OCI image in `base.os`, or your own `base.dockerfile` | "OS" means userland; the kernel is the host's. Tool presets and the `apt`/`apk` package lists work for Debian/Ubuntu and Alpine; `dnf` and `pacman` lists work with Fedora and Arch bases; everything else via `setup:`. |
-| `python`           | `base.os` (default `python:<python.version>-slim-bookworm`), or only `python.version` | uv is installed into the image; see [backends](backends.md#python) |
-| `vm`               | `base.os` or `vm.image`: `debian-12` (aliases `bookworm`, `debian`) or `ubuntu-24.04` (aliases `noble`, `ubuntu`) | official cloud images, verified against the vendor's checksum list; other distributions, URLs and local files are rejected. Guest packages are Debian-family (`apt`). |
-| `process`          | none | runs on the host; `base`, `packages`, `tools` and `setup` are errors |
+| Backend            | How you choose                                                                                                    | Notes                                                                                                                                                                                                                    |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `docker`, `podman` | any OCI image in `base.os`, or your own `base.dockerfile`                                                         | "OS" means userland; the kernel is the host's. Tool presets and the `apt`/`apk` package lists work for Debian/Ubuntu and Alpine; `dnf` and `pacman` lists work with Fedora and Arch bases; everything else via `setup:`. |
+| `python`           | `base.os` (default `python:<python.version>-slim-bookworm`), or only `python.version`                             | uv is installed into the image; see [backends](backends.md#python)                                                                                                                                                       |
+| `vm`               | `base.os` or `vm.image`: `debian-12` (aliases `bookworm`, `debian`) or `ubuntu-24.04` (aliases `noble`, `ubuntu`) | official cloud images, verified against the vendor's checksum list; other distributions, URLs and local files are rejected. Guest packages are Debian-family (`apt`).                                                    |
+| `process`          | none                                                                                                              | runs on the host; `base`, `packages`, `tools` and `setup` are errors                                                                                                                                                     |
 
 The family of an image is detected from its name: `alpine`, `fedora`, `archlinux`, `ubuntu` and
 `debian` (with any tag), plus the official language images `python`, `node`, `golang`, `rust`,
@@ -368,13 +371,13 @@ presets and system package lists are refused, `setup:` still works.
 ## Image cache and digest pinning
 
 - The **build hash** covers the base, the rendered build steps, the user, the backend and the
-  `python`/`vm` sections. Changing resources, network, mounts, env or labels does *not* trigger a
+  `python`/`vm` sections. Changing resources, network, mounts, env or labels does _not_ trigger a
   rebuild.
 - For Docker and Podman the image is tagged `abox/<name>:<hash prefix>`. If it exists, `create`
   and `abox template build` return immediately ("cached").
 - The first build **pins the base image to its digest** (`ubuntu@sha256:...`) and remembers the
   digest per template hash. Later builds of the same template use exactly that base. `abox
-  template build <name> --update` ignores both the pin and the cache and fetches the newest base.
+template build <name> --update` ignores both the pin and the cache and fetches the newest base.
   If pulling the base fails but a local copy exists, abox uses the copy and says so.
 - VM base images are immutable, checksum-verified files in the cache; the pin looks like
   `debian-12@sha512:<hex>`. The `python` backend does not pin the base; pin it yourself in
@@ -423,10 +426,10 @@ The exit code is 2 for an invalid template; with `--json` the same information i
 
 ## Where templates live, and which one wins
 
-| Location                          | Kind      | Purpose |
-| --------------------------------- | --------- | ------- |
-| `<project>/.sandbox/*.yaml`       | `project` | belongs to a repository, versioned with it; **untrusted** until approved |
-| `~/.config/abox/templates/*.yaml` | `user`    | your own templates |
+| Location                          | Kind      | Purpose                                                                             |
+| --------------------------------- | --------- | ----------------------------------------------------------------------------------- |
+| `<project>/.sandbox/*.yaml`       | `project` | belongs to a repository, versioned with it; **untrusted** until approved            |
+| `~/.config/abox/templates/*.yaml` | `user`    | your own templates                                                                  |
 | shipped with abox                 | `builtin` | `alpine-min`, `host-shell`, `node-dev`, `py-dev`, `py-offline`, `py-uv`, `rust-dev` |
 
 On a name clash the order is **project, then user, then builtin**. `abox template ls` shows the
@@ -445,7 +448,7 @@ A `.sandbox/*.yaml` from a repository is external input: it can run arbitrary se
 ask for mounts, network and secrets. So abox treats it like `direnv allow` does:
 
 - The first time a project template appears (and after **every** change of its content, because
-  trust is bound to the SHA-256 of the file), it is *untrusted*. `abox template ls` shows
+  trust is bound to the SHA-256 of the file), it is _untrusted_. `abox template ls` shows
   `TRUSTED = NO`.
 - As a human, `abox create` shows the reasons and asks; a non-interactive call needs `--yes`
   (`abox template build` also needs `-y`). This confirmation applies to that single call and does
@@ -493,7 +496,7 @@ description: Python 3.13 with uv. Dependencies of ./project are baked into the i
 backend: python
 python:
   version: '3.13'
-  project: ./project            # contains pyproject.toml and uv.lock
+  project: ./project # contains pyproject.toml and uv.lock
 network:
   mode: none
 labels:
@@ -585,10 +588,10 @@ every validation. Do not use it for code you do not trust.
 apiVersion: 1
 name: node-dev
 backend: docker
-extends: node-dev                # the built-in one
+extends: node-dev # the built-in one
 description: node-dev with PyPI added for node-gyp helpers.
 network:
-  presets: [pypi]                # union with the inherited npm and github
+  presets: [pypi] # union with the inherited npm and github
 resources:
   ttl: 4h
 ```

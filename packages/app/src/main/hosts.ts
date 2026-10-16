@@ -155,7 +155,7 @@ export class ForwardManager {
       }
     };
     proc.on('error', (e) => finish(null, e));
-    proc.on('exit', (code) => finish(code));
+    proc.on('close', (code) => finish(code));
     this.env.audit?.('host.forward.start', { host: profile.id, forward: name });
     return { ...state };
   }
@@ -174,7 +174,8 @@ export class ForwardManager {
   }
 
   stopHost(host: string): void {
-    for (const p of [...this.procs.values()]) if (p.state.host === host) this.stop(host, p.state.name);
+    for (const p of [...this.procs.values()])
+      if (p.state.host === host) this.stop(host, p.state.name);
     for (const [k, s] of [...this.failed]) if (s.host === host) this.failed.delete(k);
   }
 
@@ -239,7 +240,9 @@ export function createHostsService(
     });
     const info: GuiHostInfo = {
       ...prev,
-      ...(ok ? { lastOkAt: t } : { lastError: r.error ?? r.warnings[0] ?? 'not reachable', lastErrorAt: t }),
+      ...(ok
+        ? { lastOkAt: t }
+        : { lastError: r.error ?? r.warnings[0] ?? 'not reachable', lastErrorAt: t }),
       gui: {
         ...(r.latencyMs !== undefined ? { latencyMs: r.latencyMs } : {}),
         hostKey: r.hostKey,

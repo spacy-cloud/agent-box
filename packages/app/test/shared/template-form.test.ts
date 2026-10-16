@@ -184,7 +184,8 @@ describe('issue to field mapping', () => {
       'env.FOO': 'env',
       user: 'other',
     };
-    for (const [path, field] of Object.entries(cases)) expect(fieldKeyForPath(path), path).toBe(field);
+    for (const [path, field] of Object.entries(cases))
+      expect(fieldKeyForPath(path), path).toBe(field);
     expect(fieldKeyForPath(undefined)).toBe('other');
   });
   it('groups issues', () => {

@@ -270,6 +270,8 @@ export interface Outputs {
   'templates:list': TemplateList;
   'templates:show': TemplateDetails;
   'files:list': DirEntry[];
+  'files:copyIn': { copied: string | null };
+  'files:copyOut': { copied: string | null };
   'export:run': ExportSandboxResult;
   'export:save': SaveResult;
   'processes:list': ProcessView[];

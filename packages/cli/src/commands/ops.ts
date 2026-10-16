@@ -112,7 +112,7 @@ export function registerOps(program: Command, cli: Cli): void {
   program
     .command('doctor')
     .description(
-      'Check backends, permissions, the audit chain and leftovers (non-zero exit when something is wrong)',
+      'Check backends, permissions, the audit chain and leftovers (exit 1 when any check fails; warnings do not change the exit code)',
     )
     .action(async () => {
       const rt = await cli.rt();
@@ -152,9 +152,9 @@ export function registerOps(program: Command, cli: Cli): void {
         );
       }
       if (problems > 0) {
-        const backendProblem = errors.some((c) => /^(backend|host)/.test(c.id));
+        // One rule for scripts: any failed check is exit 1 (code check_failed); the report says which one.
         throw new CliError(
-          backendProblem ? 'backend_unavailable' : 'check_failed',
+          'check_failed',
           `doctor found ${problems} problem(s)${inconsistencies > 0 ? `; ${rec.interrupted.length} interrupted create(s), ${rec.orphans.length} orphan(s), ${rec.ghosts.length} ghost(s)` : ''}`,
           {
             hint:

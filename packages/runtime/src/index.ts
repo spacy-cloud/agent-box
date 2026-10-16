@@ -5,6 +5,7 @@ export {
   unregisterProvider,
   registeredBackends,
   engineSocket,
+  configuredRuntime,
   type ProviderContext,
   type ProviderFactoryMaker,
 } from './providers.js';

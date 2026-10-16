@@ -854,6 +854,9 @@ dialog.modal h2 {
   padding: 0.15rem 0.6rem;
   color: var(--text);
 }
+.term-tools button.primary {
+  color: var(--accent-text);
+}
 .term-screen {
   height: 420px;
   padding: 6px 0 0 8px;
@@ -877,6 +880,13 @@ dialog.modal h2 {
   gap: 0.35rem;
   margin-bottom: 0.25rem;
 }
+.ssh-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
 .ssh-tab {
   --term-accent: var(--border);
   display: inline-flex;
@@ -890,10 +900,6 @@ dialog.modal h2 {
   background: var(--surface-2);
   border-color: var(--term-accent);
   font-weight: 600;
-}
-.ssh-tab > button {
-  border: 0;
-  background: none;
 }
 .ssh-dot {
   display: inline-block;

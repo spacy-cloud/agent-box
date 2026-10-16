@@ -53,7 +53,7 @@ export function TerminalPane(props: {
   const sessionRef = useRef<string | null>(null);
   const sizeRef = useRef({ cols: 0, rows: 0 });
   const reconnectRef = useRef<HTMLButtonElement>(null);
-  const toolbarRef = useRef<HTMLDivElement>(null);
+  const hintRef = useRef<HTMLParagraphElement>(null);
   const [state, setState] = useState<TerminalState>({ kind: 'connecting' });
   const [attempt, setAttempt] = useState(0);
   const visibleRef = useRef(visible);
@@ -108,7 +108,7 @@ export function TerminalPane(props: {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
       if (ev.key === 'Escape' && ev.shiftKey) {
-        toolbarRef.current?.querySelector<HTMLElement>('button')?.focus();
+        hintRef.current?.focus();
         return false;
       }
       if (ev.key === 'C' && ev.ctrlKey && ev.shiftKey) {
@@ -159,9 +159,10 @@ export function TerminalPane(props: {
       }
       sessionRef.current = null;
       id = null;
-      term.write(`\r\n\x1b[2m[${tRef.current('terminal.ended', { code: ev.code ?? '-' })}]\x1b[0m\r\n`);
+      term.write(
+        `\r\n\x1b[2m[${tRef.current('terminal.ended', { code: ev.code ?? '-' })}]\x1b[0m\r\n`,
+      );
       update({ kind: 'ended', code: ev.code, ...(ev.reason ? { reason: ev.reason } : {}) });
-      requestAnimationFrame(() => reconnectRef.current?.focus());
     };
     const onEvent = (ev: TtyDataEvent | TtyExitEvent): void => {
       if (id === null) {
@@ -210,6 +211,11 @@ export function TerminalPane(props: {
     // The target is part of the key; `update` is stable per prop identity.
   }, [attempt, targetKey, fitAndReport]);
 
+  // The process ended: the terminal takes no more input, so focus moves to "Reconnect".
+  useEffect(() => {
+    if (state.kind === 'ended') reconnectRef.current?.focus();
+  }, [state.kind]);
+
   const reconnect = (): void => {
     termRef.current?.write('\r\n');
     setAttempt((n) => n + 1);
@@ -232,7 +238,7 @@ export function TerminalPane(props: {
           {state.kind === 'ended' ? t('terminal.endedShort') : null}
           {state.kind === 'error' ? t('terminal.failed') : null}
         </span>
-        <div className="term-tools" ref={toolbarRef}>
+        <div className="term-tools">
           <button
             type="button"
             ref={reconnectRef}
@@ -251,7 +257,9 @@ export function TerminalPane(props: {
         role="group"
         aria-label={t('terminal.label', { title: props.title })}
       />
-      <p className="muted small term-hint">{t('terminal.hint')}</p>
+      <p className="muted small term-hint" ref={hintRef} tabIndex={-1}>
+        {t('terminal.hint')}
+      </p>
     </div>
   );
 }

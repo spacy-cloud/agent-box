@@ -32,6 +32,13 @@ abox.close();
 other processes) and runs the light reconcile. `policy.yaml` is re-read when it changes on disk
 (checked at most every 500 ms); a broken edit keeps the last good policy and writes `policy.reload_failed`.
 
+## Configuration (`config.yaml`)
+
+`backends.docker.socket`, `backends.podman.socket`, `limits.*`, `logs.retentionDays`, `secrets.<ref>.*` are used.
+`defaults.template` (optional) is the template `abox create` and MCP `sandbox_create` use when none is given (surfaces read
+`abox.config.defaults.template`; unset = a template is required). `backends.default` was removed (templates name their
+backend); it is rejected with an explanation.
+
 ## Callers
 
 ```ts
@@ -134,7 +141,8 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
   image prepare (own audit step `image.build` when not cached) -> workspace -> secrets -> `provider.create`+`start`
   -> registry `running` -> audit. Any failure removes everything created so far and marks the row `failed`
   (the `requestId` is released for a retry). IDs are `<host>/<8 hex>`.
-  Workspace: without `workspace` the template's mode applies, and a mode that needs a directory without `workspace.path`
+  Workspace (the MCP `sandbox_create` follows the CLI: no `workspace` -> `{mode: 'empty'}`; a mode other than `empty`, or a
+  `ref`, without `path` -> `invalid_input`): without `workspace` the template's mode applies, and a mode that needs a directory without `workspace.path`
   falls back to the instance's `projectDir`. A surface that does not want to share a directory must say
   `workspace: {mode: 'empty'}` itself; the CLI does exactly that unless `--workspace <path>` is given (then
   `--mode` defaults to the template's mode), and rejects `--mode <not empty>`/`--ref` without `--workspace`.
@@ -190,8 +198,9 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
   `writeFile(caller, id, path, content, {mode?, encoding?}) -> {path, size}` (mode `0..0o777`, max 16 MiB),
   `listDir(caller, id, path?) -> DirEntry[]`. Relative paths resolve against the workspace path. Audit: path
   and sizes, never content.
-- `snapshot(caller, id, name) -> {snapshotId}`, `restore(caller, id, snapshotId)`: `unsupported` (with hint)
-  unless `capabilities().snapshots`. Every snapshot is indexed in the state db (`snapshots` table, forgotten when the
+- `snapshot(caller, id, name) -> {snapshotId}`, `restore(caller, id, snapshotIdOrName)`: `unsupported` (with hint)
+  unless `capabilities().snapshots`. `restore` accepts the backend's snapshot id or the name given to `snapshot` (the
+  newest snapshot of that name; an exact id wins), resolved through the snapshot index; it returns `{restored: <id>}`. Every snapshot is indexed in the state db (`snapshots` table, forgotten when the
   sandbox is removed); `listSnapshots` reads that index.
 - `listSnapshots(caller, id) -> Array<{id, name, createdAt}>` (owner/human, oldest first). `id` is what `restore` takes.
 - `exportSandbox(caller, id, {format: diff|patch|branch|files, paths?, outDir?, branchName?, force?}) -> ExportResult & {sandboxId, outDir?}`
@@ -258,6 +267,7 @@ backend that cannot be reached never fails the triggering operation; the events 
 
 ### Network destinations
 
+`*.example.org` means subdomains only, not the apex `example.org` (as in the proxy; template validation uses the same rule).
 Allowlist entries (`overrides.network.allow`, template `network.allow`, profile `network.allow`, access requests) are
 `example.org`, `*.example.org` or `example.org:8443` with an optional port 1..65535. Same semantics as the proxy
 (`docs/internal/proxy-contract.md`): an entry **without** a port allows ports 80 and 443 only, `host:port` allows exactly that
@@ -298,9 +308,10 @@ unknown/revoked tokens or contexts no longer in the policy), `revokeAgentToken(c
 - `doctor(caller) -> DoctorReport`: backend `status()` + capabilities per host, state db integrity/permissions,
   `policy.yaml` present/permissions (warns when group/other-writable), audit chain, and the reconcile report.
   Never deletes anything. `ok` is false only for `error` checks. An unusable backend is an `error` only when it is needed:
-  the configured default backend (`config.backends.default`), the backend of one of the user's own (non-builtin)
-  templates, or of an existing sandbox; otherwise it is a `warn` ("optional"), so a missing Podman does not fail
-  `abox doctor` for a Docker user.
+  the backend of one of the user's own (non-builtin) templates or of an existing sandbox; otherwise it is a `warn`
+  ("optional"), so a missing Podman does not fail `abox doctor` for a Docker user (nor a missing Docker for a Podman
+  user). Exception: when no container engine is usable at all, the Docker check is an `error`. The CLI exits 1 for any
+  `error` check (code `check_failed`, backend problems included).
 - `reconcile(caller, {apply?, removeOrphans?}) -> ReconcileReport`: `orphans` (backend sandbox, no live registry row),
   `ghosts` (registry row, not in backend -> marked `stale`; with `apply` soft-removed), `interrupted` (row stuck in
   `preparing` whose creating process is dead, e.g. `kill -9`; with `apply`: row -> `failed`, backend sandbox, workspace

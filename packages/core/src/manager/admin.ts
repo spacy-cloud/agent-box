@@ -460,9 +460,11 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   const backends: BackendReport[] = [];
   const add = (c: DoctorCheck): void => void checks.push(c);
 
-  // Backends nobody needs (not the configured default, no template and no sandbox uses them) only
-  // warn when they are unusable: a missing Podman must not make `abox doctor` fail for a Docker user.
-  const needed = new Set<BackendKind>([I.config.backends.default]);
+  // Backends nobody needs (no template of the user's and no sandbox uses them) only warn when they are
+  // unusable: a missing Podman must not make `abox doctor` fail for a Docker user (and a missing Docker
+  // not for a Podman user). Exception: with no container engine at all the Docker check is an error,
+  // because most builtin templates need one.
+  const needed = new Set<BackendKind>();
   try {
     const { templates } = await catalogFor(I, I.projectDir).listAll();
     // builtin templates exist for every backend; only the user's own templates say what is needed
@@ -474,9 +476,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   const unusableLevel = (kind: BackendKind): 'warn' | 'error' =>
     needed.has(kind) ? 'error' : 'warn';
   const optionalNote = (kind: BackendKind): string =>
-    needed.has(kind)
-      ? ''
-      : ' (optional: it is not the default backend and no template of yours or sandbox uses it)';
+    needed.has(kind) ? '' : ' (optional: no template of yours or sandbox uses it)';
 
   // backends
   const hostIds = new Set<string>(['local']);
@@ -526,6 +526,19 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
           title: `backend ${kind} on ${hostId} failed${optionalNote(kind)}`,
           detail: errMessage(e),
         });
+      }
+    }
+  }
+  const engineUsable = backends.some(
+    (b) => (b.backend === 'docker' || b.backend === 'podman') && b.available,
+  );
+  if (!engineUsable) {
+    for (const c of checks) {
+      if (c.level === 'warn' && c.id.startsWith('backend.') && c.id.endsWith('.docker')) {
+        c.level = 'error';
+        c.title = c.title.replace(/ \(optional: [^)]*\)/, '');
+        c.hint =
+          'Install and start Docker or Podman (the builtin templates need a container engine).';
       }
     }
   }

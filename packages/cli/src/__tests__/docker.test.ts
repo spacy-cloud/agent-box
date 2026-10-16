@@ -257,6 +257,12 @@ describe.runIf(DOCKER)('CLI against Docker (acceptance criteria Phase 1/3)', () 
     const restored = await runBin(t, ['restore', id, snap.json.data.snapshotId, '--json']);
     expect(restored.code, restored.stderr).toBe(0);
     expect((await runBin(t, ['exec', id, '--', 'cat', 'state.txt'])).stdout).toBe('v1\n');
+    // restore by the name given to "snapshot" (Docker's snapshot id is not the name)
+    await runBin(t, ['exec', id, '--', 'sh', '-c', 'echo v3 > state.txt']);
+    const byName = await runBin(t, ['restore', id, 'one', '--json']);
+    expect(byName.code, byName.stderr).toBe(0);
+    expect(byName.json.data.restored).toBe(snap.json.data.snapshotId);
+    expect((await runBin(t, ['exec', id, '--', 'cat', 'state.txt'])).stdout).toBe('v1\n');
 
     const before = (await runBin(t, ['inspect', id, '--json'])).json.data.expiresAt;
     expect((await runBin(t, ['extend', id, '10m'])).code).toBe(0);

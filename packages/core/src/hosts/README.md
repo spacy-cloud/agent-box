@@ -10,18 +10,18 @@ abox stores no secrets: `identity_file` is a path, auth is ssh-agent / keys / FI
 
 ## Files
 
-| File | Purpose |
-| --- | --- |
+| File                    | Purpose                                                                                      |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
 | `model.ts`, `schema.ts` | `HostProfile`, zone defaults, strict Zod schema of `hosts.yaml` (snake_case), value grammars |
-| `registry.ts` | `HostRegistry`: list/get/add/update/remove/resolve, atomic 0600 writes, lock, comments kept |
-| `ssh-config.ts` | read-only `~/.ssh/config` parser (`Include`, globs, wildcards skipped) and `importSshConfig` |
-| `effective.ts` | `ssh -G` wrapper (`getEffectiveSshConfig`) |
-| `ssh-args.ts` | `buildSshArgs`, `sshSessionArgs`, `portForwardArgs`, generated hardened config |
-| `known-hosts.ts` | `scanHostKey`, `checkHostKey`, `trustHostKey`, `forgetHostKey` |
-| `test-host.ts` | `testHost` (one ssh call running a fixed probe) |
-| `tunnel.ts` | `openEngineTunnel`, `TunnelManager` |
-| `resolver.ts` | `createHostResolver` for the manager |
-| `control.ts` | `closeSshConnection` (ControlMaster) |
+| `registry.ts`           | `HostRegistry`: list/get/add/update/remove/resolve, atomic 0600 writes, lock, comments kept  |
+| `ssh-config.ts`         | read-only `~/.ssh/config` parser (`Include`, globs, wildcards skipped) and `importSshConfig` |
+| `effective.ts`          | `ssh -G` wrapper (`getEffectiveSshConfig`)                                                   |
+| `ssh-args.ts`           | `buildSshArgs`, `sshSessionArgs`, `portForwardArgs`, generated hardened config               |
+| `known-hosts.ts`        | `scanHostKey`, `checkHostKey`, `trustHostKey`, `forgetHostKey`                               |
+| `test-host.ts`          | `testHost` (one ssh call running a fixed probe)                                              |
+| `tunnel.ts`             | `openEngineTunnel`, `TunnelManager`                                                          |
+| `resolver.ts`           | `createHostResolver` for the manager                                                         |
+| `control.ts`            | `closeSshConnection` (ControlMaster)                                                         |
 
 ## Decisions
 

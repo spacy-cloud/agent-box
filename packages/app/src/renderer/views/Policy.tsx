@@ -78,7 +78,12 @@ export function PolicyView() {
         <h1 id="h-policy">{t('policy.title')}</h1>
         <div className="actions">
           {mode === 'view' ? (
-            <button type="button" className="primary" onClick={() => startEdit()} disabled={!doc.data}>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => startEdit()}
+              disabled={!doc.data}
+            >
               {t('policy.edit')}
             </button>
           ) : null}
@@ -372,7 +377,11 @@ function RevisionDialog(props: {
             </pre>
           ) : null}
           <h3 className="h-small">{t('policy.rev.content')}</h3>
-          <pre className="code plain" tabIndex={0} aria-label={t('policy.rev.contentLabel', { rev: props.rev })}>
+          <pre
+            className="code plain"
+            tabIndex={0}
+            aria-label={t('policy.rev.contentLabel', { rev: props.rev })}
+          >
             {q.data.content}
           </pre>
         </>

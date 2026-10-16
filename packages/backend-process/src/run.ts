@@ -203,7 +203,12 @@ export function runProcess(cfg: RunConfig): Promise<RunOutcome> {
       // spawn failure (ENOENT, EACCES, ...): the 'exit' event never fires
       const code = errno(err);
       const exit = code === 'EACCES' ? 126 : 127;
-      const reason = code === 'EACCES' ? 'permission denied' : code === 'ENOENT' ? 'command not found' : err.message;
+      const reason =
+        code === 'EACCES'
+          ? 'permission denied'
+          : code === 'ENOENT'
+            ? 'command not found'
+            : err.message;
       cfg.onStderr(Buffer.from(`abox: ${cmd}: ${reason}\n`));
       finish(exit);
     });

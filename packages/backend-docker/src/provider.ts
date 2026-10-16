@@ -192,6 +192,11 @@ export class DockerProvider implements SandboxProvider {
     return this.currentIsolation;
   }
 
+  /** The configured stronger OCI runtime (`runsc`, `kata`, ...); isolation is `hardened` only once the engine is known to have it. */
+  get hardenedRuntime(): string | undefined {
+    return this.opts.hardenedRuntime;
+  }
+
   private get remote(): boolean {
     return this.host.kind === 'ssh';
   }

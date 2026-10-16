@@ -791,13 +791,22 @@ export async function restoreSandbox(
       hint: 'This backend cannot restore; recreate the sandbox instead.',
     });
   }
-  await provider.restore(id, snapshotId);
+  // `snapshotId` may also be the name given to `snapshot` (newest snapshot of that name); an exact id wins.
+  const known = I.state.snapshots.list(id);
+  const resolved =
+    known.find((x) => x.snapshotId === snapshotId)?.snapshotId ??
+    known.filter((x) => x.name === snapshotId).at(-1)?.snapshotId ??
+    snapshotId;
+  await provider.restore(id, resolved);
   I.audit(ctx.owner, 'sandbox.restore', {
     sandboxId: id,
     decision: 'allow',
-    details: { snapshotId },
+    details: {
+      snapshotId: resolved,
+      ...(resolved !== snapshotId ? { requested: snapshotId } : {}),
+    },
   });
-  return { restored: snapshotId };
+  return { restored: resolved };
 }
 
 // ---------------------------------------------------------------------------

@@ -10,9 +10,14 @@ export function installStyleNonce(doc: Document = document): void {
   if (!nonce || nonce.startsWith('__')) return;
   const proto = Document.prototype;
   const original = proto.createElement;
-  proto.createElement = function patched(this: Document, tag: string, options?: ElementCreationOptions) {
+  proto.createElement = function patched(
+    this: Document,
+    tag: string,
+    options?: ElementCreationOptions,
+  ) {
     const el = original.call(this, tag, options);
-    if (typeof tag === 'string' && tag.toLowerCase() === 'style') (el as HTMLStyleElement).nonce = nonce;
+    if (typeof tag === 'string' && tag.toLowerCase() === 'style')
+      (el as HTMLStyleElement).nonce = nonce;
     return el;
   } as typeof proto.createElement;
 }

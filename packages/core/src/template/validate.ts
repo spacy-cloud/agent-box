@@ -1,6 +1,7 @@
 import { posix } from 'node:path';
 import { AboxError, type ErrorIssue } from '../errors.js';
 import { isolationAtLeast, type ProviderCapabilities, type ResolvedTemplate } from '../types.js';
+import { domainCovered, normalizeDomainPattern } from '../policy/domains.js';
 import { templateInvalidError } from './parse.js';
 
 /** Issue found by `validateTemplate`. `unsupported` = valid template the backend cannot deliver. */
@@ -372,13 +373,11 @@ function stripKind(i: TemplateIssue): ErrorIssue {
   return rest;
 }
 
-/** Does a destination host fall under one of the allowlist patterns? */
+/**
+ * Does a destination host fall under one of the allowlist patterns? Same rules as the egress proxy and the
+ * policy: `*.example.org` covers subdomains only (not `example.org`), `host` covers ports 80/443, `host:port` that port.
+ */
 function hostCovered(host: string, allow: string[]): boolean {
-  const h = host.toLowerCase();
-  const hostOnly = h.replace(/:\d+$/, '');
-  return allow.some((p) => {
-    const pat = p.replace(/:\d+$/, '');
-    if (pat.startsWith('*.')) return hostOnly.endsWith(pat.slice(1)) || hostOnly === pat.slice(2);
-    return hostOnly === pat;
-  });
+  const norm = (x: string): string => normalizeDomainPattern(x) ?? x.trim().toLowerCase();
+  return domainCovered(norm(host), allow.map(norm));
 }

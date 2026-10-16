@@ -7,6 +7,10 @@ needed to list sandboxes).
 
 Isolation level: `container` (`hardened` when a hardened OCI runtime such as gVisor is configured
 with `hardenedRuntime` and installed in the engine).
+`@abox/runtime` takes the runtime from `config.yaml` (`backends.docker.runtime` / `backends.podman.runtime`,
+e.g. `runsc` or `kata`; the python backend uses the docker one) and initialises those providers when opening
+abox, because `capabilities()` is synchronous. Isolation is `hardened` only if the engine really lists that
+runtime; otherwise it stays `container`, templates that need `hardened` are refused and `status()` warns.
 
 ## Instances: several abox installations on one engine
 

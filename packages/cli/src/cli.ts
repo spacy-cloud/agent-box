@@ -389,6 +389,13 @@ export class Cli {
       const file = (issue as { file?: unknown }).file ?? detailFile;
       lines.push(`  ${formatIssue(issue, typeof file === 'string' ? file : undefined)}`);
     }
+    // A failed image build carries the end of the build output: show what really failed.
+    const log = body.details?.['log'];
+    if (typeof log === 'string' && log.trim()) {
+      const tail = log.trimEnd().split('\n').slice(-20);
+      lines.push(`${this.style('dim', 'build output (last lines):')}`);
+      for (const l of tail) lines.push(`  | ${safe(l)}`);
+    }
     if (body.hint) lines.push(`${this.style('dim', 'hint:')} ${safe(body.hint)}`);
     this.err(`${lines.join('\n')}\n`);
     return exitCode;

@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { AboxError, checkHostKey, auditSession, sshBinary, sshSessionArgs } from '@abox/core';
+import { AboxError, auditSession, sshBinary, sshSessionArgs } from '@abox/core';
 import type { HostProfile, HostsEnv } from '@abox/core';
 import type { TerminalBackend, TtySize } from './tty';
 
@@ -64,27 +64,13 @@ export function sshLabel(p: HostProfile): string {
 
 /**
  * Starts the system `ssh` for a host profile in a pty. Passphrase and FIDO prompts therefore happen inside
- * the terminal. The host key must already be trusted (explicit confirmation in the GUI): an unknown or changed
- * key is refused here, not just left to ssh, so a session can never start "silently".
+ * the terminal. The Hosts view checks the host key and asks for the explicit confirmation before it opens a tab.
+ * No scan happens here (servers with PerSourcePenalties throttle repeated scans): `sshSessionArgs` makes ssh itself
+ * strict (`StrictHostKeyChecking=yes` against abox's own known_hosts, no agent forwarding), so an unknown or changed
+ * key can never connect silently, not even on a reconnect.
  */
 export async function openSshPty(d: SshPtyDeps): Promise<TerminalBackend> {
   const { profile, env } = d;
-  const check = await checkHostKey(profile, env);
-  if (check.status !== 'trusted') {
-    throw new AboxError(
-      'host_unreachable',
-      check.status === 'changed'
-        ? `The host key of ${profile.id} changed. The connection is blocked.`
-        : `The host key of ${profile.id} is not trusted yet.`,
-      {
-        hint: 'Compare the fingerprint in the Hosts view and trust it there first.',
-        details: {
-          reason: check.status === 'changed' ? 'host_key_changed' : 'host_key_unknown',
-          host: profile.id,
-        },
-      },
-    );
-  }
   const args = sshSessionArgs(profile, env);
   const pty = d.pty ?? (await loadPty());
   const penv: Record<string, string> = {};
