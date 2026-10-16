@@ -98,6 +98,7 @@ epoch):
 | `token ls`          | `{tokens: [{id, contextId, label, createdAt, lastUsedAt, revokedAt}]}`                                                                                   |
 | `doctor`            | on problems, an error body with `details.report`; see [troubleshooting](troubleshooting.md#abox-doctor)                                                  |
 | `gc`, `reconcile`   | the report objects (`dryRun`, `sandboxes`, `workspaces`, `images`, `logs`, ...; `orphans`, `ghosts`, `interrupted`, `expired`, `unreachable`, `applied`) |
+| `gc --orphans`      | `{dryRun, resources: [{kind, ref, name, instance, aboxName, sandboxId, role, state, createdAt, engine, host, backend}], removed, skipped, errors}`       |
 
 The sandbox object has `id`, `name`, `host`, `owner`, `template`, `templateHash`, `backend`,
 `isolation`, `state`, `createdAt`, `expiresAt`, `ttlRemainingMs`, `expired`, `stale`,
@@ -629,11 +630,14 @@ Compare the registry with the backends; with --apply, clean up leftovers
 
 `abox gc [options]`
 
-Remove expired sandboxes, stale workspaces, unused images and old logs
+Remove expired sandboxes, stale workspaces, unused images and old logs; with --orphans, find and remove leftovers of other abox homes
 
-| Option      | Meaning                         |
-| ----------- | ------------------------------- |
-| `--dry-run` | only show what would be removed |
+| Option            | Meaning                                                                                                                                                                                                                                                          |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--dry-run`       | only show what would be removed                                                                                                                                                                                                                                  |
+| `--orphans`       | instead of the normal cleanup: list abox containers, networks and volumes whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted); they may belong to ANOTHER abox home on this machine; nothing is removed without --yes or a confirmation |
+| `--instance <id>` | with --orphans: only resources of this abox.instance                                                                                                                                                                                                             |
+| `-y, --yes`       | with --orphans: remove what is listed without asking                                                                                                                                                                                                             |
 
 ### `abox token`
 
@@ -866,6 +870,19 @@ Print a shell completion script (bash, zsh or fish)
   sandbox in the registry are only removed with `--apply --remove-orphans`.
 - **`abox gc`** removes expired sandboxes, stale workspace directories, unused images and old logs;
   try `--dry-run` first.
+- **`abox gc --orphans`** is for the case where an abox home was deleted and its containers are still
+  on the engine (see [troubleshooting](troubleshooting.md#i-deleted-abox_home-and-containers-are-left)).
+  Every home stamps its own instance id (`<data dir>/instance-id`) as label `abox.instance` on what it
+  creates and only sees and cleans up its own objects. `--orphans` lists the abox-labelled containers
+  (sandboxes and proxy sidecars), networks and volumes of the engine whose `abox.instance` is not this
+  home's (or is empty): name, instance id, sandbox name, state and age. **These may belong to another,
+  live abox home on the same machine** (another `ABOX_HOME`, another user in the docker group, CI), and
+  abox cannot tell. It therefore only lists, unless you pass `--yes` or answer `y` to the question on a
+  terminal (`--dry-run` never asks); `--instance <id>` limits both to one home. Objects without an
+  abox label, the shared `abox-open` / `abox-egress` networks and environment images are never
+  touched. With `--json` the list is returned and `--yes` is required to remove it. Backends other
+  than Docker, Podman and Python (`process`, `vm`) report "not supported". Every removal is audited
+  as `resource.gc_orphan`.
 - **`abox token`** creates tokens for the HTTP MCP server, see [MCP](mcp.md#http).
 - **`abox init`** writes `.sandbox/<directory>-dev.yaml` (never overwriting without `--force`) and
   prints the MCP configuration and a rules snippet for an agent.

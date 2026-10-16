@@ -9,6 +9,7 @@ import type {
   ExecEvent,
   ExecRequest,
   ExecResult,
+  ForeignResource,
   HostConnection,
   NetworkEvent,
   PreparedImage,
@@ -42,6 +43,10 @@ export interface FakeOptions {
   networkEvents?: boolean;
   /** Provide `logs`; the handler returns the sandbox's main process output. */
   logs?: (id: SandboxId, opts: { tail?: number; sinceTs?: number }) => string;
+  /** Provide `listForeign` / `removeForeign` with these objects of other abox instances. */
+  foreign?: ForeignResource[];
+  /** `removeForeign` fails for the object with this `ref`. */
+  failForeignRemove?: string;
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -59,6 +64,9 @@ export class FakeProvider implements SandboxProvider {
   readonly prepareCalls: Array<{ hash: string; opts: PrepareOptions }> = [];
   readonly networkUpdates: Array<{ id: SandboxId; allow: string[]; injections: number }> = [];
   readonly gcCalls: string[][] = [];
+  /** Foreign objects that are still there / the refs `removeForeign` deleted. */
+  readonly foreignResources: ForeignResource[] = [];
+  readonly foreignRemoved: string[] = [];
   /** Egress events the fake proxy "recorded" per sandbox (`networkEvents` returns those with `ts >= since`). */
   readonly netEvents = new Map<SandboxId, NetworkEvent[]>();
   readonly networkEventCalls: Array<{ id: SandboxId; sinceTs: number | undefined }> = [];
@@ -77,6 +85,8 @@ export class FakeProvider implements SandboxProvider {
   restore?: SandboxProvider['restore'];
   networkEvents?: SandboxProvider['networkEvents'];
   logs?: SandboxProvider['logs'];
+  listForeign?: SandboxProvider['listForeign'];
+  removeForeign?: SandboxProvider['removeForeign'];
 
   constructor(host: HostConnection, opts: FakeOptions = {}) {
     this.host = host;
@@ -97,6 +107,20 @@ export class FakeProvider implements SandboxProvider {
       remote: false,
       ...opts.capabilities,
     };
+    if (opts.foreign) {
+      this.foreignResources.push(...opts.foreign);
+      this.listForeign = () => Promise.resolve(this.foreignResources.map((r) => ({ ...r })));
+      this.removeForeign = (r) => {
+        if (r.ref === opts.failForeignRemove)
+          return Promise.reject(new AboxError('backend_error', `cannot remove ${r.name} (fake)`));
+        const i = this.foreignResources.findIndex((x) => x.ref === r.ref);
+        if (i >= 0) {
+          this.foreignResources.splice(i, 1);
+          this.foreignRemoved.push(r.ref);
+        }
+        return Promise.resolve();
+      };
+    }
     if (opts.updateNetwork) {
       this.updateNetwork = (id, network) => {
         this.get(id).spec.network = network;

@@ -3,6 +3,7 @@ import { readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { AboxError, isAboxError } from '../errors.js';
+import type { SandboxProvider } from '../provider.js';
 import type { AuditEntry, AuditQuery } from '../state/audit-log.js';
 import type { SandboxRecord } from '../state/sandbox-registry.js';
 import { sha256Hex } from '../state/canonical.js';
@@ -25,7 +26,10 @@ import type {
   DoctorCheck,
   DoctorReport,
   GcOptions,
+  GcOrphansOptions,
+  GcOrphansReport,
   GcReport,
+  OrphanResource,
   PolicyValidation,
   PolicyView,
   ReconcileEntry,
@@ -353,6 +357,23 @@ function entry(
   return { id: r.id, host: r.host, backend, detail };
 }
 
+/** Every (host, backend) pair worth asking: the ones with registry rows and the local host's backends. */
+async function backendGroups(
+  I: Internals,
+  recs: Array<{ host: string; backend: BackendKind }>,
+): Promise<Array<{ host: string; backend: BackendKind }>> {
+  const groups = new Map<string, { host: string; backend: BackendKind }>();
+  for (const r of recs) groups.set(`${r.host}|${r.backend}`, { host: r.host, backend: r.backend });
+  try {
+    const local = await I.resolveHost('local');
+    for (const b of local.backends)
+      if (I.providerFactories[b]) groups.set(`local|${b}`, { host: 'local', backend: b });
+  } catch {
+    /* no local host */
+  }
+  return [...groups.values()];
+}
+
 export async function reconcileInternal(
   I: Internals,
   o: ReconcileOptions,
@@ -368,17 +389,9 @@ export async function reconcileInternal(
     applied: { removed: [], markedFailed: [], markedStale: [], orphansRemoved: [] },
   };
   const recs = I.state.sandboxes.list();
-  const groups = new Map<string, { host: string; backend: BackendKind }>();
-  for (const r of recs) groups.set(`${r.host}|${r.backend}`, { host: r.host, backend: r.backend });
-  try {
-    const local = await I.resolveHost('local');
-    for (const b of local.backends)
-      if (I.providerFactories[b]) groups.set(`local|${b}`, { host: 'local', backend: b });
-  } catch {
-    /* no local host */
-  }
+  const groups = await backendGroups(I, recs);
 
-  for (const g of groups.values()) {
+  for (const g of groups) {
     let infos: SandboxInfo[];
     let provider;
     try {
@@ -881,6 +894,111 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
       workspaces: report.workspaces.length,
       images: report.images.flatMap((i) => i.refs).length,
       logFiles: report.logs.files,
+      errors: report.errors.length,
+    },
+  });
+  return report;
+}
+
+// ---------------------------------------------------------------------------
+// gc --orphans
+// ---------------------------------------------------------------------------
+
+const ORPHAN_KIND_ORDER = ['container', 'network', 'volume'] as const;
+
+/**
+ * Finds (and with `remove` deletes) backend objects that carry abox labels but whose `abox.instance`
+ * is not this installation's. Instances are separated on purpose: these may belong to another abox
+ * home on the same machine that is alive, so nothing is removed unless the caller asks for it, and
+ * objects without abox labels are never listed. Needed when a data directory was deleted: its
+ * instance id is gone and no manager sees its containers any more.
+ */
+export async function gcOrphans(
+  I: Internals,
+  caller: Caller,
+  o: GcOrphansOptions = {},
+): Promise<GcOrphansReport> {
+  const ctx = await I.context(caller);
+  I.requireHuman(ctx, 'gc.orphans');
+  const remove = o.remove === true;
+  const report: GcOrphansReport = {
+    dryRun: !remove,
+    resources: [],
+    removed: [],
+    skipped: [],
+    errors: [],
+  };
+  const seen = new Set<string>();
+  const providers = new Map<OrphanResource, SandboxProvider>();
+  for (const g of await backendGroups(I, I.state.sandboxes.list())) {
+    let provider: SandboxProvider;
+    try {
+      provider = I.providerFor(await I.resolveHost(g.host), g.backend);
+    } catch (e) {
+      report.skipped.push({ host: g.host, backend: g.backend, reason: errMessage(e) });
+      continue;
+    }
+    if (!provider.listForeign || !provider.removeForeign) {
+      report.skipped.push({ host: g.host, backend: g.backend, reason: 'not supported' });
+      continue;
+    }
+    let found;
+    try {
+      found = await provider.listForeign();
+    } catch (e) {
+      report.skipped.push({ host: g.host, backend: g.backend, reason: errMessage(e) });
+      continue;
+    }
+    for (const f of found) {
+      if (o.instance !== undefined && f.instance !== o.instance) continue;
+      // One engine can be reached through several backends (docker and python): list it once.
+      const key = `${g.host}|${f.engine}|${f.kind}|${f.ref}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const r: OrphanResource = { ...f, host: g.host, backend: g.backend };
+      report.resources.push(r);
+      providers.set(r, provider);
+    }
+  }
+  const order = (r: OrphanResource): number => ORPHAN_KIND_ORDER.indexOf(r.kind);
+  report.resources.sort(
+    (a, b) =>
+      order(a) - order(b) || (a.createdAt ?? 0) - (b.createdAt ?? 0) || (a.name < b.name ? -1 : 1),
+  );
+
+  if (remove) {
+    for (const r of report.resources) {
+      const details = {
+        kind: r.kind,
+        name: r.name,
+        ref: r.ref,
+        instance: r.instance,
+        aboxName: r.aboxName ?? null,
+        sandboxId: r.sandboxId ?? null,
+        host: r.host,
+        backend: r.backend,
+      };
+      try {
+        await providers.get(r)!.removeForeign!(r);
+        report.removed.push(r);
+        I.audit(ctx.owner, 'resource.gc_orphan', { decision: 'allow', details });
+      } catch (e) {
+        report.errors.push(`${r.kind} ${r.name}: ${errMessage(e)}`);
+        I.audit(ctx.owner, 'resource.gc_orphan', {
+          decision: 'error',
+          details: { ...details, message: errMessage(e) },
+        });
+      }
+    }
+  }
+  I.audit(ctx.owner, 'gc.orphans', {
+    decision: 'info',
+    details: {
+      remove,
+      instance: o.instance ?? null,
+      found: report.resources.length,
+      removed: report.removed.length,
+      skipped: report.skipped.length,
       errors: report.errors.length,
     },
   });

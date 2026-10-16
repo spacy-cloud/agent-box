@@ -5,6 +5,7 @@ import type {
   AccessMode,
   BackendKind,
   DirEntry,
+  ForeignResource,
   HostConnection,
   IsolationLevel,
   NetworkMode,
@@ -640,6 +641,31 @@ export interface GcReport {
   images: GcImagesResult['removed'];
   logs: { files: number; bytes: number };
   approvalsExpired: number;
+  errors: string[];
+}
+
+/** A backend object with abox labels that belongs to another abox installation or to none. */
+export interface OrphanResource extends ForeignResource {
+  host: string;
+  /** Backend through which it was found. */
+  backend: BackendKind;
+}
+
+export interface GcOrphansOptions {
+  /** Remove what is found. Default: only list. */
+  remove?: boolean;
+  /** Only objects whose `abox.instance` label has exactly this value. */
+  instance?: string;
+}
+
+export interface GcOrphansReport {
+  /** True when nothing was removed (the default). */
+  dryRun: boolean;
+  /** Everything found: abox-labelled objects whose instance is not this installation's. */
+  resources: OrphanResource[];
+  removed: OrphanResource[];
+  /** Backends that could not be searched (not supported, or the engine is unreachable). */
+  skipped: Array<{ host: string; backend: BackendKind; reason: string }>;
   errors: string[];
 }
 

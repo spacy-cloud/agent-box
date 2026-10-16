@@ -269,6 +269,37 @@ export interface SandboxFilter {
   template?: string;
 }
 
+export const FOREIGN_RESOURCE_KINDS = ['container', 'network', 'volume'] as const;
+export type ForeignResourceKind = (typeof FOREIGN_RESOURCE_KINDS)[number];
+
+/**
+ * A backend object that carries abox labels but belongs to another abox installation (or to none:
+ * the `abox.instance` label is empty or missing). `SandboxProvider.listForeign` reports them,
+ * `removeForeign` deletes one. Used by `abox gc --orphans` after the data directory of an
+ * installation was deleted.
+ */
+export interface ForeignResource {
+  kind: ForeignResourceKind;
+  /** Backend reference (engine id), passed back to `removeForeign`. */
+  ref: string;
+  /** Name of the object on the engine. */
+  name: string;
+  /** Value of the `abox.instance` label; empty when the label is missing or empty. */
+  instance: string;
+  /** The `abox.name` label (name the owner gave the sandbox), if any. */
+  aboxName?: string;
+  /** The `abox.id` label (sandbox id) if any. */
+  sandboxId?: string;
+  /** `sandbox` | `proxy` | `network` ... (the `abox.role` label), if any. */
+  role?: string;
+  /** Container state (`running`, `exited`, ...); absent for networks and volumes. */
+  state?: string;
+  /** Creation time in ms since the epoch, when the engine reports it. */
+  createdAt?: number;
+  /** Which engine holds it (`docker` | `podman`); the same engine can be reached through several backends. */
+  engine: string;
+}
+
 export interface ExecRequest {
   /** argv form (preferred). Either `argv` or `command` must be set. */
   argv?: string[];

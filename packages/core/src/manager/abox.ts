@@ -11,6 +11,7 @@ import {
   doctor,
   exportAudit,
   gc,
+  gcOrphans,
   listAgentTokens,
   createAgentToken,
   queryAudit,
@@ -90,6 +91,8 @@ import type {
   ExportSandboxResult,
   GcImagesResult,
   GcOptions,
+  GcOrphansOptions,
+  GcOrphansReport,
   GcReport,
   InspectResult,
   PolicyRevisionDetail,
@@ -440,6 +443,14 @@ export class Abox {
   /** Human only. */
   gc(caller: Caller, o: GcOptions = {}): Promise<GcReport> {
     return gc(this.I, caller, o);
+  }
+  /**
+   * Human only. Lists (and with `remove` deletes) abox-labelled backend objects of other abox
+   * installations or of none, e.g. what is left after a data directory was deleted. They may belong
+   * to a live installation: removal is explicit.
+   */
+  gcOrphans(caller: Caller, o: GcOrphansOptions = {}): Promise<GcOrphansReport> {
+    return gcOrphans(this.I, caller, o);
   }
   /** Run the TTL sweep now (it also runs, rate limited, on every call). Human only. */
   async sweepTtl(caller: Caller): Promise<string[]> {

@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ForeignResource } from '../../types.js';
 import type { Abox } from '../abox.js';
 import type { AboxEvent } from '../types.js';
 import {
@@ -251,5 +252,108 @@ describe('doctor and reconcile', () => {
     await abox.stopSandbox(A, sb.sandbox.id);
     await expect(abox.startSandbox(B, sb.sandbox.id)).rejects.toMatchObject({ code: 'not_found' });
     expect((await abox.startSandbox(HUMAN, sb.sandbox.id)).state).toBe('running');
+  });
+});
+
+describe('gc --orphans', () => {
+  const res = (
+    o: Partial<ForeignResource> & Pick<ForeignResource, 'kind' | 'ref'>,
+  ): ForeignResource => ({
+    name: `abox-${o.ref}`,
+    instance: 'lost0000lost0000',
+    engine: 'docker',
+    ...o,
+  });
+  const FOREIGN = [
+    res({ kind: 'volume', ref: 'v1' }),
+    res({ kind: 'network', ref: 'n1', role: 'network' }),
+    res({
+      kind: 'container',
+      ref: 'c1',
+      aboxName: 'work',
+      sandboxId: 'local/aaaaaaaa',
+      state: 'running',
+      createdAt: Date.now() - 3600_000,
+    }),
+    res({ kind: 'container', ref: 'c2', instance: 'other000other000' }),
+    res({ kind: 'container', ref: 'c3', instance: '' }),
+  ];
+
+  async function reopen(foreign: ForeignResource[], failRemove?: string): Promise<void> {
+    abox.close();
+    abox = await openAbox(env, {
+      fake: { foreign, ...(failRemove ? { failForeignRemove: failRemove } : {}) },
+    });
+  }
+
+  it('lists by default, containers first, and removes nothing', async () => {
+    await reopen(FOREIGN);
+    const r = await abox.gcOrphans(HUMAN);
+    expect(r).toMatchObject({ dryRun: true, removed: [], errors: [] });
+    expect(r.resources.map((x) => x.ref)).toEqual(['c2', 'c3', 'c1', 'n1', 'v1']);
+    expect(r.resources.find((x) => x.ref === 'c1')).toMatchObject({
+      host: 'local',
+      backend: 'docker',
+      aboxName: 'work',
+      instance: 'lost0000lost0000',
+      state: 'running',
+    });
+    // the process backend has no engine objects: reported, not an error
+    expect(r.skipped).toContainEqual({
+      host: 'local',
+      backend: 'process',
+      reason: 'not supported',
+    });
+    expect(fakeOf(env).foreignRemoved).toEqual([]);
+    const audit = await abox.queryAudit(HUMAN, { action: 'gc.orphans' });
+    expect(audit[0]?.details).toMatchObject({ remove: false, found: 5, removed: 0 });
+  });
+
+  it('removes the listed resources only with remove, and audits each one', async () => {
+    await reopen(FOREIGN);
+    const r = await abox.gcOrphans(HUMAN, { remove: true });
+    expect(r.dryRun).toBe(false);
+    expect(r.removed.map((x) => x.ref)).toEqual(['c2', 'c3', 'c1', 'n1', 'v1']);
+    expect(fakeOf(env).foreignResources).toEqual([]);
+    const entries = await abox.queryAudit(HUMAN, { action: 'resource.gc_orphan' });
+    expect(entries).toHaveLength(5);
+    expect(entries.every((e) => e.decision === 'allow')).toBe(true);
+    expect(entries.map((e) => e.details?.['name'])).toContain('abox-c1');
+    expect((await abox.gcOrphans(HUMAN)).resources).toEqual([]);
+  });
+
+  it('--instance narrows to one abox.instance', async () => {
+    await reopen(FOREIGN);
+    const r = await abox.gcOrphans(HUMAN, { instance: 'other000other000', remove: true });
+    expect(r.removed.map((x) => x.ref)).toEqual(['c2']);
+    expect(fakeOf(env).foreignResources.map((x) => x.ref)).toEqual(['v1', 'n1', 'c1', 'c3']);
+  });
+
+  it('a failing removal is reported and does not stop the others', async () => {
+    await reopen(FOREIGN, 'c1');
+    const r = await abox.gcOrphans(HUMAN, { remove: true });
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toContain('c1');
+    expect(r.removed.map((x) => x.ref)).toEqual(['c2', 'c3', 'n1', 'v1']);
+    const failed = (await abox.queryAudit(HUMAN, { action: 'resource.gc_orphan' })).filter(
+      (e) => e.decision === 'error',
+    );
+    expect(failed).toHaveLength(1);
+  });
+
+  it('is for humans only', async () => {
+    await reopen(FOREIGN);
+    await expect(abox.gcOrphans(A, { remove: true })).rejects.toMatchObject({
+      code: 'policy_denied',
+    });
+    expect(fakeOf(env).foreignResources).toHaveLength(5);
+  });
+
+  it('never touches sandboxes of this instance (they are not listed by the provider)', async () => {
+    await reopen([]);
+    const sb = created(await abox.createSandbox(A, { template: 'fake-box', workspace: EMPTY_WS }));
+    const r = await abox.gcOrphans(HUMAN, { remove: true });
+    expect(r.resources).toEqual([]);
+    expect((await abox.inspectSandbox(HUMAN, sb.sandbox.id)).state).toBe('running');
   });
 });

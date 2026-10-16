@@ -230,6 +230,89 @@ describe.skipIf(!dockerEnabled)('instance separation on one engine (real docker)
     expect((await A.inspect(d.id)).state).toBe('running');
   }, 120_000);
 
+  it('listForeign / removeForeign see abox objects of other instances only and never ours or unlabelled ones', async () => {
+    const a = await sandbox(A, tA, imgA);
+    const b = await sandbox(B, tB, imgB);
+    const l = await sandbox(legacy, tL, imgL);
+    const labels = { 'abox.managed': '1', 'abox.instance': idB, [TEST_LABEL]: TEST_RUN };
+    const net = await raw.createNetwork({
+      Name: `abox-int-${TEST_RUN}z`,
+      Labels: { ...labels, 'abox.role': 'network' },
+    });
+    await raw.createVolume({ Name: `abox-vol-${TEST_RUN}`, Labels: labels });
+    const plain = await raw.createNetwork({
+      Name: `plain-${TEST_RUN}`,
+      Labels: { [TEST_LABEL]: TEST_RUN },
+    });
+    const aId = (await inspectRaw(a)).Id;
+    const bId = (await inspectRaw(b)).Id;
+    const lId = (await inspectRaw(l)).Id;
+    const volName = `abox-vol-${TEST_RUN}`;
+    const ours = { name: 'x', instance: idB, engine: 'docker' };
+    try {
+      const found = await A.listForeign();
+      const refs = new Set(found.map((f) => f.ref));
+      expect(refs.has(bId)).toBe(true);
+      expect(refs.has(lId)).toBe(true); // no instance label: not ours
+      expect(refs.has(net.id)).toBe(true);
+      expect(refs.has(volName)).toBe(true);
+      expect(refs.has(aId)).toBe(false); // ours
+      expect(refs.has(plain.id)).toBe(false); // no abox label at all
+      expect(found.some((f) => f.name === 'abox-open' || f.name === 'abox-egress')).toBe(false);
+      expect(found.find((f) => f.ref === net.id)).toMatchObject({
+        kind: 'network',
+        instance: idB,
+        role: 'network',
+        engine: 'docker',
+      });
+      const fc = found.find((f) => f.ref === bId)!;
+      expect(fc).toMatchObject({ kind: 'container', instance: idB, state: 'running' });
+      expect(fc.createdAt).toBeGreaterThan(Date.now() - 600_000);
+
+      // the check at removal time: ours, unlabelled and shared objects are refused
+      await expect(A.removeForeign({ ...ours, kind: 'container', ref: aId })).rejects.toMatchObject(
+        {
+          code: 'conflict',
+        },
+      );
+      await expect(
+        A.removeForeign({ ...ours, kind: 'network', ref: plain.id }),
+      ).rejects.toMatchObject({
+        code: 'conflict',
+      });
+      await expect(
+        A.removeForeign({ ...ours, kind: 'network', ref: 'abox-open' }),
+      ).rejects.toMatchObject({
+        code: 'conflict',
+      });
+      await expect(inspectRaw(a)).resolves.toBeDefined();
+
+      for (const ref of [bId, lId, net.id, volName])
+        await A.removeForeign(found.find((f) => f.ref === ref)!);
+      await expect(inspectRaw(b)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(inspectRaw(l)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(raw.getNetwork(net.id).inspect()).rejects.toMatchObject({ statusCode: 404 });
+      await expect(raw.getVolume(volName).inspect()).rejects.toMatchObject({ statusCode: 404 });
+      // ours and the unlabelled network are untouched
+      await expect(inspectRaw(a)).resolves.toBeDefined();
+      await expect(raw.getNetwork(plain.id).inspect()).resolves.toBeDefined();
+      expect((await A.inspect(a.id)).state).toBe('running');
+    } finally {
+      await raw
+        .getNetwork(plain.id)
+        .remove()
+        .catch(() => undefined);
+      await raw
+        .getNetwork(net.id)
+        .remove()
+        .catch(() => undefined);
+      await raw
+        .getVolume(volName)
+        .remove()
+        .catch(() => undefined);
+    }
+  }, 120_000);
+
   describe.skipIf(
     defaultProxyAssets === undefined ||
       !existsSync(`${defaultProxyAssets?.runtimeDir ?? ''}/proxy.mjs`),

@@ -36,7 +36,7 @@ describe('confirmation for risky creates', () => {
     const r = await run(t, ['create', 'host-shell', '--workspace', '.', '--json']);
     expect(r.code).toBe(3);
     expect(r.json).toMatchObject({ ok: false, code: 'approval_required' });
-    expect(r.json.details.reasons[0]).toContain('isolation "none"');
+    expect(r.json.details.reasons[0]).toContain('template "host-shell" runs with "none"');
     expect(r.json.details.risks.length).toBeGreaterThan(0);
     expect(r.json.hint).toContain('--yes');
   });

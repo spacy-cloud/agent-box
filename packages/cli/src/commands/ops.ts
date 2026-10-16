@@ -1,9 +1,10 @@
 import type { Command } from 'commander';
-import type { AuditEntry, AuditFilter, DoctorReport } from '@abox/core';
+import type { AuditEntry, AuditFilter, DoctorReport, GcOrphansReport } from '@abox/core';
 import type { Cli } from '../cli.js';
 import { CliError } from '../errors.js';
 import {
   formatBytes,
+  formatDuration,
   formatRelative,
   formatTime,
   oneLine,
@@ -19,6 +20,43 @@ function detailsText(e: AuditEntry): string {
   return Object.entries(e.details)
     .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
     .join(' ');
+}
+
+function orphanListing(r: GcOrphansReport, now: number): string {
+  const lines: string[] = [];
+  if (r.resources.length === 0) {
+    lines.push('no abox resources of other instances found');
+  } else {
+    lines.push(
+      `${r.resources.length} abox resource(s) that do not belong to this abox home (they may belong to ANOTHER abox home on this machine):`,
+      renderTable(
+        [
+          { header: 'KIND' },
+          { header: 'NAME', max: 40 },
+          { header: 'INSTANCE', max: 20 },
+          { header: 'ABOX NAME', max: 24 },
+          { header: 'STATE' },
+          { header: 'AGE' },
+        ],
+        r.resources.map((x) => [
+          x.kind,
+          x.name,
+          x.instance || '(none)',
+          x.aboxName ?? '-',
+          x.state ?? '-',
+          x.createdAt === undefined ? '-' : formatDuration(Math.max(0, now - x.createdAt)),
+        ]),
+      ),
+    );
+  }
+  const unsupported = r.skipped.filter((s) => s.reason === 'not supported');
+  if (unsupported.length > 0)
+    lines.push(
+      `not searched (not supported): ${unsupported.map((s) => `${s.backend} on ${safe(s.host)}`).join(', ')}`,
+    );
+  for (const s of r.skipped.filter((s) => s.reason !== 'not supported'))
+    lines.push(`not searched: ${s.backend} on ${safe(s.host)}: ${oneLine(s.reason)}`);
+  return lines.join('\n');
 }
 
 export function registerOps(program: Command, cli: Cli): void {
@@ -212,23 +250,74 @@ export function registerOps(program: Command, cli: Cli): void {
 
   program
     .command('gc')
-    .description('Remove expired sandboxes, stale workspaces, unused images and old logs')
+    .description(
+      'Remove expired sandboxes, stale workspaces, unused images and old logs; with --orphans, find and remove leftovers of other abox homes',
+    )
     .option('--dry-run', 'only show what would be removed')
-    .action(async (o: { dryRun?: boolean }) => {
-      const rt = await cli.rt();
-      const r = await rt.abox.gc(cli.caller(), { ...(o.dryRun ? { dryRun: true } : {}) });
-      cli.success(r, () => {
-        const verb = r.dryRun ? 'would remove' : 'removed';
-        const images = r.images.reduce((n, i) => n + i.refs.length, 0);
-        const lines = [
-          `${verb}: ${r.sandboxes.length} sandbox(es), ${r.workspaces.length} workspace dir(s), ${images} image(s), ${r.logs.files} log file(s) (${formatBytes(r.logs.bytes)})`,
-        ];
-        if (r.approvalsExpired) lines.push(`${r.approvalsExpired} overdue approval(s) expired`);
-        for (const s of r.sandboxes) lines.push(`  sandbox ${s}`);
-        for (const e of r.errors) lines.push(`  error: ${safe(e)}`);
-        return lines.join('\n');
-      });
+    .option(
+      '--orphans',
+      'instead of the normal cleanup: list abox containers, networks and volumes whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted); they may belong to ANOTHER abox home on this machine; nothing is removed without --yes or a confirmation',
+    )
+    .option('--instance <id>', 'with --orphans: only resources of this abox.instance')
+    .option('-y, --yes', 'with --orphans: remove what is listed without asking')
+    .action(
+      async (o: { dryRun?: boolean; orphans?: boolean; instance?: string; yes?: boolean }) => {
+        if (o.orphans) return gcOrphans(cli, o);
+        for (const flag of ['instance', 'yes'] as const)
+          if (o[flag] !== undefined)
+            throw new CliError('invalid_input', `--${flag} only works together with --orphans`);
+        const rt = await cli.rt();
+        const r = await rt.abox.gc(cli.caller(), { ...(o.dryRun ? { dryRun: true } : {}) });
+        cli.success(r, () => {
+          const verb = r.dryRun ? 'would remove' : 'removed';
+          const images = r.images.reduce((n, i) => n + i.refs.length, 0);
+          const lines = [
+            `${verb}: ${r.sandboxes.length} sandbox(es), ${r.workspaces.length} workspace dir(s), ${images} image(s), ${r.logs.files} log file(s) (${formatBytes(r.logs.bytes)})`,
+          ];
+          if (r.approvalsExpired) lines.push(`${r.approvalsExpired} overdue approval(s) expired`);
+          for (const s of r.sandboxes) lines.push(`  sandbox ${s}`);
+          for (const e of r.errors) lines.push(`  error: ${safe(e)}`);
+          return lines.join('\n');
+        });
+      },
+    );
+
+  /** `abox gc --orphans`: list (default), then remove after --yes or an interactive confirmation. */
+  async function gcOrphans(
+    cli: Cli,
+    o: { dryRun?: boolean; instance?: string; yes?: boolean },
+  ): Promise<void> {
+    if (o.dryRun && o.yes)
+      throw new CliError('invalid_input', '--dry-run and --yes exclude each other');
+    const rt = await cli.rt();
+    const filter = o.instance !== undefined ? { instance: o.instance } : {};
+    const remove = (): Promise<GcOrphansReport> =>
+      rt.abox.gcOrphans(cli.caller(), { ...filter, remove: true });
+    if (cli.json) {
+      cli.success(o.yes ? await remove() : await rt.abox.gcOrphans(cli.caller(), filter));
+      return;
+    }
+    let report = o.yes ? await remove() : await rt.abox.gcOrphans(cli.caller(), filter);
+    if (cli.quiet && !o.yes) return;
+    if (!cli.quiet) cli.out(`${orphanListing(report, Date.now())}\n`);
+    if (!o.yes) {
+      if (report.resources.length === 0 || o.dryRun) return;
+      if (!cli.interactive) {
+        cli.out('nothing was removed; re-run with --yes to remove the resources listed above\n');
+        return;
+      }
+      if (!(await cli.confirm(`Remove ${report.resources.length} resource(s)?`))) {
+        cli.out('nothing was removed\n');
+        return;
+      }
+      report = await remove();
+    }
+    cli.success(report, () => {
+      const lines = [`removed ${report.removed.length} of ${report.resources.length} resource(s)`];
+      for (const e of report.errors) lines.push(`  error: ${safe(e)}`);
+      return lines.join('\n');
     });
+  }
 
   // -- tokens ---------------------------------------------------------------------------------
   const token = program

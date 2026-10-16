@@ -12,6 +12,7 @@ import type {
   ExecEvent,
   ExecRequest,
   ExecResult,
+  ForeignResource,
   HostConnection,
   IsolationLevel,
   NetworkEvent,
@@ -370,7 +371,7 @@ export class DockerProvider implements SandboxProvider {
       const foreign = await this.countForeignSandboxes().catch(() => 0);
       if (foreign > 0) {
         warnings.push(
-          `${foreign} abox resource${foreign === 1 ? '' : 's'} (sandboxes) of another or unknown instance present on this engine: not listed and never touched by this installation`,
+          `${foreign} abox resource${foreign === 1 ? '' : 's'} (sandboxes) of another or unknown instance present on this engine: not listed and never touched by this installation (see "abox gc --orphans")`,
         );
       }
       return { ok: true, version: f.version, rootless: f.rootless, details, warnings };
@@ -700,6 +701,121 @@ export class DockerProvider implements SandboxProvider {
         .map((i) => infoFromLabels(i.Labels ?? {}, i.State, i.Id, this.kind, now))
         .filter((i) => i.id !== '' && (!filter.state || i.state === filter.state))
         .sort((a, b) => a.createdAt - b.createdAt);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Foreign objects (what a deleted data directory leaves behind)
+  // -------------------------------------------------------------------------
+
+  /** The networks every instance on the engine shares: never listed, never removed. */
+  private isSharedNetwork(name: string): boolean {
+    return name === OPEN_NETWORK || name === EGRESS_NETWORK;
+  }
+
+  private foreignBase(
+    labels: Record<string, string>,
+  ): Pick<ForeignResource, 'instance' | 'engine'> &
+    Partial<Pick<ForeignResource, 'aboxName' | 'sandboxId' | 'role'>> {
+    return {
+      instance: labels[LABEL.instance] ?? '',
+      engine: this.engine,
+      ...(labels[LABEL.name] ? { aboxName: labels[LABEL.name] as string } : {}),
+      ...(labels[LABEL.id] ? { sandboxId: labels[LABEL.id] as string } : {}),
+      ...(labels[LABEL.role] ? { role: labels[LABEL.role] as string } : {}),
+    };
+  }
+
+  /**
+   * Containers (sandboxes and proxy sidecars), networks and volumes that carry `abox.managed=1`
+   * but not this provider's instance id (another installation, an empty or missing id). Objects
+   * without any abox label and the shared `abox-open` / `abox-egress` networks are never listed.
+   */
+  async listForeign(): Promise<ForeignResource[]> {
+    return this.guard(async () => {
+      const filters = { label: [`${LABEL.managed}=1`] };
+      const out: ForeignResource[] = [];
+      const containers = await this.docker.listContainers({ all: true, filters });
+      for (const c of containers) {
+        const labels = c.Labels ?? {};
+        if (this.ownsInstance(labels)) continue;
+        out.push({
+          kind: 'container',
+          ref: c.Id,
+          name: (c.Names?.[0] ?? c.Id.slice(0, 12)).replace(/^\//, ''),
+          state: c.State,
+          ...(c.Created ? { createdAt: c.Created * 1000 } : {}),
+          ...this.foreignBase(labels),
+        });
+      }
+      const networks = await this.docker.listNetworks({ filters });
+      for (const n of networks) {
+        const labels = n.Labels ?? {};
+        if (this.ownsInstance(labels) || this.isSharedNetwork(n.Name)) continue;
+        const created = n.Created ? Date.parse(n.Created) : NaN;
+        out.push({
+          kind: 'network',
+          ref: n.Id,
+          name: n.Name,
+          ...(Number.isFinite(created) ? { createdAt: created } : {}),
+          ...this.foreignBase(labels),
+        });
+      }
+      const volumes = await this.docker.listVolumes({ filters });
+      for (const v of volumes.Volumes ?? []) {
+        const labels = v.Labels ?? {};
+        if (this.ownsInstance(labels)) continue;
+        const created = Date.parse((v as { CreatedAt?: string }).CreatedAt ?? '');
+        out.push({
+          kind: 'volume',
+          ref: v.Name,
+          name: v.Name,
+          ...(Number.isFinite(created) ? { createdAt: created } : {}),
+          ...this.foreignBase(labels),
+        });
+      }
+      return out;
+    });
+  }
+
+  /**
+   * Removes one object that `listForeign` returned. The object is inspected again: it must still
+   * be abox-managed and must not belong to this instance (nor be a shared network), otherwise
+   * nothing happens and the call fails. Containers are removed with their anonymous volumes.
+   */
+  async removeForeign(resource: ForeignResource): Promise<void> {
+    return this.guard(async () => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(resource.ref))
+        throw new AboxError('invalid_input', `Invalid backend reference "${resource.ref}"`);
+      const refuse = (): never => {
+        throw new AboxError(
+          'conflict',
+          `Refusing to remove ${resource.kind} ${resource.name}: not a foreign abox object`,
+        );
+      };
+      try {
+        if (resource.kind === 'container') {
+          const c = await this.docker.getContainer(resource.ref).inspect();
+          const l = c.Config.Labels ?? {};
+          if (l[LABEL.managed] !== '1' || this.ownsInstance(l)) refuse();
+          await this.docker.getContainer(c.Id).remove({ force: true, v: true });
+        } else if (resource.kind === 'network') {
+          const n = this.docker.getNetwork(resource.ref);
+          const info = await n.inspect();
+          const l = info.Labels ?? {};
+          if (l[LABEL.managed] !== '1' || this.ownsInstance(l) || this.isSharedNetwork(info.Name))
+            refuse();
+          await n.remove();
+        } else {
+          const v = this.docker.getVolume(resource.ref);
+          const info = await v.inspect();
+          const l = info.Labels ?? {};
+          if (l[LABEL.managed] !== '1' || this.ownsInstance(l)) refuse();
+          await v.remove();
+        }
+      } catch (e) {
+        if (statusOf(e) !== 404) throw e; // already gone
+      }
     });
   }
 

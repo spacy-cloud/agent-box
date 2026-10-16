@@ -32,6 +32,11 @@ release. Nothing has been released yet.
   secrets, shell completion for bash, zsh and fish; `--json` output and stable exit codes.
 - **MCP server:** 20 tools, resources and a prompt over stdio and loopback-only Streamable HTTP with
   bearer tokens; agents cannot change policy, approve requests or see other agents' sandboxes.
+- **Orphan cleanup:** `abox gc --orphans` lists (and with `--yes` or an interactive confirmation
+  removes) abox-labelled containers, networks and volumes of the engine that belong to no live home
+  of this machine, e.g. after `ABOX_HOME` was deleted; it never touches objects without abox labels,
+  and `--instance <id>` limits it to one home. Docker, Podman and Python backends; every removal is
+  audited. See [troubleshooting](docs/troubleshooting.md#i-deleted-abox_home-and-containers-are-left).
 - **Hosts and SSH:** host profiles, zones with minimum isolation, own `known_hosts` with explicit
   fingerprint confirmation, hardened ssh calls, engine-socket tunnels, `~/.ssh/config` import
   (experimental; verified only against a local sshd container).
@@ -50,7 +55,8 @@ release. Nothing has been released yet.
 - `abox create --net open` (and any create or network switch to `open`) in the human context on an
   isolation below `hardened` now needs an explicit confirmation (prompt or `--yes`, GUI dialog) in
   every approval mode; it used to pass silently. Agent rules are unchanged. The human profile still
-  does not enforce the agent isolation minimums otherwise.
+  does not enforce the agent isolation minimums otherwise. The confirmation text now reads
+  `network mode "open" needs isolation "hardened" by default; template "alpine-min" runs with "container"`.
 - `abox --host <id> ls`: an unknown host is `not_found` (exit 2); a configured host that is
   unreachable or has no usable backend is reported (`unreachableHosts`, new optional `hostProblems`)
   instead of "no sandboxes".

@@ -99,7 +99,9 @@ and tested with abox, so the `hardened` level itself is untested.
 - Files that a template places under `/tmp` are re-copied at every start (`/tmp` is a tmpfs).
 - Remote engines support only the `none` and `copy` deliveries and no extra mounts.
 - abox only sees containers that carry the label and the instance id of its own installation;
-  objects of another installation on the same engine are reported by `abox doctor` and never touched.
+  objects of another installation on the same engine are reported by `abox doctor` and never touched,
+  except explicitly by `abox gc --orphans` (for example after `ABOX_HOME` was deleted; see
+  [troubleshooting](troubleshooting.md#i-deleted-abox_home-and-containers-are-left)).
 - The cache of environment images lives in the engine (`abox/<template>:<hash>`); a proxy sidecar
   image is built once from files shipped with abox.
 

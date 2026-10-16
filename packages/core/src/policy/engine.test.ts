@@ -575,8 +575,9 @@ describe('network', () => {
         const items = r.decision === 'approval' ? r.items : [];
         const item = items.find((i) => i.kind === 'network_open');
         expect(item?.invariant).toBe(true);
-        expect(item?.reason).toContain(`isolation "${isolation}"`);
-        expect(item?.reason).toContain('"hardened"');
+        expect(item?.reason).toBe(
+          `network mode "open" needs isolation "hardened" by default; template "node-dev" runs with "${isolation}"`,
+        );
         expect(item?.risk).toContain('Unrestricted internet access');
       },
     );

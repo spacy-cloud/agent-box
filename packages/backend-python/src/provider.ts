@@ -9,6 +9,7 @@ import type {
   ExecEvent,
   ExecRequest,
   ExecResult,
+  ForeignResource,
   HostConnection,
   IsolationLevel,
   NetworkEvent,
@@ -652,6 +653,20 @@ export class PythonProvider implements SandboxProvider {
       }
     }
     return out.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /** Foreign engine objects of the container mode (the venv mode keeps nothing on an engine). */
+  async listForeign(): Promise<ForeignResource[]> {
+    try {
+      return await this.container.listForeign();
+    } catch (e) {
+      if (isAboxError(e) && e.code === 'backend_unavailable') return [];
+      throw e;
+    }
+  }
+
+  removeForeign(resource: ForeignResource): Promise<void> {
+    return this.container.removeForeign(resource);
   }
 }
 

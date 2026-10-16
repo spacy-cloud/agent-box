@@ -8,6 +8,7 @@ Start with `abox doctor`. Most problems show up there with a hint.
 - [Image build problems](#image-build-problems)
 - [Leftovers: reconcile and gc](#leftovers-reconcile-and-gc)
 - [Resetting `ABOX_HOME`](#resetting-abox_home)
+- [I deleted `ABOX_HOME` and containers are left](#i-deleted-abox_home-and-containers-are-left)
 - [Getting help](#getting-help)
 
 ## `abox doctor`
@@ -236,10 +237,49 @@ log, tokens, trusted templates, your policy and host profiles are gone.
 rm <ref>` remove them.
 
 3. Objects on the container engine that belong to a deleted installation (containers named
-   `abox-*`, networks `abox-*`, images `abox/*` and `abox-snap/*`) are not removed by this. Inspect
-   them with `docker ps -a --filter label=abox.managed=1` and remove what you recognise.
+   `abox-*`, networks `abox-*`) are not removed by this. See the next section.
 
-For an experiment without risking your real state, start with `ABOX_HOME=$(mktemp -d)`.
+## I deleted `ABOX_HOME` and containers are left
+
+Sandbox containers, their proxy sidecars and internal networks live on the container engine, not in
+`ABOX_HOME`. If you delete the home (`rm -rf ~/abox-test`) while sandboxes still exist, they keep running,
+and no abox sees them any more: each home stamps its own id (the file `instance-id` in its data directory,
+gone with it) as label `abox.instance` and only lists, stops and removes objects with its own id. This
+separation is deliberate, so two homes on one engine never delete each other's sandboxes. `abox ls`,
+`abox doctor` and `abox gc` therefore show nothing (`abox doctor` only warns that "abox resources of
+another or unknown instance" exist).
+
+`abox gc --orphans` finds them, from any home:
+
+```console
+$ abox gc --orphans
+3 abox resource(s) that do not belong to this abox home (they may belong to ANOTHER abox home on this machine):
+KIND       NAME                  INSTANCE          ABOX NAME  STATE    AGE
+container  abox-local-7faf91da   3f2a9c01d4be7a65  my-work    running  2d03h
+container  abox-proxy-7faf91da   3f2a9c01d4be7a65  -          running  2d03h
+network    abox-int-7faf91da     3f2a9c01d4be7a65  -          -        2d03h
+nothing was removed; re-run with --yes to remove the resources listed above
+```
+
+It lists the abox-labelled containers, networks and volumes whose `abox.instance` is not the current
+home's (or empty) and removes nothing by default. **Read the list before you remove anything:** the
+resources may belong to another abox home on this machine that is still alive (another `ABOX_HOME`, another
+user in the docker group, a CI job); abox cannot tell a lost home from a live one. Objects without abox
+labels are never listed, and environment images and the shared `abox-open` / `abox-egress` networks are
+left alone.
+
+```sh
+abox gc --orphans                              # list (dry run); on a terminal it then asks before removing
+abox gc --orphans --instance 3f2a9c01d4be7a65  # only one home's resources: the safest way if you know its id
+abox gc --orphans --yes                        # remove everything listed, without asking
+abox gc --orphans --json                       # the list as JSON; add --yes to remove
+```
+
+The instance id shows in the `INSTANCE` column; if you still have the old data directory somewhere,
+it is the content of `data/instance-id`. If other homes are alive on the machine, use `--instance`. Each
+removal is written to the audit log (`resource.gc_orphan`). Only Docker, Podman and Python (container
+mode) are searched; the other backends report "not supported". Without abox, the same objects can be found with
+`docker ps -a --filter label=abox.managed=1` and removed with `docker rm -f`.
 
 ## Getting help
 

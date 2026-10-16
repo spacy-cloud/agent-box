@@ -5,6 +5,7 @@ import type {
   ExecEvent,
   ExecRequest,
   ExecResult,
+  ForeignResource,
   HostConnection,
   IsolationLevel,
   NetworkEvent,
@@ -87,6 +88,20 @@ export interface SandboxProvider {
    * Must not change the network mode (none ↔ allowlist ↔ open).
    */
   updateNetwork?(id: SandboxId, network: NetworkSpec): Promise<void>;
+
+  /**
+   * Objects of the backend that carry abox labels but belong to another installation or to none
+   * (the `abox.instance` label differs from this provider's, or is empty / missing). `list()` and
+   * every other method never see them; this is how `abox gc --orphans` finds what a deleted data
+   * directory left behind. Never returns objects without an abox label, objects of this instance, or
+   * infrastructure shared by all instances. Optional; absent = `unsupported`.
+   */
+  listForeign?(): Promise<ForeignResource[]>;
+  /**
+   * Remove one object returned by `listForeign`. Must re-check the object (still abox-labelled and
+   * still not of this instance) and refuse otherwise; a vanished object is not an error.
+   */
+  removeForeign?(resource: ForeignResource): Promise<void>;
 
   /** Egress decisions recorded by the proxy since `sinceTs` (allowlist mode only). */
   networkEvents?(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]>;
