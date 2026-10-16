@@ -35,9 +35,6 @@ importers:
       '@abox/core':
         specifier: workspace:*
         version: link:../core
-      '@abox/proxy':
-        specifier: workspace:*
-        version: link:../proxy
       dockerode:
         specifier: ^5.0.1
         version: 5.0.1
@@ -53,6 +50,16 @@ importers:
         version: 3.1.5
 
   packages/backend-process:
+    dependencies:
+      '@abox/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@abox/contract-tests':
+        specifier: workspace:*
+        version: link:../contract-tests
+
+  packages/backend-vm:
     dependencies:
       '@abox/core':
         specifier: workspace:*

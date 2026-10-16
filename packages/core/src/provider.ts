@@ -8,6 +8,7 @@ import type {
   HostConnection,
   IsolationLevel,
   NetworkEvent,
+  NetworkSpec,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
@@ -75,6 +76,13 @@ export interface SandboxProvider {
 
   inspect(id: SandboxId): Promise<SandboxInfo>;
   list(filter?: SandboxFilter): Promise<SandboxInfo[]>;
+
+  /**
+   * Replace the network rules of an existing sandbox (e.g. after an approved
+   * `access_request` kind=network). Optional; absent = `unsupported`.
+   * Must not change the network mode (none ↔ allowlist ↔ open).
+   */
+  updateNetwork?(id: SandboxId, network: NetworkSpec): Promise<void>;
 
   /** Egress decisions recorded by the proxy since `sinceTs` (allowlist mode only). */
   networkEvents?(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]>;
