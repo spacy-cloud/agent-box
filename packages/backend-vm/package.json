@@ -23,7 +23,8 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@abox/core": "workspace:*"
+    "@abox/core": "workspace:*",
+    "@abox/proxy": "workspace:*"
   },
   "devDependencies": {
     "@abox/contract-tests": "workspace:*"

@@ -220,6 +220,62 @@ export class SandboxRegistry {
     return num(res.changes) > 0;
   }
 
+  /**
+   * Compare-and-set of the lifecycle state: changes `state` only while it is one of `from`.
+   * Returns true when this call performed the transition (exactly one of several racing
+   * processes gets `true`).
+   */
+  transition(
+    id: SandboxId,
+    from: readonly SandboxState[],
+    to: SandboxState,
+    opts: { error?: string | null } = {},
+  ): boolean {
+    if (from.length === 0) return false;
+    const res = this.ctx.db
+      .prepare(
+        `UPDATE sandboxes SET state = ?, error = ?,
+           removed_at = CASE WHEN ? = 'removed' THEN COALESCE(removed_at, ?) ELSE removed_at END
+         WHERE id = ? AND state IN (${from.map(() => '?').join(',')})`,
+      )
+      .run(to, opts.error ?? null, to, this.ctx.now(), id, ...from);
+    return num(res.changes) > 0;
+  }
+
+  /** Free the idempotency key of a failed create so the caller can retry with the same request id. */
+  releaseRequestId(id: SandboxId): void {
+    this.ctx.db.prepare('UPDATE sandboxes SET request_id = NULL WHERE id = ?').run(id);
+  }
+
+  setExpiresAt(id: SandboxId, expiresAt: number): void {
+    this.ctx.db.prepare('UPDATE sandboxes SET expires_at = ? WHERE id = ?').run(expiresAt, id);
+  }
+
+  /** Replace the stored effective options (passed through `redact()`). */
+  setEffective(id: SandboxId, effective: Record<string, unknown>): void {
+    this.ctx.db
+      .prepare('UPDATE sandboxes SET effective = ? WHERE id = ?')
+      .run(toJson(redact(effective)), id);
+  }
+
+  /**
+   * Atomically claim a new sandbox row: runs `check` (e.g. a quota check) and the insert in
+   * one write transaction. With a `requestId` the claim is idempotent (see `upsertIdempotent`).
+   */
+  claim(
+    input: SandboxInput,
+    check?: (registry: SandboxRegistry) => void,
+  ): { record: SandboxRecord; created: boolean } {
+    return transaction(this.ctx.db, () => {
+      if (input.requestId) {
+        const existing = this.findByRequestId(input.owner, input.requestId);
+        if (existing) return { record: existing, created: false };
+      }
+      check?.(this);
+      return { record: this.upsert(input), created: true };
+    });
+  }
+
   /** Idempotency lookup (includes soft-removed sandboxes). */
   findByRequestId(owner: string, requestId: string): SandboxRecord | undefined {
     const row = this.ctx.db

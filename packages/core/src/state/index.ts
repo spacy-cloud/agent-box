@@ -6,6 +6,7 @@ export * from './sandbox-registry.js';
 export * from './approval-queue.js';
 export * from './audit-log.js';
 export * from './template-trust.js';
+export * from './template-pins.js';
 export * from './policy-revisions.js';
 export * from './process-registry.js';
 export * from './host-cache.js';

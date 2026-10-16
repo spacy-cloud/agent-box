@@ -1,0 +1,14 @@
+{
+  "name": "abox",
+  "displayName": "abox - Agent Sandbox Manager",
+  "version": "0.1.0",
+  "description": "Teaches Claude Code when and how to run untrusted code in local abox sandboxes: MCP wiring, a decision skill, slash commands, a sandbox-runner subagent.",
+  "author": {
+    "name": "SPACY.CLOUD",
+    "url": "https://github.com/spacy-cloud"
+  },
+  "homepage": "https://github.com/spacy-cloud/agent-box",
+  "repository": "https://github.com/spacy-cloud/agent-box",
+  "license": "MIT",
+  "keywords": ["sandbox", "security", "mcp", "docker", "agent", "isolation", "abox"]
+}
