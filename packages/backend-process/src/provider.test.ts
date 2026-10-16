@@ -11,7 +11,8 @@ import {
   type SandboxSpec,
 } from '@abox/core';
 import { makeTestSpec, makeTestTemplate, randomId, waitFor } from '@abox/contract-tests';
-import { createProcessProvider, ProcessProvider } from './index.js';
+import type { ProcessProvider } from './index.js';
+import { createProcessProvider } from './index.js';
 
 const OPEN: NetworkSpec = { mode: 'open', allow: [], blockPrivate: true, privateExceptions: [], injections: [] };
 
