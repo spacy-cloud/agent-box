@@ -1,0 +1,27 @@
+apiVersion: 1
+name: alpine-min
+description: >-
+  Minimal Alpine 3.22 shell environment (busybox only) without network access. Use it for
+  quick file and shell tasks; it is also the small default image used by abox tests.
+backend: docker
+isolation: container
+
+base:
+  os: alpine:3.22
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 1
+  memory: 256m
+  pids: 128
+  ttl: 30m
+
+network:
+  mode: none
+
+labels:
+  use-for: Tiny throwaway shell tasks and tests, no network

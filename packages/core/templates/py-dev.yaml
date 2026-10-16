@@ -1,0 +1,32 @@
+apiVersion: 1
+name: py-dev
+description: >-
+  Python 3.13 with uv and git on Ubuntu 24.04. Network is limited to PyPI and GitHub.
+  Use it for Python development, running tests and installing dependencies.
+backend: docker
+isolation: container
+
+base:
+  os: ubuntu:24.04
+
+tools:
+  - python@3.13
+  - git
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 2
+  memory: 4g
+  pids: 512
+  ttl: 2h
+
+network:
+  mode: allowlist
+  presets: [pypi, github]
+
+labels:
+  use-for: Python projects (Python 3.13, uv, PyPI and GitHub reachable)

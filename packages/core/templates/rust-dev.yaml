@@ -1,0 +1,33 @@
+apiVersion: 1
+name: rust-dev
+description: >-
+  Rust (stable, minimal rustup profile) with git on Ubuntu 24.04. Network is limited to
+  crates.io and GitHub. Use it to build and test Rust crates; add clippy/rustfmt via a
+  derived template with a setup step (rustup component add).
+backend: docker
+isolation: container
+
+base:
+  os: ubuntu:24.04
+
+tools:
+  - rust@stable
+  - git
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 4
+  memory: 6g
+  pids: 1024
+  ttl: 2h
+
+network:
+  mode: allowlist
+  presets: [crates, github]
+
+labels:
+  use-for: Rust crates (stable toolchain, crates.io and GitHub reachable)

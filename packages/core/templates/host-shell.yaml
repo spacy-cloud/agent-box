@@ -1,0 +1,25 @@
+apiVersion: 1
+name: host-shell
+description: >-
+  Runs commands directly on the host as the abox user with NO isolation and unrestricted
+  network access. Only use it when a task cannot run in a container and the human has
+  agreed; every file and credential the user can read is reachable.
+backend: process
+isolation: none
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 2
+  memory: 2g
+  pids: 512
+  ttl: 1h
+
+network:
+  mode: open
+
+labels:
+  use-for: Last resort for tasks that cannot run in a container (NO isolation, full network)

@@ -24,5 +24,8 @@
   },
   "dependencies": {
     "@abox/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@abox/contract-tests": "workspace:*"
   }
 }
