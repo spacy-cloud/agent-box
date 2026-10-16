@@ -1,0 +1,33 @@
+{
+  "name": "@abox/backend-python",
+  "version": "0.1.0",
+  "description": "abox Python backend (containers with uv; optional host venv without isolation)",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@abox/core": "workspace:*",
+    "@abox/backend-docker": "workspace:*",
+    "@abox/backend-process": "workspace:*"
+  },
+  "devDependencies": {
+    "@abox/contract-tests": "workspace:*"
+  }
+}

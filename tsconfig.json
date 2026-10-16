@@ -24,6 +24,15 @@
     },
     {
       "path": "packages/mcp"
+    },
+    {
+      "path": "packages/backend-python"
+    },
+    {
+      "path": "packages/runtime"
+    },
+    {
+      "path": "packages/e2e"
     }
   ]
 }

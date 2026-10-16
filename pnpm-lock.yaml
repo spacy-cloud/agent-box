@@ -37,6 +37,9 @@ importers:
       '@abox/core':
         specifier: workspace:*
         version: link:../core
+      '@abox/proxy':
+        specifier: workspace:*
+        version: link:../proxy
       dockerode:
         specifier: ^5.0.1
         version: 5.0.1
@@ -53,6 +56,22 @@ importers:
 
   packages/backend-process:
     dependencies:
+      '@abox/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@abox/contract-tests':
+        specifier: workspace:*
+        version: link:../contract-tests
+
+  packages/backend-python:
+    dependencies:
+      '@abox/backend-docker':
+        specifier: workspace:*
+        version: link:../backend-docker
+      '@abox/backend-process':
+        specifier: workspace:*
+        version: link:../backend-process
       '@abox/core':
         specifier: workspace:*
         version: link:../core
@@ -107,6 +126,24 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
 
+  packages/e2e:
+    dependencies:
+      '@abox/backend-docker':
+        specifier: workspace:*
+        version: link:../backend-docker
+      '@abox/backend-process':
+        specifier: workspace:*
+        version: link:../backend-process
+      '@abox/contract-tests':
+        specifier: workspace:*
+        version: link:../contract-tests
+      '@abox/core':
+        specifier: workspace:*
+        version: link:../core
+      '@abox/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+
   packages/mcp:
     dependencies:
       '@abox/core':
@@ -118,6 +155,21 @@ importers:
 
   packages/proxy:
     dependencies:
+      '@abox/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/runtime:
+    dependencies:
+      '@abox/backend-docker':
+        specifier: workspace:*
+        version: link:../backend-docker
+      '@abox/backend-process':
+        specifier: workspace:*
+        version: link:../backend-process
+      '@abox/backend-vm':
+        specifier: workspace:*
+        version: link:../backend-vm
       '@abox/core':
         specifier: workspace:*
         version: link:../core

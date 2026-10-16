@@ -14,6 +14,8 @@ export const alias = {
   '@abox/proxy': pkg('proxy'),
   '@abox/mcp': pkg('mcp'),
   '@abox/cli': pkg('cli'),
+  '@abox/runtime': pkg('runtime'),
+  '@abox/e2e': pkg('e2e'),
 };
 
 export default defineConfig({
