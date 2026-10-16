@@ -3,6 +3,7 @@ import { AboxError } from '@abox/core';
 interface EngineError {
   statusCode?: number;
   code?: string;
+  syscall?: string;
   reason?: string;
   message?: string;
   json?: { message?: string };
@@ -45,6 +46,13 @@ export function mapEngineError(e: unknown, socket?: string): AboxError {
   if (e instanceof AboxError) return e;
   const err = (typeof e === 'object' && e !== null ? e : { message: String(e) }) as EngineError;
   const where = socket ? ` at ${socket}` : '';
+  // A local file operation (e.g. lstat of a host path that does not exist) is not a socket problem.
+  if (err.code && err.syscall && err.syscall !== 'connect' && err.statusCode === undefined) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR')
+      return new AboxError('not_found', err.message ?? String(e), { cause: e });
+    if (err.code === 'EACCES' || err.code === 'EPERM')
+      return new AboxError('invalid_input', err.message ?? String(e), { cause: e });
+  }
   if (err.code && CONNECTION_CODES.has(err.code) && err.statusCode === undefined) {
     const hint =
       err.code === 'EACCES' || err.code === 'EPERM'

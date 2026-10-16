@@ -22,6 +22,8 @@ export const LABEL = {
   workspaceKind: 'abox.workspace-kind',
   snapshotOf: 'abox.snapshot-of',
   snapshotName: 'abox.snapshot-name',
+  /** `1` when spec files for the /tmp tmpfs are stashed and copied there on every start. */
+  tmpFiles: 'abox.tmp-files',
 } as const;
 
 /** Keys that belong to the backend and are not reported as user labels. */
@@ -37,6 +39,8 @@ export const PROXY_ALIAS = 'abox-proxy';
 export const PROXY_PORT = 3128;
 export const CA_DIR = '/usr/local/share/abox';
 export const CA_CERT_PATH = `${CA_DIR}/ca.crt`;
+/** Where spec files destined for the /tmp tmpfs wait; `start` copies them into /tmp. */
+export const TMP_STASH = `${CA_DIR}/tmpfiles`;
 export const CA_BUNDLE_PATH = `${CA_DIR}/ca-bundle.crt`;
 
 const HOST_RE = /^[a-z0-9][a-z0-9-]*$/;

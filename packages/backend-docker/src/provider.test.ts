@@ -1,10 +1,11 @@
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import Docker from 'dockerode';
 import { AboxError } from '@abox/core';
 import type { ExecEvent, PreparedImage, ResolvedTemplate, SandboxSpec } from '@abox/core';
+import { defineProviderContract, makeTestTemplate } from '@abox/contract-tests';
 import { createDockerProvider, type DockerProvider } from './index.js';
 import { MiB, makeSpec, makeTemplate } from './__tests__/helpers.js';
 import { dockerEnabled, newProvider, sweepTestObjects, Tracker } from './__tests__/harness.js';
@@ -1027,6 +1028,141 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect((await run(ro, 'touch x 2>&1; echo rc=$?')).stdout).toMatch(/Read-only[\s\S]*rc=1/);
     });
 
+    describe.skipIf(process.platform !== 'linux' || !process.getuid || process.getuid() === 0)(
+      'bind delivery maps the sandbox process to the host user',
+      () => {
+        const hostUid = process.getuid?.() ?? 0;
+        const hostGid = process.getgid?.() ?? 0;
+        // a template uid that differs from the host user (CI runners have uid 1001, laptops 1000)
+        const tUid = [4242, 4343].find((u) => u !== hostUid) ?? 4242;
+        const mapped = makeTemplate({
+          name: 'abox-test-hostmap',
+          user: { name: 'dev', uid: tUid, sudo: false },
+          build: [
+            {
+              name: 'seed home',
+              script:
+                'mkdir -p /home/dev/.cache && echo old > /home/dev/.cache/seed && chown -R dev:dev /home/dev',
+            },
+          ],
+        });
+        let mappedImage: PreparedImage;
+        const msb = async (over: Partial<SandboxSpec> = {}): Promise<SandboxSpec> =>
+          track.create(makeSpec(mapped, mappedImage.ref, over));
+
+        beforeAll(async () => {
+          mappedImage = await provider.prepare(mapped);
+        }, 300_000);
+
+        for (const readonlyRootfs of [false, true]) {
+          it(`rw bind: runs as host uid:gid, writes work, home is usable (read-only rootfs: ${readonlyRootfs})`, async () => {
+            const src = await fs.mkdtemp(path.join(tmp, 'ws-map-'));
+            await fs.writeFile(path.join(src, 'code.ts'), 'x');
+            const s = await msb({
+              workspace: { kind: 'bind', hostPath: src, sandboxPath: '/workspace', access: 'rw' },
+              files: [
+                {
+                  sandboxPath: '/home/dev/.config/tool/secret',
+                  content: Buffer.from('s3cret'),
+                  mode: 0o600,
+                },
+              ],
+              labels: readonlyRootfs ? { 'abox.readonly-rootfs': 'true' } : {},
+            });
+            const c = await inspectRaw(s);
+            expect(c.Config.User).toBe(`${hostUid}:${hostGid}`);
+            const home = readonlyRootfs ? '/tmp' : '/home/dev';
+            expect(c.Config.Env).toContain(`HOME=${home}`);
+            expect(c.Config.Labels['abox.user']).toBe(`dev:${tUid}`);
+            // hardening is unchanged
+            expect(c.HostConfig.CapDrop).toEqual(['ALL']);
+            expect(c.HostConfig.SecurityOpt).toContain('no-new-privileges:true');
+            expect(c.HostConfig.ReadonlyRootfs).toBe(readonlyRootfs);
+            expect((await run(s, 'id -u; id -g; echo $HOME')).stdout).toBe(
+              `${hostUid}\n${hostGid}\n${home}\n`,
+            );
+            expect(
+              (await run(s, 'echo new > code.ts && echo n > created.ts && echo ok')).stdout,
+            ).toBe('ok\n');
+            expect(await fs.readFile(path.join(src, 'code.ts'), 'utf8')).toBe('new\n');
+            const st = await fs.stat(path.join(src, 'created.ts'));
+            expect([st.uid, st.gid]).toEqual([hostUid, hostGid]);
+            // HOME is writable, and the image home (what the build and spec.files put there)
+            // belongs to the running user and can be modified
+            const owner = `${hostUid}:${hostGid}\n`;
+            expect(
+              (
+                await run(
+                  s,
+                  'exec 2>&1; touch ~/new && echo more >> /home/dev/.cache/seed && touch /home/dev/.cache/new2 && ' +
+                    'cat /home/dev/.cache/seed && stat -c "%u:%g" /home/dev/.cache /home/dev/.cache/seed /home/dev/.config/tool/secret && cat /home/dev/.config/tool/secret',
+                )
+              ).stdout,
+            ).toBe(`old\nmore\n${owner.repeat(3)}s3cret`);
+            if (!readonlyRootfs) {
+              // the home directory itself too (on a read-only rootfs its volume root can not be re-owned)
+              expect((await run(s, 'stat -c "%u:%g" /home/dev')).stdout).toBe(owner);
+            }
+            // not root, no extra rights
+            expect(
+              (
+                await run(
+                  s,
+                  '{ echo x > /etc/abox-x; } 2>&1; echo rc=$?; cat /proc/self/status | grep CapEff',
+                )
+              ).stdout,
+            ).toMatch(/rc=1[\s\S]*CapEff:\s+0+\n/);
+          });
+        }
+
+        it('rw extra mount alone also maps; ro-only binds and copy delivery keep the template user', async () => {
+          const extra = await fs.mkdtemp(path.join(tmp, 'extra-map-'));
+          const m = await msb({
+            mounts: [{ hostPath: extra, sandboxPath: '/mnt/rw', access: 'rw' }],
+          });
+          expect((await run(m, 'id -u; echo y > /mnt/rw/f && echo ok')).stdout).toBe(
+            `${hostUid}\nok\n`,
+          );
+
+          const src = await fs.mkdtemp(path.join(tmp, 'ws-map-ro-'));
+          const ro = await msb({
+            workspace: { kind: 'bind', hostPath: src, sandboxPath: '/workspace', access: 'ro' },
+            mounts: [{ hostPath: extra, sandboxPath: '/mnt/ro', access: 'ro' }],
+          });
+          expect((await inspectRaw(ro)).Config.User).toBe(`${tUid}:${tUid}`);
+          expect((await run(ro, 'id -u')).stdout).toBe(`${tUid}\n`);
+
+          const cp = await msb({
+            workspace: { kind: 'copy', hostPath: src, sandboxPath: '/workspace' },
+          });
+          expect((await inspectRaw(cp)).Config.User).toBe(`${tUid}:${tUid}`);
+          expect((await run(cp, 'stat -c "%u:%g" . ~; id -un')).stdout).toBe(
+            `${tUid}:${tUid}\n${tUid}:${tUid}\ndev\n`,
+          );
+        });
+
+        it('refuses a writable bind when abox itself runs as root (uid or gid 0)', async () => {
+          const src = await fs.mkdtemp(path.join(tmp, 'ws-map-root-'));
+          const bindSpec = makeSpec(mapped, mappedImage.ref, {
+            workspace: { kind: 'bind', hostPath: src, sandboxPath: '/workspace', access: 'rw' },
+          });
+          const uidSpy = vi.spyOn(process, 'getuid').mockReturnValue(0);
+          try {
+            await expect(provider.create(bindSpec)).rejects.toMatchObject({ code: 'unsupported' });
+          } finally {
+            uidSpy.mockRestore();
+          }
+          const gidSpy = vi.spyOn(process, 'getgid').mockReturnValue(0);
+          try {
+            await expect(provider.create(bindSpec)).rejects.toMatchObject({ code: 'unsupported' });
+          } finally {
+            gidSpy.mockRestore();
+          }
+          await expect(provider.inspect(bindSpec.id)).rejects.toMatchObject({ code: 'not_found' });
+        });
+      },
+    );
+
     it('a workspace symlink to a host secret is not readable through a bind mount', async () => {
       const secretDir = await fs.mkdtemp(path.join(tmp, 'ssh-'));
       await fs.writeFile(path.join(secretDir, 'id_rsa'), 'PRIVATE KEY');
@@ -1067,10 +1203,53 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       ).toMatch(/denied[\s\S]*rc=1/);
       await expect(
         provider.create(
-          spec({ files: [{ sandboxPath: '/tmp/x', content: Buffer.from('x'), mode: 0o644 }] }),
+          spec({ files: [{ sandboxPath: '/tmp', content: Buffer.from('x'), mode: 0o644 }] }),
         ),
-      ).rejects.toMatchObject({ code: 'unsupported' });
+      ).rejects.toMatchObject({ code: 'invalid_input' });
     });
+
+    for (const readonlyRootfs of [false, true]) {
+      it(`spec.files under /tmp (a tmpfs) appear at every start (read-only rootfs: ${readonlyRootfs})`, async () => {
+        const t = readonlyRootfs
+          ? makeTemplate({ ...template, labels: { 'abox.readonly-rootfs': 'true' } })
+          : template;
+        const s = spec({
+          template: t,
+          labels: readonlyRootfs ? { 'abox.readonly-rootfs': 'true' } : {},
+          files: [
+            { sandboxPath: '/tmp/top.txt', content: Buffer.from('top'), mode: 0o644 },
+            { sandboxPath: '/tmp/d/e/secret', content: Buffer.from('s3cret'), mode: 0o600 },
+          ],
+        });
+        await track.create(s, false);
+        // nothing is visible before the start, and nothing lands on the rootfs /tmp
+        expect((await inspectRaw(s)).Config.Labels['abox.tmp-files']).toBe('1');
+        const check = async (): Promise<void> => {
+          expect(
+            (await run(s, 'cat /tmp/top.txt /tmp/d/e/secret; stat -c "%a %U" /tmp/d/e/secret'))
+              .stdout,
+          ).toBe('tops3cret600 dev\n');
+          expect((await run(s, 'mount | grep " /tmp " | cut -d" " -f1')).stdout).toBe('tmpfs\n');
+        };
+        await provider.start(s.id);
+        await check();
+        // the file API sees the tmpfs of a running sandbox
+        await provider.writeFile(s.id, '/tmp/w/new.txt', Buffer.from('written'), 0o600);
+        const back = await provider.readFile(s.id, '/tmp/w/new.txt', 100);
+        expect(back.data.toString()).toBe('written');
+        expect((await run(s, 'stat -c "%a %U" /tmp/w/new.txt')).stdout).toBe('600 dev\n');
+        expect((await provider.readFile(s.id, '/tmp/d/e/secret', 2)).truncated).toBe(true);
+        await expect(provider.readFile(s.id, '/tmp/nope', 10)).rejects.toMatchObject({
+          code: 'not_found',
+        });
+        await expect(provider.readFile(s.id, '/tmp/d', 10)).rejects.toMatchObject({
+          code: 'invalid_input',
+        });
+        await provider.stop(s.id);
+        await provider.start(s.id);
+        await check();
+      });
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -1106,10 +1285,12 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect((await inspectRaw(s)).State.Running).toBe(false);
     }, 30_000);
 
-    it('creating with an expiry in the past is invalid', async () => {
-      await expect(provider.create(spec({ expiresAt: Date.now() - 1 }))).rejects.toMatchObject({
-        code: 'invalid_input',
-      });
+    it('creating with an expiry in the past succeeds; the sandbox is expired and can not start', async () => {
+      const s = spec({ expiresAt: Date.now() - 1000 });
+      await track.create(s, false);
+      expect((await provider.inspect(s.id)).state).toBe('expired');
+      expect((await provider.list({ state: 'expired' })).map((i) => i.id)).toContain(s.id);
+      await expect(provider.start(s.id)).rejects.toMatchObject({ code: 'conflict' });
     });
   });
 
@@ -1159,4 +1340,25 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect(typeof (await provider.logs!(s.id, { tail: 10 }))).toBe('string');
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// The shared provider contract, against real Docker. Declared in this file (not its own) so that
+// it runs after the suite above: both clean up by label and `gcImages` is engine-global.
+defineProviderContract({
+  name: 'docker',
+  skip: !dockerEnabled,
+  gc: false, // gcImages would remove other templates' images on a shared engine
+  timeoutMs: 120_000,
+  createProvider: () => newProvider(),
+  template: () =>
+    makeTestTemplate({
+      name: 'abox-test-contract',
+      backend: 'docker',
+      isolation: 'container',
+      base: { os: 'alpine:3.22', osFamily: 'alpine' },
+    }),
+  async dispose() {
+    await sweepTestObjects();
+  },
 });

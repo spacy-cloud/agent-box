@@ -32,7 +32,7 @@ import { renderDockerfile } from './dockerfile.js';
 import { effectiveFromInspect, infoFromLabels } from './info.js';
 import { isAbortError, mapEngineError, statusOf } from './errors.js';
 import { Demux, openTty, runExec, simpleExec } from './exec.js';
-import { getFile, mkdirP, putArchiveStream, putFile, sandboxPath } from './files.js';
+import { getFile, mkdirP, putArchiveStream, putFile, reownDir, sandboxPath } from './files.js';
 import { buildHostConfig, checkBindSource, checkMountTarget, ttlEntrypoint } from './hostconfig.js';
 import {
   CA_BUNDLE_PATH,
@@ -43,6 +43,7 @@ import {
   OPEN_NETWORK,
   PROXY_ALIAS,
   PROXY_PORT,
+  TMP_STASH,
   containerName,
   imageRepoName,
   internalNetName,
@@ -119,6 +120,10 @@ function userIds(c: Docker.ContainerInspectInfo): { uid: number; gid: number } {
     throw new AboxError('internal', `Sandbox ${c.Name} has no numeric non-root user`);
   }
   return { uid, gid: Number.isInteger(gid) ? gid : uid };
+}
+
+function underTmp(p: string): boolean {
+  return p === '/tmp' || p.startsWith('/tmp/');
 }
 
 function envArray(env: Record<string, string>): string[] {
@@ -650,8 +655,53 @@ export class DockerProvider implements SandboxProvider {
     }
     if (spec.user.uid <= 0)
       throw new AboxError('invalid_input', 'The sandbox user must not be root');
+    this.runAs(spec); // throws when host-user mapping is needed but impossible
     if (!isValidShort(parseSandboxId(spec.id).short))
       throw new AboxError('invalid_input', `Invalid sandbox id: ${spec.id}`);
+  }
+
+  /**
+   * The numeric identity the sandbox process runs as.
+   *
+   * Normally that is the template user (`spec.user.uid`, group = uid). A writable host bind mount
+   * (`bind` workspace with access rw, or an rw extra mount) is the exception: the files belong to
+   * the host user that runs abox, and without a user namespace the engine shows the real numeric
+   * owner inside the container. A sandbox user with a different uid could not write them (the
+   * typical case: CI runner uid 1001, template user uid 1000). So the process runs as the host
+   * user's `uid:gid` instead; it is still an unprivileged user and every hardening option is
+   * unchanged. The image's home directory is handed to that uid (see `createInner`), HOME is set
+   * explicitly because the uid has no passwd entry in the image.
+   *
+   * Never root: a host uid or gid of 0 is refused (`unsupported`), the sandbox user must not be
+   * root. Not applied (identity stays the template user) when nothing writable is bind-mounted,
+   * for remote engines, on non-Linux hosts (Docker Desktop translates ownership itself) and on
+   * rootless engines (their user namespace maps the host user to container root; unverified).
+   */
+  private runAs(spec: SandboxSpec): { uid: number; gid: number; hostMapped: boolean } {
+    const own = { uid: spec.user.uid, gid: spec.user.uid, hostMapped: false };
+    const writableBind =
+      (spec.workspace.kind === 'bind' && spec.workspace.access === 'rw') ||
+      spec.mounts.some((m) => m.access === 'rw');
+    if (
+      !writableBind ||
+      this.remote ||
+      process.platform !== 'linux' ||
+      typeof process.getuid !== 'function' ||
+      typeof process.getgid !== 'function' ||
+      this.facts?.rootless
+    )
+      return own;
+    const uid = process.getuid();
+    const gid = process.getgid();
+    if (uid === 0 || gid === 0) {
+      throw new AboxError(
+        'unsupported',
+        'Writable host bind mounts are not supported when abox runs as root (uid or gid 0): the sandbox user is never root and could not write the files',
+        { hint: 'Run abox as an unprivileged user, or use workspace delivery "copy".' },
+      );
+    }
+    if (uid === own.uid && gid === own.gid) return own;
+    return { uid, gid, hostMapped: true };
   }
 
   private async ensureNetwork(name: string, role: string): Promise<void> {
@@ -678,9 +728,8 @@ export class DockerProvider implements SandboxProvider {
       await this.engineFacts();
       this.assertSupported(spec);
       const { host, short } = parseSandboxId(spec.id);
-      const now = Date.now();
-      if (spec.expiresAt <= now)
-        throw new AboxError('invalid_input', 'expiresAt must be in the future');
+      // An expiresAt in the past is allowed: the sandbox is created, reported as expired and
+      // can not be started (its main process would exit at once anyway).
       if (!(await this.imageInspect(spec.image.ref))) {
         throw new AboxError('not_found', `Environment image ${spec.image.ref} is missing`, {
           hint: 'Run prepare() for the template first.',
@@ -801,7 +850,11 @@ export class DockerProvider implements SandboxProvider {
     cleanup: Array<() => Promise<void>>,
   ): Promise<SandboxInfo> {
     const t = spec.template;
-    const { uid } = spec.user;
+    const { uid: templateUid } = spec.user;
+    const run = this.runAs(spec);
+    const { uid, gid } = run;
+    const remapsUid = run.hostMapped && uid !== templateUid;
+    const home = `/home/${spec.user.name}`;
     const ro = this.readonlyRootfs(spec);
     const mounts = this.buildMounts(spec, ro);
     for (const m of await this.readonlySubmounts(spec)) {
@@ -814,26 +867,24 @@ export class DockerProvider implements SandboxProvider {
     const wsPath = sandboxPath(spec.workspace.sandboxPath);
     for (const f of spec.files) {
       const p = sandboxPath(f.sandboxPath, 'file path');
-      if (p === '/tmp' || p.startsWith('/tmp/')) {
-        throw new AboxError(
-          'unsupported',
-          `Cannot place ${p} at creation: /tmp is a tmpfs that is mounted at start`,
-        );
-      }
+      if (p === '/tmp') throw new AboxError('invalid_input', 'Cannot place a file at /tmp itself');
       if (
         ro &&
         !(
           p.startsWith(`${CA_DIR}/`) ||
+          p.startsWith('/tmp/') ||
           p.startsWith(`${wsPath}/`) ||
           p.startsWith(`/home/${spec.user.name}/`)
         )
       ) {
         throw new AboxError(
           'unsupported',
-          `With a read-only root filesystem files can only be placed in ${CA_DIR}, the workspace or the home directory (${p})`,
+          `With a read-only root filesystem files can only be placed in ${CA_DIR}, /tmp, the workspace or the home directory (${p})`,
         );
       }
     }
+
+    const hasTmpFiles = spec.files.some((f) => sandboxPath(f.sandboxPath).startsWith('/tmp/'));
 
     // Network wiring
     let networkMode: string;
@@ -904,9 +955,10 @@ export class DockerProvider implements SandboxProvider {
       [LABEL.created]: String(spec.createdAt),
       [LABEL.expires]: String(spec.expiresAt),
       [LABEL.networkMode]: spec.network.mode,
-      [LABEL.user]: `${spec.user.name}:${uid}`,
+      [LABEL.user]: `${spec.user.name}:${templateUid}`,
       [LABEL.workspacePath]: wsPath,
       [LABEL.workspaceKind]: spec.workspace.kind,
+      ...(hasTmpFiles ? { [LABEL.tmpFiles]: '1' } : {}),
       'abox.injections': spec.network.injections.length > 0 ? '1' : '0',
     };
 
@@ -914,8 +966,15 @@ export class DockerProvider implements SandboxProvider {
       name,
       Image: spec.image.ref,
       Labels: labels,
-      Env: envArray({ ...spec.template.env, ...spec.env, ...netEnv }),
-      User: `${uid}:${uid}`,
+      Env: envArray({
+        // No passwd entry for a host-mapped uid: without this HOME would be "/". On a read-only
+        // rootfs the home volume's root can not be re-owned, so /tmp (tmpfs, 1777) is used.
+        ...(remapsUid ? { HOME: ro ? '/tmp' : home } : {}),
+        ...spec.template.env,
+        ...spec.env,
+        ...netEnv,
+      }),
+      User: `${uid}:${gid}`,
       WorkingDir: wsPath,
       Entrypoint: ttlEntrypoint(spec.expiresAt),
       Cmd: [],
@@ -933,8 +992,11 @@ export class DockerProvider implements SandboxProvider {
     cleanup.push(() => created.remove({ force: true, v: true }));
     const c = this.docker.getContainer(created.id);
 
+    // The image's home belongs to the template uid; a host-mapped user needs it (and what build
+    // steps put there) to be writable. Done on the created container, before files are placed.
+    if (remapsUid) await reownDir(c, home, uid, gid, !ro);
+
     // Workspace delivery
-    const gid = uid;
     if (spec.workspace.kind === 'copy') {
       await mkdirP(c, path.posix.dirname(wsPath), uid, gid);
       await putArchiveStream(
@@ -969,6 +1031,16 @@ export class DockerProvider implements SandboxProvider {
     // Files
     for (const f of spec.files) {
       const p = sandboxPath(f.sandboxPath, 'file path');
+      if (p.startsWith('/tmp/')) {
+        // /tmp is a tmpfs that only exists once the container runs: keep the file next to the
+        // image and let `start` copy it over (so it is also there after a restart).
+        await putFile(c, `${TMP_STASH}/${p.slice('/tmp/'.length)}`, f.content, {
+          mode: f.mode,
+          uid,
+          gid,
+        });
+        continue;
+      }
       const root = p.startsWith(`${CA_DIR}/`);
       await putFile(c, p, f.content, { mode: f.mode, uid: root ? 0 : uid, gid: root ? 0 : gid });
     }
@@ -1196,7 +1268,27 @@ export class DockerProvider implements SandboxProvider {
       } catch (e) {
         if (statusOf(e) !== 304) throw e;
       }
+      if (labels[LABEL.tmpFiles] === '1') await this.restoreTmpFiles(c.Id);
     });
+  }
+
+  /** Copy the spec files destined for the /tmp tmpfs into it (it is empty after every start). */
+  private async restoreTmpFiles(containerId: string): Promise<void> {
+    const res = await simpleExec(this.docker, containerId, [
+      'cp',
+      '-pR',
+      `${TMP_STASH}/.`,
+      '/tmp/',
+    ]);
+    if (res.exitCode !== 0) {
+      await this.docker
+        .getContainer(containerId)
+        .stop({ t: 1 })
+        .catch(() => undefined);
+      throw new AboxError('backend_error', 'Could not place the spec files under /tmp', {
+        details: { stderr: res.stderr.toString('utf8').slice(0, 500) },
+      });
+    }
   }
 
   async stop(id: SandboxId): Promise<void> {
@@ -1404,7 +1496,10 @@ export class DockerProvider implements SandboxProvider {
   ): Promise<{ data: Buffer; truncated: boolean; size: number }> {
     return this.guard(async () => {
       const c = await this.load(id);
-      return getFile(this.docker.getContainer(c.Id), sandboxPath(sandboxFile, 'file'), maxBytes);
+      const p = sandboxPath(sandboxFile, 'file');
+      // /tmp is a tmpfs: the archive API only sees the (hidden) image directory behind it.
+      if (c.State.Running && underTmp(p)) return this.readTmpFile(c.Id, p, maxBytes);
+      return getFile(this.docker.getContainer(c.Id), p, maxBytes);
     });
   }
 
@@ -1413,6 +1508,10 @@ export class DockerProvider implements SandboxProvider {
       const c = await this.load(id);
       const p = sandboxPath(sandboxFile, 'file');
       if (p === '/') throw new AboxError('invalid_input', 'Invalid file path');
+      if (c.State.Running && underTmp(p)) {
+        await this.writeTmpFile(c.Id, p, data, mode & 0o777);
+        return;
+      }
       const { uid, gid } = userIds(c);
       const root = p.startsWith(`${CA_DIR}/`);
       await putFile(this.docker.getContainer(c.Id), p, data, {
@@ -1421,6 +1520,55 @@ export class DockerProvider implements SandboxProvider {
         gid: root ? 0 : gid,
       });
     });
+  }
+
+  /** Read a file of the /tmp tmpfs of a running sandbox through the container (as its user). */
+  private async readTmpFile(
+    containerId: string,
+    file: string,
+    maxBytes: number,
+  ): Promise<{ data: Buffer; truncated: boolean; size: number }> {
+    const script =
+      '[ -e "$1" ] || exit 3; [ -f "$1" ] || exit 4; stat -c %s -- "$1" || exit 5; head -c "$2" -- "$1"';
+    const r = await simpleExec(this.docker, containerId, [
+      '/bin/sh',
+      '-c',
+      script,
+      'abox-read',
+      file,
+      String(Math.max(0, Math.floor(maxBytes))),
+    ]);
+    if (r.exitCode === 3) throw new AboxError('not_found', `No such file: ${file}`);
+    if (r.exitCode === 4) throw new AboxError('invalid_input', `Not a regular file: ${file}`);
+    if (r.exitCode !== 0)
+      throw new AboxError('backend_error', `Cannot read ${file}`, {
+        details: { stderr: r.stderr.toString('utf8').slice(0, 500) },
+      });
+    const nl = r.stdout.indexOf(0x0a);
+    const size = Number(r.stdout.subarray(0, nl).toString('utf8'));
+    const data = r.stdout.subarray(nl + 1);
+    return { data: Buffer.from(data), truncated: size > data.length, size };
+  }
+
+  /** Write a file into the /tmp tmpfs of a running sandbox (content on stdin, never in argv). */
+  private async writeTmpFile(
+    containerId: string,
+    file: string,
+    data: Buffer,
+    mode: number,
+  ): Promise<void> {
+    const script =
+      'umask 077; mkdir -p -- "$(dirname -- "$1")" && cat > "$1.abox-tmp" && chmod "$2" "$1.abox-tmp" && mv -f -- "$1.abox-tmp" "$1"';
+    const r = await simpleExec(
+      this.docker,
+      containerId,
+      ['/bin/sh', '-c', script, 'abox-write', file, mode.toString(8)],
+      { stdin: data },
+    );
+    if (r.exitCode !== 0)
+      throw new AboxError('backend_error', `Cannot write ${file}`, {
+        details: { stderr: r.stderr.toString('utf8').slice(0, 500) },
+      });
   }
 
   async listDir(id: SandboxId, dir: string): Promise<DirEntry[]> {

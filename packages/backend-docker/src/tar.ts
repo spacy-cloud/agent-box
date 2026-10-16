@@ -153,7 +153,9 @@ export function packHostPath(hostPath: string, destName: string, opts: PackOptio
         const finished = new Promise<void>((res, rej) => {
           entry.once('finish', res);
           entry.once('error', rej);
+          entry.once('close', () => rej(new Error('Archive stream closed before the entry ended')));
         });
+        finished.catch(() => undefined); // handled below (or by the pack.destroy in the catch-all)
         let remaining = size;
         const buf = Buffer.allocUnsafe(Math.min(Math.max(size, 1), 256 * 1024));
         while (remaining > 0) {
@@ -163,7 +165,8 @@ export function packHostPath(hostPath: string, destName: string, opts: PackOptio
               ? Buffer.from(buf.subarray(0, bytesRead))
               : Buffer.alloc(Math.min(buf.length, remaining));
           remaining -= chunk.length; // a file that shrank is zero-padded to its declared size
-          if (!entry.write(chunk)) await new Promise<void>((res) => entry.once('drain', res));
+          if (!entry.write(chunk)) await drained(entry);
+          if (entry.destroyed) throw new Error('Archive stream closed before the entry ended');
         }
         entry.end(undefined);
         await finished;
@@ -196,16 +199,36 @@ export function packHostPath(hostPath: string, destName: string, opts: PackOptio
 // Archive iteration
 // ---------------------------------------------------------------------------
 
-/** Iterate over the entries of a tar stream. Each entry must be consumed before advancing. */
+/** Resolve when `stream` can take more data, or has been destroyed/errored (never hangs). */
+function drained(stream: NodeJS.WritableStream): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const events = ['drain', 'close', 'error'];
+    const done = (): void => {
+      for (const ev of events) stream.removeListener(ev, done);
+      resolve();
+    };
+    for (const ev of events) stream.once(ev, done);
+  });
+}
+
+/**
+ * Iterate over the entries of a tar stream. Each entry must be consumed before advancing.
+ *
+ * The feeding loop must always settle: when the consumer stops early (a rejected entry, `return()`)
+ * the extractor is destroyed while the feeder may be waiting for a `drain` that will then never
+ * come. Waiting therefore also ends on `close`/`error`, and the loop stops once the extractor is
+ * gone. (Whether a destroyed streamx stream still emits `drain` differs between Node versions.)
+ */
 export async function* tarEntries(source: Readable): AsyncGenerator<TarSource> {
   const extract = tar.extract();
   const feed = (async () => {
     try {
       for await (const chunk of source) {
-        if (!extract.write(chunk as Buffer))
-          await new Promise<void>((res) => extract.once('drain', () => res()));
+        if (extract.destroyed) break;
+        if (!extract.write(chunk as Buffer)) await drained(extract);
+        if (extract.destroyed) break;
       }
-      extract.end(undefined);
+      if (!extract.destroyed) extract.end(undefined);
     } catch (e) {
       extract.destroy(e instanceof Error ? e : new Error(String(e)));
     }
@@ -222,6 +245,47 @@ export async function* tarEntries(source: Readable): AsyncGenerator<TarSource> {
 /** Drain a stream completely. */
 async function drain(s: AsyncIterable<unknown>): Promise<void> {
   for await (const _ of s) void _;
+}
+
+/**
+ * Rewrite the ownership of every entry of an archive to `uid:gid` (names, modes, links and content
+ * stay as they are). Used to hand an image directory such as the home to another numeric user
+ * without needing any capability inside the container. Errors of `source` surface on the result.
+ */
+export function reownArchive(source: Readable, ids: { uid: number; gid: number }): Readable {
+  const pack = tar.pack();
+  void (async () => {
+    try {
+      for await (const entry of tarEntries(source)) {
+        const h = { ...entry.header, uid: ids.uid, gid: ids.gid, uname: '', gname: '' };
+        const isFile = h.type === 'file' || h.type === 'contiguous-file' || !h.type;
+        if (!isFile || !h.size) {
+          await drain(entry);
+          await new Promise<void>((res, rej) =>
+            pack.entry({ ...h, size: 0 }, (err) => (err ? rej(err) : res())),
+          );
+          continue;
+        }
+        const out = pack.entry(h, () => undefined);
+        const finished = new Promise<void>((res, rej) => {
+          out.once('finish', res);
+          out.once('error', rej);
+          out.once('close', () => rej(new Error('Archive stream closed before the entry ended')));
+        });
+        finished.catch(() => undefined);
+        for await (const chunk of entry) {
+          if (!out.write(chunk as Buffer)) await drained(out);
+          if (out.destroyed) throw new Error('Archive stream closed before the entry ended');
+        }
+        out.end(undefined);
+        await finished;
+      }
+      pack.finalize();
+    } catch (e) {
+      pack.destroy(e instanceof Error ? e : new Error(String(e)));
+    }
+  })();
+  return Readable.from(pack);
 }
 
 export interface SingleFile {
