@@ -322,10 +322,16 @@ for the release-candidate documentation the matrix result was:
 | `node@24`, `pnpm@10`, `git`, `python@3.13`, `apt`/`pip`/`npm` packages on `ubuntu:24.04` | built, versions checked as uid 1000 |
 | `go@1.24`, `rust` (compiles a crate), `java@21`+`gh`, `docker-cli` on `ubuntu:24.04` | built and checked |
 | `python@3.13`, `go@1.24` on `alpine:3.22`             | built and checked |
-| `node@24`+`playwright` on `debian:12`                 | see the note below the table |
-| `node@24`+`pnpm@10`+`git`, `rust`, `java@21`+`gh`+`docker-cli` on `alpine:3.22` | see the note below the table |
+| `node@24`+`playwright` on `debian:12`                 | failed (see below) |
+| `node@24`+`pnpm@10`+`git`, `rust`, `java@21`+`gh`+`docker-cli` on `alpine:3.22` | failed (see below) |
 
-PRESET_NOTE_PLACEHOLDER
+Four combinations failed on that machine and are **not verified**: `node@24`+`playwright` on
+`debian:12` (the Debian mirror closed the connection during the Chromium dependency download),
+`java@21` and `node`+`pnpm`+`git` on `alpine:3.22` (`apk add` failed with `I/O error` while
+extracting into the engine's containerd/overlay store, an environment problem that also reproduced
+through the CLI), and `rust` on `alpine:3.22` (a build step exited with code 3; not diagnosed).
+Treat Alpine presets other than `python` and `go` as unverified. Note that the Java preset
+reports "not available in this Alpine release" for *any* `apk` failure, which can be misleading.
 
 ## Network presets
 

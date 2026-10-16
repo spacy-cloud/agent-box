@@ -638,6 +638,7 @@ function SandboxOutput(props: { id: string }) {
       {q.error ? <ErrorBox error={q.error} /> : null}
       <pre
         className="log plain"
+        role="group"
         tabIndex={0}
         aria-label={t('detail.logs.sandboxOutput')}
         aria-live="off"
@@ -692,6 +693,7 @@ function LogsTab(props: { id: string }) {
           {logs.error ? <ErrorBox error={logs.error} /> : null}
           <pre
             className="log plain"
+            role="group"
             tabIndex={0}
             aria-label={t('detail.logs.output')}
             aria-live="off"
