@@ -13,6 +13,7 @@ import {
   type WorkspaceMode,
 } from '../types.js';
 import { domainCovered, normalizeDomainPattern } from './domains.js';
+import { imageAllowedByRegistries, isKnownBaseImage } from './images.js';
 import type { AgentContext, ApprovalMode } from './model.js';
 import {
   checkHostPath,
@@ -49,7 +50,8 @@ export interface HostInfo {
 
 export interface CreateRequest {
   context: AgentContext;
-  template: Pick<ResolvedTemplate, 'name' | 'isolation' | 'hash' | 'contentHash'>;
+  template: Pick<ResolvedTemplate, 'name' | 'isolation' | 'hash' | 'contentHash'> &
+    Partial<Pick<ResolvedTemplate, 'backend' | 'base'>>;
   /** False for project templates whose content hash has not been approved. */
   templateTrusted: boolean;
   templateSource: { kind: TemplateSourceKind; path?: string };
@@ -86,6 +88,7 @@ export type ApprovalKind =
   | 'mount'
   | 'network_open'
   | 'network_domains'
+  | 'image_registry'
   | 'secret_env'
   | 'secret_file'
   | 'private_address'
@@ -290,6 +293,44 @@ function domainApproval(
   });
 }
 
+/** Backends whose `base.os` is an OCI image reference (vm bases are distro names checked by the backend). */
+const IMAGE_BACKENDS: readonly string[] = ['docker', 'podman', 'python'];
+
+/**
+ * Free image names are checked against the registry allowlist of the profile (`images.registries`).
+ * Like network destinations beyond the allowlist: a profile without any registry denies, otherwise
+ * the human decides (approval). Base images of the built-in templates are always accepted; a
+ * Dockerfile base cannot be inspected here, so it counts as an unchecked image.
+ */
+function checkBaseImage(ctx: AgentContext, template: CreateRequest['template'], f: Findings): void {
+  const registries = ctx.profile.images.registries;
+  const base = template.base;
+  if (!base || registries.includes('*')) return;
+  if (template.backend !== undefined && !IMAGE_BACKENDS.includes(template.backend)) return;
+  const p = ctx.profile;
+  let subject: string | undefined;
+  if (base.os !== undefined) {
+    if (isKnownBaseImage(base.os) || imageAllowedByRegistries(base.os, registries)) return;
+    subject = `base image "${base.os}"`;
+  } else if (base.dockerfile !== undefined) {
+    subject = `Dockerfile base "${base.dockerfile}" (the images it builds on cannot be checked)`;
+  }
+  if (subject === undefined) return;
+  if (registries.length === 0) {
+    f.deny(
+      `${subject} of template "${template.name}" is not allowed: profile "${p.name}" has no image registry allowlist (images.registries is empty)`,
+      'Use a built-in base image, or ask the human to add registries to images.registries with `abox policy edit`.',
+    );
+    return;
+  }
+  f.need({
+    kind: 'image_registry',
+    reason: `${subject} of template "${template.name}" is outside the image registries of profile "${p.name}" (images.registries: ${list(registries)})`,
+    risk: 'The sandbox is built from an image you have not allowed: its publisher controls everything that runs in it.',
+    invariant: false,
+  });
+}
+
 function elevated(f: Findings, ctx: AgentContext, item: Omit<ApprovalItem, 'invariant'>): void {
   // Elevated-but-within-rights items are auto-allowed only in approval mode `open`.
   if (ctx.profile.approval !== 'open') f.need({ ...item, invariant: false });
@@ -338,6 +379,7 @@ function checkMount(
     roots: ctx.mountRoots,
     kind: 'mount',
     extraForbidden: paths.extraForbidden ?? [],
+    denyHiddenHomeDirs: ctx.kind === 'agent',
   });
   if (!res.ok) f.deny(`${who}: ${res.reason}`, res.hint);
   if (p.mounts && m.access !== 'ro' && !p.mounts.access.includes(m.access)) {
@@ -371,6 +413,8 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
         : 'This profile allows no templates; ask the human to add some in policy.yaml.',
     );
   }
+
+  checkBaseImage(ctx, req.template, f);
 
   // --- host -------------------------------------------------------------
   if (!ctx.allowedHosts.includes('*') && !ctx.allowedHosts.includes(req.host.id)) {
@@ -485,6 +529,7 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
           kind: 'workspace',
           extraForbidden: req.paths.extraForbidden ?? [],
           scanSockets: ws.mode === 'mount',
+          denyHiddenHomeDirs: ctx.kind === 'agent',
         });
         if (!res.ok) f.deny(res.reason, res.hint);
       }

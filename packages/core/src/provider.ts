@@ -103,6 +103,18 @@ export interface SandboxProvider {
    */
   removeForeign?(resource: ForeignResource): Promise<void>;
 
+  /**
+   * Move the deadline at which the backend itself ends the sandbox to `expiresAt` (epoch ms) and
+   * make `inspect()` / `list()` / `start()` report and honour the new one. Called by the manager
+   * *before* it records the new expiry, so a backend that cannot move its deadline fails the
+   * extension instead of letting the sandbox die at the old time while the registry shows time
+   * left. Only ever extends: an `expiresAt` earlier than the current deadline is `invalid_input`,
+   * an equal one a no-op; an already expired sandbox is `conflict`. Optional (see
+   * `capabilities().extendExpiry`); absent = `unsupported`, as is a sandbox whose deadline cannot
+   * be moved (e.g. created by an older version).
+   */
+  extendExpiry?(id: SandboxId, expiresAt: number): Promise<void>;
+
   /** Egress decisions recorded by the proxy since `sinceTs` (allowlist mode only). */
   networkEvents?(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]>;
   /** Combined stdout/stderr of the sandbox main process, if any. */

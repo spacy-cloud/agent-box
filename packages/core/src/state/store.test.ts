@@ -418,6 +418,40 @@ describe('TemplateTrust', () => {
     expect(s.templateTrust.revoke('h1')).toBe(false);
     expect(s.templateTrust.isTrusted('h1')).toBe(false);
   });
+
+  it('keeps the snapshot and finds the previous version of a template', () => {
+    const s = open();
+    const p = '/p/.sandbox/dev.yaml';
+    s.templateTrust.trust('h1', { path: p, by: 'human', name: 'dev', snapshot: 'v1\n' });
+    clock += 10;
+    s.templateTrust.trust('h2', { path: p, by: 'human', name: 'dev', snapshot: 'v2\n' });
+    clock += 10;
+    s.templateTrust.trust('h3', {
+      path: '/other/.sandbox/dev.yaml',
+      by: 'human',
+      name: 'dev',
+      snapshot: 'o\n',
+    });
+    s.templateTrust.trust('h4', { path: p, by: 'human' }); // no snapshot: never a baseline
+    expect(s.templateTrust.get('h1')).toMatchObject({ name: 'dev', snapshot: 'v1\n' });
+    expect(s.templateTrust.get('h4')).not.toHaveProperty('snapshot');
+    // newest first, same path preferred, the content hash under review is excluded
+    expect(
+      s.templateTrust.previousVersion({ name: 'dev', path: p, exceptHash: 'h9' })?.snapshot,
+    ).toBe('v2\n');
+    expect(
+      s.templateTrust.previousVersion({ name: 'dev', path: p, exceptHash: 'h2' })?.snapshot,
+    ).toBe('v1\n');
+    // another checkout of the same template name is a fallback
+    expect(
+      s.templateTrust.previousVersion({ name: 'dev', path: '/new/place.yaml', exceptHash: 'h9' })
+        ?.snapshot,
+    ).toBe('o\n');
+    expect(s.templateTrust.previousVersion({ name: 'unknown', exceptHash: 'h9' })).toBeUndefined();
+    // re-trusting without a snapshot keeps the recorded one
+    s.templateTrust.trust('h1', { path: p, by: 'gui' });
+    expect(s.templateTrust.get('h1')?.snapshot).toBe('v1\n');
+  });
 });
 
 describe('PolicyRevisions', () => {

@@ -383,6 +383,77 @@ describe('checkHostPath: roots', () => {
   });
 });
 
+describe('checkHostPath: hidden home directories (agents)', () => {
+  const agent = (p: string, extra: Partial<Parameters<typeof checkHostPath>[1]> = {}) =>
+    check(p, { roots: [env.home], kind: 'workspace', denyHiddenHomeDirs: true, ...extra });
+
+  it.each(['.claude', '.codex', '.cache', '.local/share/x', '.cursor/rules', '.mozilla-fake'])(
+    'refuses ~/%s even when the root is the home directory',
+    (rel) => {
+      const r = agent(join(env.home, rel));
+      expect(r).toMatchObject({ ok: false, code: 'forbidden' });
+      if (!r.ok) expect(r.reason).toContain('hidden');
+    },
+  );
+  it('refuses with any root, also a root that is itself hidden', () => {
+    const hidden = join(env.home, '.claude');
+    expect(agent(join(hidden, 'x'), { roots: [hidden] })).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+    });
+  });
+  it('refuses look-alike spellings (fullwidth dot, case)', () => {
+    expect(agent(join(env.home, '\uff0eclaude'))).toMatchObject({ ok: false, code: 'forbidden' });
+    expect(agent(join(env.home, '.CLAUDE'))).toMatchObject({ ok: false, code: 'forbidden' });
+  });
+  it('applies to mounts as well', () => {
+    expect(agent(join(env.home, '.cache'), { kind: 'mount' })).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+    });
+  });
+  it('only the directory directly below the home directory counts', () => {
+    const nested = join(env.app, '.github');
+    mkdirSync(nested, { recursive: true });
+    expect(agent(nested)).toEqual({ ok: true });
+    expect(agent(join(env.app, '.git', 'hooks'))).toEqual({ ok: true });
+    expect(agent(env.app)).toEqual({ ok: true });
+  });
+  it('is off for humans (no option)', () => {
+    const dir = join(env.home, '.hidden-human-project');
+    mkdirSync(dir, { recursive: true });
+    expect(check(dir, { roots: [env.home], kind: 'workspace' })).toEqual({ ok: true });
+    expect(check(dir, { roots: [env.home], kind: 'workspace', denyHiddenHomeDirs: false })).toEqual(
+      { ok: true },
+    );
+  });
+  it('knows the real path of a symlinked home directory', () => {
+    const real = join(env.root, 'real-home');
+    mkdirSync(join(real, '.claude'), { recursive: true });
+    const link = join(env.root, 'link-home');
+    symlinkSync(real, link);
+    const r = checkHostPath(join(real, '.claude', 'x'), {
+      home: link,
+      roots: [real],
+      kind: 'workspace',
+      denyHiddenHomeDirs: true,
+    });
+    expect(r).toMatchObject({ ok: false, code: 'forbidden' });
+  });
+  it('roots hints name policy edit and the key to change', () => {
+    const r = check(env.datasets, { roots: [env.projects], kind: 'workspace' });
+    expect(r).toMatchObject({ ok: false, code: 'outside_roots' });
+    if (!r.ok) {
+      expect(r.hint).toContain('abox policy edit');
+      expect(r.hint).toContain('workspace.roots');
+    }
+    const m = check(env.sshDir.replace('.ssh', 'elsewhere'), { roots: [env.projects] });
+    if (!m.ok) expect(m.hint).toContain('mounts.roots');
+    const none = check(env.app, { roots: [], kind: 'workspace' });
+    if (!none.ok) expect(none.hint).toContain('workspace.roots');
+  });
+});
+
 describe('checkHostPath: sockets', () => {
   it('forbids docker.sock / podman.sock by name, any case, any type', () => {
     const f = join(env.datasets, 'docker.sock');

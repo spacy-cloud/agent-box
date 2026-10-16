@@ -164,7 +164,7 @@ async function ensureUpstreamImage(): Promise<void> {
   const have = await docker(['image', 'inspect', IMAGE]);
   if (have.code === 0) return;
   const df = `FROM node:24-alpine\nRUN for i in 1 2 3; do apk add --no-cache git git-daemon && break; sleep 1; done; test -x /usr/libexec/git-core/git-http-backend && git --version\n`;
-  const r = await docker(['build', '-t', IMAGE, '--label', 'abox.e2e-cache=1', '-'], {
+  const r = await docker(['build', '--force-rm', '-t', IMAGE, '--label', 'abox.e2e-cache=1', '-'], {
     input: df,
     timeoutMs: 300_000,
   });

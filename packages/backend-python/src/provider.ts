@@ -615,6 +615,13 @@ export class PythonProvider implements SandboxProvider {
     await provider.updateNetwork(id, network);
   }
 
+  async extendExpiry(id: SandboxId, expiresAt: number): Promise<void> {
+    const { provider } = await this.route(id);
+    if (!provider.extendExpiry)
+      throw unsupported('extending the lifetime of a running sandbox is not supported');
+    await provider.extendExpiry(id, expiresAt);
+  }
+
   async networkEvents(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]> {
     const { provider } = await this.route(id);
     return provider.networkEvents ? provider.networkEvents(id, sinceTs) : [];

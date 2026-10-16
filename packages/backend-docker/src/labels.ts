@@ -18,6 +18,11 @@ export const LABEL = {
   isolation: 'abox.isolation',
   created: 'abox.created',
   expires: 'abox.expires',
+  /**
+   * `1` when the entrypoint takes its deadline from `EXPIRY_FILE` as well (a later one than
+   * `abox.expires` wins): the only way to move the deadline, because labels are immutable.
+   */
+  expiryFile: 'abox.expiry-file',
   /** `sandbox` | `proxy` | `network` | `image`. */
   role: 'abox.role',
   baseDigest: 'abox.base-digest',
@@ -48,6 +53,12 @@ export const CA_CERT_PATH = `${CA_DIR}/ca.crt`;
 /** Where spec files destined for the /tmp tmpfs wait; `start` copies them into /tmp. */
 export const TMP_STASH = `${CA_DIR}/tmpfiles`;
 export const CA_BUNDLE_PATH = `${CA_DIR}/ca-bundle.crt`;
+/**
+ * Current deadline (epoch seconds) of the sandbox, written as root by `extendExpiry` and read by
+ * the entrypoint. Same directory as the CA files: root-owned, and a volume when the rootfs is
+ * read-only, so the sandbox user can neither change it nor lose it on a restart.
+ */
+export const EXPIRY_FILE = `${CA_DIR}/expires`;
 
 const INSTANCE_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const HOST_RE = /^[a-z0-9][a-z0-9-]*$/;

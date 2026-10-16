@@ -29,6 +29,11 @@ import { cleanupSandbox, makeTestSpec, randomId, sleep, waitFor } from './helper
  * - A failed `create()` (including every `unsupported` rejection) leaves nothing behind.
  * - `inspect`/`list` report state `expired` once `expiresAt < now`, regardless of the
  *   lifecycle state. `create()` with an `expiresAt` in the past succeeds.
+ * - `extendExpiry(id, t)` (only with `capabilities().extendExpiry`) moves the deadline at which
+ *   the backend itself ends the sandbox, not just the reported one: a sandbox extended past its
+ *   original `expiresAt` keeps running, can be stopped and started again, and reports `t`.
+ *   It never shortens (`invalid_input`); without the capability the method is absent or rejects
+ *   with `unsupported`.
  * - `copyIn(host, p)` / `copyOut(p, host)`: the entry at the source *becomes* the entry at the
  *   destination path (like `cp -a src dst` with a non-existing `dst`); the destination's parent
  *   must exist. Directories are copied recursively.
@@ -254,6 +259,8 @@ export function defineProviderContract(opts: ContractOptions): void {
         expect(caps.networkFilter).toBe(caps.networkModes.includes('allowlist'));
         // A remote host cannot bind-mount host directories.
         if (caps.remote) expect(caps.workspaceDelivery).not.toContain('bind');
+        // `extendExpiry` is present exactly when the capability is claimed.
+        expect(typeof provider.extendExpiry === 'function').toBe(caps.extendExpiry === true);
         // Snapshot methods are present exactly when snapshots are supported.
         if (caps.snapshots) {
           expect(typeof provider.snapshot).toBe('function');
@@ -1198,6 +1205,88 @@ export function defineProviderContract(opts: ContractOptions): void {
         const ghost = `${provider.host.host}/ct${randomId('', 6)}`;
         await expectRejects(provider.snapshot(ghost, 'x'), 'not_found');
         await expectRejects(provider.restore(ghost, 'x'), 'not_found');
+      });
+    });
+
+    // -- expiry ----------------------------------------------------------------------------
+
+    describe('extendExpiry', () => {
+      test('without the capability the call is absent or rejects with unsupported', async (ctx) => {
+        if (caps.extendExpiry) return ctx.skip();
+        const id = await startSandbox();
+        try {
+          if (provider.extendExpiry)
+            await expectRejects(provider.extendExpiry(id, Date.now() + 3_600_000), 'unsupported');
+        } finally {
+          await finish(id);
+        }
+      });
+
+      test('extend moves the backend deadline', async (ctx) => {
+        if (!caps.extendExpiry || !provider.extendExpiry) return ctx.skip();
+        const spec = await mk({ expiresAt: Date.now() + (opts.startBudgetMs ?? 0) + 6000 });
+        await provider.create(spec);
+        try {
+          await provider.start(spec.id);
+          expect((await provider.inspect(spec.id)).state).toBe('running');
+          const moved = Date.now() + 120_000;
+          await provider.extendExpiry(spec.id, moved);
+          const after = await provider.inspect(spec.id);
+          expect(after.expiresAt).toBeGreaterThanOrEqual(moved);
+          expect(after.expiresAt).toBeLessThan(moved + 1000);
+          // Well past the deadline the sandbox was created with.
+          await sleep(Math.max(0, spec.expiresAt - Date.now()) + 3000);
+          expect((await provider.inspect(spec.id)).state).toBe('running');
+          expect((await provider.list({ state: 'expired' })).map((s) => s.id)).not.toContain(
+            spec.id,
+          );
+          expect((await provider.exec(spec.id, { argv: ['echo', 'still-here'] })).stdout).toBe(
+            'still-here\n',
+          );
+          // A restart honours the moved deadline too (the old one is over).
+          await provider.stop(spec.id);
+          await provider.start(spec.id);
+          expect((await provider.inspect(spec.id)).state).toBe('running');
+          expect((await provider.exec(spec.id, { argv: ['echo', 'again'] })).stdout).toBe(
+            'again\n',
+          );
+        } finally {
+          await finish(spec.id);
+        }
+      });
+
+      test('never shortens; unknown ids reject with not_found', async (ctx) => {
+        if (!caps.extendExpiry || !provider.extendExpiry) return ctx.skip();
+        const spec = await mk({ expiresAt: Date.now() + 3_600_000 });
+        await provider.create(spec);
+        try {
+          await expectRejects(
+            provider.extendExpiry(spec.id, spec.expiresAt - 60_000),
+            'invalid_input',
+          );
+          expect((await provider.inspect(spec.id)).expiresAt).toBeGreaterThanOrEqual(
+            spec.expiresAt,
+          );
+          expect((await provider.inspect(spec.id)).expiresAt).toBeLessThan(spec.expiresAt + 1000);
+          await expectRejects(
+            provider.extendExpiry(`${provider.host.host}/ct${randomId('', 6)}`, spec.expiresAt),
+            'not_found',
+          );
+        } finally {
+          await finish(spec.id);
+        }
+      });
+
+      test('an expired sandbox cannot be extended', async (ctx) => {
+        if (!caps.extendExpiry || !provider.extendExpiry) return ctx.skip();
+        const spec = await mk({ expiresAt: Date.now() - 1000 });
+        await provider.create(spec);
+        try {
+          await expectRejects(provider.extendExpiry(spec.id, Date.now() + 3_600_000), 'conflict');
+          expect((await provider.inspect(spec.id)).state).toBe('expired');
+        } finally {
+          await finish(spec.id);
+        }
       });
     });
 

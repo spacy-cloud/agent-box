@@ -57,6 +57,7 @@ export class FakeProvider implements SandboxProvider {
   readonly opts: FakeOptions;
   private readonly caps: ProviderCapabilities;
   updateNetwork?: SandboxProvider['updateNetwork'];
+  extendExpiry?: SandboxProvider['extendExpiry'];
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
 
@@ -78,6 +79,12 @@ export class FakeProvider implements SandboxProvider {
       osFamilies: ['debian', 'alpine', 'fedora', 'arch', 'unknown'],
       remote: false,
       ...opts.capabilities,
+    };
+    this.caps.extendExpiry = true;
+    this.extendExpiry = (id, expiresAt) => {
+      const sb = this.get(id);
+      sb.spec = { ...sb.spec, expiresAt };
+      return Promise.resolve();
     };
     if (opts.updateNetwork) {
       this.updateNetwork = (id, network) => {

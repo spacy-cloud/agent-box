@@ -4,6 +4,7 @@ import type { Cli } from '../cli.js';
 import { CliError } from '../errors.js';
 import { formatDuration, oneLine, renderKeyValues, renderTable, safe } from '../format.js';
 import { formatIssue } from '../cli.js';
+import { reviewLines } from '../review.js';
 
 export function registerTemplate(program: Command, cli: Cli): void {
   const t = program.command('template').description('List, inspect, validate and build templates');
@@ -69,7 +70,12 @@ export function registerTemplate(program: Command, cli: Cli): void {
               `${x.backend} (isolation ${x.isolation})${d.backendAvailable ? '' : ' - backend not available'}`,
             ],
             ['source', `${x.source.kind}${x.source.path ? ` ${x.source.path}` : ''}`],
-            ['trusted', d.trusted ? 'yes' : 'NO - project template not approved yet'],
+            [
+              'trusted',
+              d.trusted
+                ? 'yes'
+                : `NO - project template not approved yet (see what it does: abox template review ${x.name})`,
+            ],
             ['allowed', d.allowed ? 'yes' : 'no (policy profile)'],
             ['base', x.base.os ?? x.base.dockerfile ?? '-'],
             ['user', `${x.user.name} (uid ${x.user.uid})${x.user.sudo ? ' sudo' : ''}`],
@@ -97,6 +103,26 @@ export function registerTemplate(program: Command, cli: Cli): void {
           lines.push(`exceeds your profile "${lim.profile}": ${lim.exceedsProfile.join('; ')}`);
         }
         for (const w of d.warnings) lines.push(`warning: ${safe(w)}`);
+        return lines.join('\n');
+      });
+    });
+
+  t.command('review')
+    .description(
+      'Show what a (project) template does before you trust it: a diff against the template it extends or its last trusted version',
+    )
+    .argument('<name>', 'template name')
+    .action(async (name: string) => {
+      const rt = await cli.rt();
+      const r = await rt.abox.reviewTemplate(cli.caller(), name, { projectDir: cli.projectDir() });
+      cli.success(r, () => {
+        const lines = reviewLines(cli, r).slice(1);
+        lines.push(
+          '',
+          r.trusted
+            ? 'This exact content is trusted.'
+            : 'Not trusted yet: "abox create" asks you before it uses this content; an agent needs your approval.',
+        );
         return lines.join('\n');
       });
     });
@@ -172,12 +198,27 @@ export function registerTemplate(program: Command, cli: Cli): void {
       }
       const rt = await cli.rt();
       const signal = cli.abortSignal();
-      const r = await rt.abox.buildTemplate(opts.yes ? cli.caller(true) : cli.caller(), name, {
-        projectDir: cli.projectDir(),
-        ...(opts.update ? { update: true } : {}),
-        signal,
-        onProgress: (line) => cli.info(`  ${safe(line)}`),
-      });
+      let r;
+      try {
+        r = await rt.abox.buildTemplate(opts.yes ? cli.caller(true) : cli.caller(), name, {
+          projectDir: cli.projectDir(),
+          ...(opts.update ? { update: true } : {}),
+          signal,
+          onProgress: (line) => cli.info(`  ${safe(line)}`),
+        });
+      } catch (e) {
+        if (!(e instanceof AboxError) || e.code !== 'untrusted_template') throw e;
+        // Show what the template does, so --yes is an informed decision.
+        const review = await rt.abox
+          .reviewTemplate(cli.caller(), name, { projectDir: cli.projectDir() })
+          .catch(() => undefined);
+        if (!review) throw e;
+        if (!cli.json) for (const line of reviewLines(cli, review)) cli.err(`${line}\n`);
+        throw new CliError(e.code, e.message, {
+          hint: `Review the diff above, then repeat with --yes to build it.`,
+          details: { ...(e.details ?? {}), templateReview: review },
+        });
+      }
       cli.success(
         r,
         () =>

@@ -1,5 +1,6 @@
+import { basename, dirname } from 'node:path';
 import type { Command } from 'commander';
-import type { ApprovalView } from '@abox/core';
+import type { ApprovalView, TemplateReview } from '@abox/core';
 import type { Cli } from '../cli.js';
 import {
   formatRelative,
@@ -9,6 +10,7 @@ import {
   renderTable,
   safe,
 } from '../format.js';
+import { reviewLines } from '../review.js';
 
 function quoteBlock(text: string): string {
   const lines = safe(text).split('\n');
@@ -25,6 +27,25 @@ function requestSummary(a: ApprovalView): string {
   const cmd = pick('argv') ?? pick('command');
   if (cmd !== undefined) parts.push(`run ${Array.isArray(cmd) ? cmd.join(' ') : String(cmd)}`);
   return parts.join(', ');
+}
+
+/** Template named by a `template_trust` approval: name, approved content hash, project directory. */
+function trustedTemplateOf(
+  a: ApprovalView,
+): { name: string; contentHash?: string; projectDir?: string } | undefined {
+  if (a.kind !== 'template_trust') return undefined;
+  const tpl = (a.request as { template?: unknown } | null)?.template as
+    { name?: unknown; contentHash?: unknown; source?: { path?: unknown } } | undefined;
+  if (!tpl || typeof tpl.name !== 'string') return undefined;
+  const path = typeof tpl.source?.path === 'string' ? tpl.source.path : undefined;
+  return {
+    name: tpl.name,
+    ...(typeof tpl.contentHash === 'string' ? { contentHash: tpl.contentHash } : {}),
+    // <project>/.sandbox/<file>.yaml
+    ...(path && basename(dirname(path)) === '.sandbox'
+      ? { projectDir: dirname(dirname(path)) }
+      : {}),
+  };
 }
 
 export function registerApprovals(program: Command, cli: Cli): void {
@@ -83,7 +104,21 @@ export function registerApprovals(program: Command, cli: Cli): void {
     .action(async (id: string) => {
       const rt = await cli.rt();
       const x = await rt.abox.getApproval(cli.caller(), id);
-      cli.success(x, () => {
+      // A template the agent wants trusted: show what it does, as a diff, not just its hash.
+      let review: TemplateReview | undefined;
+      let reviewError: string | undefined;
+      const tpl = trustedTemplateOf(x);
+      if (tpl) {
+        try {
+          review = await rt.abox.reviewTemplate(cli.caller(), tpl.name, {
+            projectDir: tpl.projectDir ?? cli.projectDir(),
+            ...(tpl.contentHash ? { expectedContentHash: tpl.contentHash } : {}),
+          });
+        } catch (e) {
+          reviewError = e instanceof Error ? e.message : String(e);
+        }
+      }
+      cli.success(review ? { ...x, templateReview: review } : x, () => {
         const lines = [
           renderKeyValues([
             ['approval', x.id],
@@ -115,6 +150,9 @@ export function registerApprovals(program: Command, cli: Cli): void {
           cli.style('bold', 'Risks (computed by abox):'),
           ...(x.risks.length ? x.risks.map((r) => `  ! ${safe(r)}`) : ['  (none listed)']),
         ];
+        if (review) lines.push(...reviewLines(cli, review));
+        else if (reviewError)
+          lines.push('', `Template review not available: ${oneLine(reviewError)}`);
         if (x.status === 'pending') {
           lines.push(
             '',

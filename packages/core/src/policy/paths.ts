@@ -302,6 +302,12 @@ export interface CheckHostPathOptions {
    * Pass `true` for workspace mode `mount`.
    */
   scanSockets?: boolean;
+  /**
+   * Agents: refuse every path below a hidden (dot) directory directly under the home directory
+   * (`~/.claude`, `~/.codex`, `~/.cache`, ...), whatever the roots say. Those hold credentials, tokens and
+   * tool configuration that no sandbox needs. Humans are not subject to this rule.
+   */
+  denyHiddenHomeDirs?: boolean;
 }
 
 const SOCKET_SCAN_MAX_ENTRIES = 250_000;
@@ -358,6 +364,18 @@ export function checkHostPath(canonical: string, opts: CheckHostPathOptions): Pa
     }
   }
 
+  if (opts.denyHiddenHomeDirs) {
+    const hidden = hiddenHomeDir(folded, opts.home);
+    if (hidden) {
+      return {
+        ok: false,
+        code: 'forbidden',
+        reason: `${label} path ${canonical} is inside the hidden home directory ~/${hidden}; agents cannot use hidden directories of the home directory (credentials, tokens, tool configuration)`,
+        hint: `Use a project directory outside hidden home folders, for example ~/projects/<name>.`,
+      };
+    }
+  }
+
   const base = basename(folded);
   if (ENGINE_SOCKET_NAMES.has(base)) {
     return {
@@ -393,7 +411,7 @@ export function checkHostPath(canonical: string, opts: CheckHostPathOptions): Pa
       ok: false,
       code: 'outside_roots',
       reason: `no ${label} roots are allowed by the profile`,
-      hint: 'Ask the human to add roots to the profile in policy.yaml.',
+      hint: `Ask the human to add ${opts.kind === 'mount' ? 'mounts.roots' : 'workspace.roots'} to the profile with \`abox policy edit\`.`,
     };
   }
   if (!opts.roots.some((r) => isWithin(canonical, r))) {
@@ -401,10 +419,23 @@ export function checkHostPath(canonical: string, opts: CheckHostPathOptions): Pa
       ok: false,
       code: 'outside_roots',
       reason: `${label} path ${canonical} is outside the allowed ${label} roots (${opts.roots.join(', ')})`,
-      hint: `Use a path inside one of the allowed roots, or ask the human to add a root to the profile in policy.yaml.`,
+      hint: `Use a path inside one of the allowed roots, or ask the human to add the project directory to ${opts.kind === 'mount' ? 'mounts.roots' : 'workspace.roots'} of the profile with \`abox policy edit\` (\`abox init --agent <name>\` shows the current roots).`,
     };
   }
   return { ok: true };
+}
+
+/** The hidden directory directly below the home directory that `folded` lies in (e.g. `.claude`), if any. */
+function hiddenHomeDir(folded: string, home: string): string | undefined {
+  const homes = new Set<string>([foldPath(home)]);
+  const real = tryReal(home);
+  if (real) homes.add(foldPath(real));
+  for (const h of homes) {
+    if (!isWithin(folded, h) || folded === h) continue;
+    const first = folded.slice(h === '/' ? 1 : h.length + 1).split('/')[0] ?? '';
+    if (first.startsWith('.')) return first;
+  }
+  return undefined;
 }
 
 /** Returns the path of the first socket found, 'unverifiable' when the scan limit is hit or a directory is unreadable, else undefined. */

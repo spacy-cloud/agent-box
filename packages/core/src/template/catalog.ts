@@ -196,16 +196,42 @@ export class TemplateCatalog {
     return { byName, problems };
   }
 
+  /** The entry `from.spec.extends` names: same precedence level or below, never the entry itself. */
+  private async findParent(
+    from: { kind: TemplateSourceKind; path?: string },
+    name: string,
+  ): Promise<Entry | undefined> {
+    const { byName } = await this.load();
+    const candidates = byName.get(name) ?? [];
+    // A template may only extend templates at its own precedence level or below (a user
+    // template never depends on a repository's .sandbox directory), and never itself.
+    const allowed = PRECEDENCE.slice(PRECEDENCE.indexOf(from.kind));
+    return candidates.find(
+      (c) => allowed.includes(c.kind) && !(c.kind === from.kind && c.path === from.path),
+    );
+  }
+
+  /**
+   * The resolved template that `name` extends (the one a review compares against), or undefined
+   * when it extends nothing or the parent cannot be found or resolved.
+   */
+  async getParent(name: string): Promise<ResolvedTemplate | undefined> {
+    const { byName } = await this.load();
+    const entry = byName.get(name)?.[0];
+    if (!entry?.spec.extends) return undefined;
+    const parent = await this.findParent(entry, entry.spec.extends);
+    if (!parent) return undefined;
+    try {
+      return await this.resolveEntry(parent);
+    } catch (e) {
+      if (isAboxError(e)) return undefined;
+      throw e;
+    }
+  }
+
   private async resolveEntry(entry: Entry): Promise<ResolvedTemplate> {
     const lookup: TemplateLookup = async (name, from): Promise<ParentTemplate | undefined> => {
-      const { byName } = await this.load();
-      const candidates = byName.get(name) ?? [];
-      // A template may only extend templates at its own precedence level or below (a user
-      // template never depends on a repository's .sandbox directory), and never itself.
-      const allowed = PRECEDENCE.slice(PRECEDENCE.indexOf(from.kind));
-      const found = candidates.find(
-        (c) => allowed.includes(c.kind) && !(c.kind === from.kind && c.path === from.path),
-      );
+      const found = await this.findParent(from, name);
       return found
         ? { spec: found.spec, source: { kind: found.kind, path: found.path } }
         : undefined;

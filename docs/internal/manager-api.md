@@ -168,7 +168,8 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
   `{removed:false}` the second time).
 - `extendTtl(caller, id, ttl, {waitForApprovalMs?}) -> AccessResult`: `ttl` = _additional_ time on top of the current
   expiry (`'1h'` or ms). The profile limit applies to the total lifetime from creation: beyond it
-  `policy_denied`.
+  `policy_denied`. The provider's `extendExpiry` is called first; the registry changes only when it
+  succeeds, and a provider without the capability gives `unsupported`.
 - `accessRequest(caller, id, {kind, details, reason?}, opts?) -> AccessResult`
   - `network`: `{mode?, domains?, presets?, privateExceptions?}`; applied via `provider.updateNetwork` (keeps
     the proxy injections); only for allowlist sandboxes (mode changes -> `unsupported`).

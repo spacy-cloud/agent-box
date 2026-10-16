@@ -160,6 +160,7 @@ export class ProcessProvider implements SandboxProvider {
       mounts: false,
       snapshots: true,
       tty: false,
+      extendExpiry: true,
       limits: { cpus: false, memory: false, pids: false, disk: false },
       // Commands run as the host user; there is no way to switch to another (non-root) user.
       nonRootUser: false,
@@ -408,6 +409,24 @@ export class ProcessProvider implements SandboxProvider {
         throw new AboxError('conflict', `sandbox '${id}' has expired and cannot be started`);
       }
       if (meta.state !== 'running') await this.setState(meta, 'running');
+    });
+  }
+
+  /** The expiry is `meta.expiresAt` (state and every check derive from it): moving it is the whole job. */
+  async extendExpiry(id: SandboxId, expiresAt: number): Promise<void> {
+    const { short } = await this.load(id);
+    await this.mutex.run(short, async () => {
+      const meta = await this.requireMeta(id, short);
+      if (this.isExpired(meta)) {
+        throw new AboxError('conflict', `sandbox '${id}' has expired and cannot be extended`);
+      }
+      if (!Number.isFinite(expiresAt) || expiresAt < meta.expiresAt) {
+        throw new AboxError(
+          'invalid_input',
+          `the new expiry must not be earlier than the current one (${new Date(meta.expiresAt).toISOString()})`,
+        );
+      }
+      if (expiresAt > meta.expiresAt) await this.layout.writeMeta({ ...meta, expiresAt });
     });
   }
 

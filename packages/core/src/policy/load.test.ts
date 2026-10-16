@@ -6,6 +6,7 @@ import { AboxError } from '../errors.js';
 import { resolveContext } from './context.js';
 import {
   BUILTIN_AGENT_CONTEXTS,
+  DEFAULT_WORKSPACE_ROOTS,
   defaultPolicy,
   defaultPolicyPath,
   loadPolicy,
@@ -73,7 +74,18 @@ describe('defaultPolicy', () => {
       memoryBytes: 8 * 1024 ** 3,
       ttlMs: 4 * 3_600_000,
     });
-    expect(d.workspace.roots).toEqual(['~']);
+    expect(d.workspace.roots).toEqual([
+      '~/projects',
+      '~/Projekte',
+      '~/src',
+      '~/code',
+      '~/dev',
+      '~/work',
+      '~/git',
+      '~/repos',
+    ]);
+    expect(d.workspace.roots).toEqual([...DEFAULT_WORKSPACE_ROOTS]);
+    expect(d.images.registries).toEqual(['docker.io/library']);
     expect(d.workspace.modes).toEqual(['worktree', 'clone', 'copy', 'empty']);
     expect(d.network.modes).toEqual(['none', 'allowlist']);
     expect(d.mounts).toBeNull();
@@ -86,8 +98,16 @@ describe('defaultPolicy', () => {
     });
     expect(d.hosts).toEqual(['local']);
   });
+  it('the home directory as a whole is no root of the default profile', () => {
+    const roots = p.profiles.default!.workspace.roots;
+    expect(roots).not.toContain('~');
+    expect(roots).not.toContain('~/');
+    expect(roots.every((r) => r.startsWith('~/') && !r.startsWith('~/.'))).toBe(true);
+  });
   it('human profile is broad but open-mode', () => {
     const h = p.profiles.human!;
+    expect(h.workspace.roots).toEqual(['~']);
+    expect(h.images.registries).toEqual(['*']);
     expect(h.approval).toBe('open');
     expect(h.templates).toEqual(['*']);
     expect(h.hosts).toEqual(['*']);
@@ -264,6 +284,35 @@ contexts:
     expect(b.hosts).toEqual(['local']);
     expect(b.approval).toBe('medium');
     expect(b.exec.approval).toBe(false);
+  });
+  it('images.registries: defaults to the official Docker Hub images, child replaces parent, human inherits *', () => {
+    const p = parse(
+      [
+        'profiles:',
+        '  base: { approval: medium }',
+        '  own: { extends: base, images: { registries: [ghcr.io/my-org, localhost:5000] } }',
+        '  none: { extends: base, images: { registries: [] } }',
+        'contexts:',
+        '  a1: { profile: base }',
+      ].join('\n'),
+    );
+    expect(p.profiles.base!.images.registries).toEqual(['docker.io/library']);
+    expect(p.profiles.own!.images.registries).toEqual(['ghcr.io/my-org', 'localhost:5000']);
+    expect(p.profiles.none!.images.registries).toEqual([]);
+    expect(p.profiles.human!.images.registries).toEqual(['*']);
+  });
+  it('images.registries: invalid entries and unknown keys are errors with a path', () => {
+    const e = fail(
+      'profiles:\n  p:\n    images: { registries: [library, "https://ghcr.io"], registry: [x] }\n',
+    );
+    const paths = e.issues.map((i) => i.path);
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        'profiles.p.images.registries.0',
+        'profiles.p.images.registries.1',
+        'profiles.p.images.registry',
+      ]),
+    );
   });
   it('accepts min_isolation as alias of isolation (isolation wins)', () => {
     const q = parse(

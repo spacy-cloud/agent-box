@@ -8,7 +8,7 @@ import type { AuditEntry, AuditQuery } from '../state/audit-log.js';
 import type { SandboxRecord } from '../state/sandbox-registry.js';
 import { sha256Hex } from '../state/canonical.js';
 import { parsePolicy } from '../policy/index.js';
-import type { BackendKind, SandboxId, SandboxInfo } from '../types.js';
+import type { BackendKind, ForeignResource, SandboxId, SandboxInfo } from '../types.js';
 import type { WorkspaceRecord } from '../workspace/index.js';
 import { cleanupWorkspace } from '../workspace/index.js';
 import { expireApprovals as expireApprovalsOp } from './approvals.js';
@@ -906,12 +906,36 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
 
 const ORPHAN_KIND_ORDER = ['container', 'network', 'volume'] as const;
 
+/** Resources created or started less than this long ago count as in use. */
+const ORPHAN_ACTIVE_WINDOW_MS = 3_600_000;
+
+function ageText(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `${h}h${String(m % 60).padStart(2, '0')}m` : `${Math.floor(h / 24)}d`;
+}
+
+const newestOf = (r: ForeignResource): number | undefined => {
+  const t = Math.max(r.createdAt ?? 0, r.startedAt ?? 0);
+  return t > 0 ? t : undefined;
+};
+const isRunning = (r: ForeignResource): boolean =>
+  r.state === 'running' || r.state === 'restarting';
+
 /**
  * Finds (and with `remove` deletes) backend objects that carry abox labels but whose `abox.instance`
  * is not this installation's. Instances are separated on purpose: these may belong to another abox
  * home on the same machine that is alive, so nothing is removed unless the caller asks for it, and
  * objects without abox labels are never listed. Needed when a data directory was deleted: its
  * instance id is gone and no manager sees its containers any more.
+ *
+ * Resources of an instance that has a running container or anything created or started within the
+ * last hour are listed but not selected for removal (`skip`), because that is what another live
+ * abox home looks like; only `includeActive` or naming the instance selects them. Resources
+ * without an instance label are judged one by one.
  */
 export async function gcOrphans(
   I: Internals,
@@ -921,9 +945,12 @@ export async function gcOrphans(
   const ctx = await I.context(caller);
   I.requireHuman(ctx, 'gc.orphans');
   const remove = o.remove === true;
+  const now = I.now();
   const report: GcOrphansReport = {
     dryRun: !remove,
+    now,
     resources: [],
+    instances: [],
     removed: [],
     skipped: [],
     errors: [],
@@ -966,8 +993,60 @@ export async function gcOrphans(
       order(a) - order(b) || (a.createdAt ?? 0) - (b.createdAt ?? 0) || (a.name < b.name ? -1 : 1),
   );
 
+  // Per instance: how much of it runs, how new it is, and whether it is selected.
+  const explicit = o.includeActive === true || o.instance !== undefined;
+  const activity = (list: OrphanResource[]): { running: number; newestAt?: number } => {
+    const times = list.map(newestOf).filter((t): t is number => t !== undefined);
+    return {
+      running: list.filter(isRunning).length,
+      ...(times.length ? { newestAt: Math.max(...times) } : {}),
+    };
+  };
+  const looksActive = (a: { running: number; newestAt?: number }): boolean =>
+    a.running > 0 || (a.newestAt !== undefined && now - a.newestAt < ORPHAN_ACTIVE_WINDOW_MS);
+  const describe = (a: { running: number; newestAt?: number }): string =>
+    `${a.running} running${a.newestAt === undefined ? '' : `, newest ${ageText(now - a.newestAt)} ago`}`;
+  const byInstance = new Map<string, OrphanResource[]>();
+  for (const r of report.resources) {
+    const list = byInstance.get(r.instance) ?? [];
+    list.push(r);
+    byInstance.set(r.instance, list);
+  }
+  for (const [instance, list] of byInstance) {
+    const whole = activity(list);
+    let skipReason: string | undefined;
+    for (const r of list) {
+      // Without an instance label nothing ties the resources together: each counts by its own state.
+      const a = instance === '' ? activity([r]) : whole;
+      if (explicit || !looksActive(a)) continue;
+      r.skip =
+        instance === ''
+          ? `${r.kind} ${r.name} looks active (${describe(a)}) - probably another abox home in use`
+          : `instance ${instance} looks active (${describe(a)}) - probably another abox home in use`;
+      skipReason ??= r.skip;
+    }
+    const skippedCount = list.filter((r) => r.skip !== undefined).length;
+    report.instances.push({
+      instance,
+      resources: list.length,
+      running: whole.running,
+      ...(whole.newestAt !== undefined ? { newestAt: whole.newestAt } : {}),
+      active: looksActive(whole),
+      selected: list.length - skippedCount,
+      ...(skipReason !== undefined ? { skipReason } : {}),
+    });
+  }
+  // Stale instances first, then the oldest: the order of the confirmation prompt.
+  report.instances.sort(
+    (a, b) =>
+      Number(a.active) - Number(b.active) ||
+      (a.newestAt ?? 0) - (b.newestAt ?? 0) ||
+      (a.instance < b.instance ? -1 : 1),
+  );
+
   if (remove) {
     for (const r of report.resources) {
+      if (r.skip !== undefined) continue;
       const details = {
         kind: r.kind,
         name: r.name,
@@ -996,7 +1075,9 @@ export async function gcOrphans(
     details: {
       remove,
       instance: o.instance ?? null,
+      includeActive: o.includeActive === true,
       found: report.resources.length,
+      activeSkipped: report.resources.filter((r) => r.skip !== undefined).length,
       removed: report.removed.length,
       skipped: report.skipped.length,
       errors: report.errors.length,

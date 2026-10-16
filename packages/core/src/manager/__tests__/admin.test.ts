@@ -256,6 +256,7 @@ describe('doctor and reconcile', () => {
 });
 
 describe('gc --orphans', () => {
+  const H = 3600_000;
   const res = (
     o: Partial<ForeignResource> & Pick<ForeignResource, 'kind' | 'ref'>,
   ): ForeignResource => ({
@@ -264,19 +265,33 @@ describe('gc --orphans', () => {
     engine: 'docker',
     ...o,
   });
-  const FOREIGN = [
-    res({ kind: 'volume', ref: 'v1' }),
-    res({ kind: 'network', ref: 'n1', role: 'network' }),
+  // lost0000: stale (nothing running, hours old); other0000: another home in use; '': by own state
+  const FOREIGN = (): ForeignResource[] => [
+    res({ kind: 'volume', ref: 'v1', createdAt: Date.now() - 5 * H }),
+    res({ kind: 'network', ref: 'n1', role: 'network', createdAt: Date.now() - 5 * H }),
     res({
       kind: 'container',
       ref: 'c1',
       aboxName: 'work',
       sandboxId: 'local/aaaaaaaa',
-      state: 'running',
-      createdAt: Date.now() - 3600_000,
+      state: 'exited',
+      createdAt: Date.now() - 5 * H,
+      startedAt: Date.now() - 5 * H,
     }),
-    res({ kind: 'container', ref: 'c2', instance: 'other000other000' }),
-    res({ kind: 'container', ref: 'c3', instance: '' }),
+    res({
+      kind: 'container',
+      ref: 'c2',
+      instance: 'other000other000',
+      state: 'running',
+      createdAt: Date.now() - 46_000,
+    }),
+    res({
+      kind: 'container',
+      ref: 'c3',
+      instance: '',
+      state: 'exited',
+      createdAt: Date.now() - 6 * H,
+    }),
   ];
 
   async function reopen(foreign: ForeignResource[], failRemove?: string): Promise<void> {
@@ -286,18 +301,48 @@ describe('gc --orphans', () => {
     });
   }
 
-  it('lists by default, containers first, and removes nothing', async () => {
-    await reopen(FOREIGN);
+  it('lists by default, containers first, removes nothing and groups by instance', async () => {
+    await reopen(FOREIGN());
     const r = await abox.gcOrphans(HUMAN);
     expect(r).toMatchObject({ dryRun: true, removed: [], errors: [] });
-    expect(r.resources.map((x) => x.ref)).toEqual(['c2', 'c3', 'c1', 'n1', 'v1']);
+    expect(r.resources.map((x) => x.ref)).toEqual(['c3', 'c1', 'c2', 'n1', 'v1']);
     expect(r.resources.find((x) => x.ref === 'c1')).toMatchObject({
       host: 'local',
       backend: 'docker',
       aboxName: 'work',
       instance: 'lost0000lost0000',
-      state: 'running',
+      state: 'exited',
     });
+    expect(r.instances).toEqual([
+      {
+        instance: '',
+        resources: 1,
+        running: 0,
+        newestAt: expect.any(Number),
+        active: false,
+        selected: 1,
+      },
+      {
+        instance: 'lost0000lost0000',
+        resources: 3,
+        running: 0,
+        newestAt: expect.any(Number),
+        active: false,
+        selected: 3,
+      },
+      {
+        instance: 'other000other000',
+        resources: 1,
+        running: 1,
+        newestAt: expect.any(Number),
+        active: true,
+        selected: 0,
+        skipReason: expect.stringMatching(
+          /^instance other000other000 looks active \(1 running, newest 4[5-9]s ago\) - probably another abox home in use$/,
+        ),
+      },
+    ]);
+    expect(r.resources.filter((x) => x.skip).map((x) => x.ref)).toEqual(['c2']);
     // the process backend has no engine objects: reported, not an error
     expect(r.skipped).toContainEqual({
       host: 'local',
@@ -306,35 +351,116 @@ describe('gc --orphans', () => {
     });
     expect(fakeOf(env).foreignRemoved).toEqual([]);
     const audit = await abox.queryAudit(HUMAN, { action: 'gc.orphans' });
-    expect(audit[0]?.details).toMatchObject({ remove: false, found: 5, removed: 0 });
+    expect(audit[0]?.details).toMatchObject({
+      remove: false,
+      found: 5,
+      activeSkipped: 1,
+      removed: 0,
+    });
   });
 
-  it('removes the listed resources only with remove, and audits each one', async () => {
-    await reopen(FOREIGN);
+  it('removes only the stale resources with remove, and audits each one', async () => {
+    await reopen(FOREIGN());
     const r = await abox.gcOrphans(HUMAN, { remove: true });
     expect(r.dryRun).toBe(false);
-    expect(r.removed.map((x) => x.ref)).toEqual(['c2', 'c3', 'c1', 'n1', 'v1']);
-    expect(fakeOf(env).foreignResources).toEqual([]);
+    expect(r.removed.map((x) => x.ref)).toEqual(['c3', 'c1', 'n1', 'v1']);
+    expect(fakeOf(env).foreignResources.map((x) => x.ref)).toEqual(['c2']);
     const entries = await abox.queryAudit(HUMAN, { action: 'resource.gc_orphan' });
-    expect(entries).toHaveLength(5);
+    expect(entries).toHaveLength(4);
     expect(entries.every((e) => e.decision === 'allow')).toBe(true);
     expect(entries.map((e) => e.details?.['name'])).toContain('abox-c1');
-    expect((await abox.gcOrphans(HUMAN)).resources).toEqual([]);
+    expect((await abox.gcOrphans(HUMAN)).resources.map((x) => x.ref)).toEqual(['c2']);
   });
 
-  it('--instance narrows to one abox.instance', async () => {
-    await reopen(FOREIGN);
+  it('includeActive selects active instances too', async () => {
+    await reopen(FOREIGN());
+    const r = await abox.gcOrphans(HUMAN, { remove: true, includeActive: true });
+    expect(r.removed.map((x) => x.ref)).toEqual(['c3', 'c1', 'c2', 'n1', 'v1']);
+    expect(r.resources.some((x) => x.skip)).toBe(false);
+    expect(r.instances.every((g) => g.skipReason === undefined)).toBe(true);
+    expect(r.instances.find((g) => g.instance === 'other000other000')).toMatchObject({
+      active: true,
+      selected: 1,
+    });
+    expect(fakeOf(env).foreignResources).toEqual([]);
+  });
+
+  it('--instance narrows to one abox.instance and selects it even when it looks active', async () => {
+    await reopen(FOREIGN());
     const r = await abox.gcOrphans(HUMAN, { instance: 'other000other000', remove: true });
     expect(r.removed.map((x) => x.ref)).toEqual(['c2']);
     expect(fakeOf(env).foreignResources.map((x) => x.ref)).toEqual(['v1', 'n1', 'c1', 'c3']);
   });
 
+  it('an instance with a recently created or started resource is active even when nothing runs', async () => {
+    await reopen([
+      res({
+        kind: 'container',
+        ref: 'a',
+        state: 'exited',
+        createdAt: Date.now() - 6 * H,
+        startedAt: Date.now() - 20 * 60_000,
+      }),
+      res({ kind: 'network', ref: 'b', createdAt: Date.now() - 6 * H }),
+      res({
+        kind: 'container',
+        ref: 'x',
+        instance: 'old',
+        state: 'exited',
+        createdAt: Date.now() - 61 * 60_000,
+      }),
+    ]);
+    const r = await abox.gcOrphans(HUMAN, { remove: true });
+    expect(r.removed.map((x) => x.ref)).toEqual(['x']);
+    expect(r.instances.find((g) => g.instance === 'lost0000lost0000')?.skipReason).toContain(
+      '(0 running, newest 20m ago)',
+    );
+  });
+
+  it('resources without an instance label are judged one by one', async () => {
+    await reopen([
+      res({
+        kind: 'container',
+        ref: 'run',
+        instance: '',
+        state: 'running',
+        createdAt: Date.now() - 9 * H,
+      }),
+      res({
+        kind: 'container',
+        ref: 'new',
+        instance: '',
+        state: 'exited',
+        createdAt: Date.now() - 60_000,
+      }),
+      res({
+        kind: 'container',
+        ref: 'old',
+        instance: '',
+        state: 'exited',
+        createdAt: Date.now() - 9 * H,
+      }),
+    ]);
+    const r = await abox.gcOrphans(HUMAN, { remove: true });
+    expect(r.removed.map((x) => x.ref)).toEqual(['old']);
+    expect(r.instances).toHaveLength(1);
+    expect(r.instances[0]).toMatchObject({
+      instance: '',
+      resources: 3,
+      running: 1,
+      active: true,
+      selected: 1,
+    });
+    expect(r.resources.find((x) => x.ref === 'run')?.skip).toContain('looks active (1 running');
+    expect(r.resources.find((x) => x.ref === 'old')?.skip).toBeUndefined();
+  });
+
   it('a failing removal is reported and does not stop the others', async () => {
-    await reopen(FOREIGN, 'c1');
+    await reopen(FOREIGN(), 'c1');
     const r = await abox.gcOrphans(HUMAN, { remove: true });
     expect(r.errors).toHaveLength(1);
     expect(r.errors[0]).toContain('c1');
-    expect(r.removed.map((x) => x.ref)).toEqual(['c2', 'c3', 'n1', 'v1']);
+    expect(r.removed.map((x) => x.ref)).toEqual(['c3', 'n1', 'v1']);
     const failed = (await abox.queryAudit(HUMAN, { action: 'resource.gc_orphan' })).filter(
       (e) => e.decision === 'error',
     );
@@ -342,7 +468,7 @@ describe('gc --orphans', () => {
   });
 
   it('is for humans only', async () => {
-    await reopen(FOREIGN);
+    await reopen(FOREIGN());
     await expect(abox.gcOrphans(A, { remove: true })).rejects.toMatchObject({
       code: 'policy_denied',
     });

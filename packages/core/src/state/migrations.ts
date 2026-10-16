@@ -155,4 +155,12 @@ ALTER TABLE sandboxes ADD COLUMN net_cursor_ts INTEGER;
 ALTER TABLE sandboxes ADD COLUMN net_cursor_seen INTEGER NOT NULL DEFAULT 0;
 `,
   },
+  {
+    version: 4,
+    name: 'template_trust_snapshot',
+    sql: `
+ALTER TABLE template_trust ADD COLUMN name TEXT;
+ALTER TABLE template_trust ADD COLUMN snapshot TEXT;
+`,
+  },
 ];

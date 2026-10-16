@@ -368,6 +368,30 @@ The family of an image is detected from its name: `alpine`, `fedora`, `archlinux
 `ruby` and `eclipse-temurin`, which are treated as Debian-based. Anything else is `unknown`: tool
 presets and system package lists are refused, `setup:` still works.
 
+**Free image names and the registry allowlist.** `base.os` may name any OCI image, but the policy
+checks where it comes from. Each profile has `images.registries`, a list of registries or
+registry paths: `docker.io/library` (the official Docker Hub images), `ghcr.io` (everything on
+GHCR), `ghcr.io/my-org`, `registry.example.org:5000`, or `*` for any image. Matching is by path
+component (`ghcr.io/my-org` does not match `ghcr.io/my-org-evil/x`), tags and digests are ignored,
+and short names count as Docker Hub (`ubuntu:24.04` is `docker.io/library/ubuntu`).
+
+- The base images of the built-in templates (`ubuntu:24.04`, `python:3.13-slim-bookworm`,
+  `alpine:3.22`) are always accepted.
+- The built-in `default` profile, and any profile that does not set the key, allows
+  `docker.io/library`. The `human` profile allows `*` unless you configure it.
+- An image outside the list needs approval for an agent (kind `image_registry`, like a network
+  destination beyond the allowlist); with `registries: []` it is denied (`policy_denied`).
+  A `base.dockerfile` counts as an unchecked image, because the policy cannot see the `FROM`
+  lines: it needs approval unless the profile allows `*`. `vm`, `process` and `python` templates
+  without `base.os` are not affected.
+
+```yaml
+profiles:
+  default:
+    images:
+      registries: [docker.io/library, ghcr.io/my-org]
+```
+
 ## Image cache and digest pinning
 
 - The **build hash** covers the base, the rendered build steps, the user, the backend and the
@@ -453,6 +477,12 @@ ask for mounts, network and secrets. So abox treats it like `direnv allow` does:
 - As a human, `abox create` shows the reasons and asks; a non-interactive call needs `--yes`
   (`abox template build` also needs `-y`). This confirmation applies to that single call and does
   not record trust.
+- Before you decide, abox shows what the template does: the resolved template as a unified diff
+  against the template it extends (or against the last version that was trusted, or in full when
+  there is nothing to compare with), plus the risky points in plain words (setup commands, mounts,
+  network, secrets, isolation). `abox create` prints it above the question, `abox template review
+<name>` prints it on demand, `abox approvals show <id>` prints it for an agent's request (and warns
+  when the file changed after the request), and with `--json` it is in `details.templateReview`.
 - When an agent wants to use it, a request of the kind `template_trust` appears in the approval
   queue. **Approving it records exactly that content hash** as trusted; a changed file asks again.
 - Even a trusted project template only works for agents if the profile lists its name in

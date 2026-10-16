@@ -133,13 +133,32 @@ export function buildHostConfig(i: HostConfigInput): Docker.HostConfig {
   return hc as Docker.HostConfig;
 }
 
-/** Entrypoint that makes the container exit at `abox.expires`, recomputed on every (re)start. */
-export function ttlEntrypoint(expiresAtMs: number): string[] {
+/**
+ * Entrypoint that makes the container exit at its deadline, recomputed on every (re)start: the
+ * later of `abox.expires` (`$1`, epoch seconds) and the number in `expiryFile` (`$2`) that
+ * `extendExpiry` writes. The file is re-read every time the sleep ends, so a deadline moved while
+ * the container runs is honoured without polling. A half-written file (the archive extraction
+ * truncates before it writes) is given one second and a second read.
+ */
+export function ttlEntrypoint(expiresAtMs: number, expiryFile: string): string[] {
   return [
     '/bin/sh',
     '-c',
-    'rem=$(( $1 - $(date +%s) )); if [ "$rem" -le 0 ]; then exit 0; fi; exec sleep "$rem"',
+    [
+      'd=$1',
+      'while :; do',
+      '  if [ -e "$2" ]; then',
+      '    v=; read -r v < "$2" || :',
+      '    case $v in \'\'|*[!0-9]*) sleep 1; v=; read -r v < "$2" || :;; esac',
+      '    case $v in \'\'|*[!0-9]*) ;; *) [ "$v" -gt "$d" ] && d=$v;; esac',
+      '  fi',
+      '  rem=$(( d - $(date +%s) ))',
+      '  if [ "$rem" -le 0 ]; then exit 0; fi',
+      '  sleep "$rem"',
+      'done',
+    ].join('\n'),
     'abox-main',
     String(Math.ceil(expiresAtMs / 1000)),
+    expiryFile,
   ];
 }

@@ -23,6 +23,7 @@ import {
 } from '../format.js';
 import { resolveSandboxId } from '../ids.js';
 import { commaList, durationMs, invalid, positiveNumber, sizeBytes } from '../parse.js';
+import { reviewLines } from '../review.js';
 
 function ttlText(s: SandboxView): string {
   if (s.state === 'removed' || s.state === 'failed') return '-';
@@ -137,7 +138,18 @@ export function registerSandbox(program: Command, cli: Cli): void {
               signal,
               onProgress: (line) => cli.info(`  ${safe(line)}`),
             }),
-          { yes: o.yes },
+          {
+            yes: o.yes,
+            // A project template is foreign input: show what it does before the human trusts it.
+            explain: async (c) => {
+              if (!c.items.some((i) => i.kind === 'template_trust')) return undefined;
+              const review = await rt.abox.reviewTemplate(cli.caller(), template, {
+                projectDir: cli.projectDir(),
+                ...(workspace.path ? { workspacePath: workspace.path } : {}),
+              });
+              return { lines: reviewLines(cli, review), details: { templateReview: review } };
+            },
+          },
         );
         if (r.status === 'pending_approval') {
           throw new CliError('approval_required', r.message, {

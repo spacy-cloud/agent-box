@@ -1,9 +1,11 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
 import { Option } from 'commander';
+import { canonicalizePath, checkHostPath, type PolicyView } from '@abox/core';
 import type { Cli } from '../cli.js';
 import { safe } from '../format.js';
 
@@ -118,6 +120,39 @@ async function readRuleSnippet(): Promise<string | undefined> {
   return undefined;
 }
 
+export interface ProjectRootsCheck {
+  /** Workspace roots of the agent's profile, as written in policy.yaml. */
+  roots: string[];
+  /** May the agent use this project directory as a workspace? */
+  allowed: boolean;
+  reason?: string;
+}
+
+/** Whether the profile of `agent` lets the agent use `projectDir` (same rules as a create request). */
+export function checkAgentProject(
+  pol: Pick<PolicyView, 'contexts' | 'profiles'>,
+  agent: string,
+  projectDir: string,
+  home: string,
+): ProjectRootsCheck | undefined {
+  const profile = pol.profiles?.[pol.contexts?.[agent]?.profile ?? ''];
+  if (!profile) return undefined;
+  const roots = profile.workspace.roots;
+  try {
+    const canon = (p: string): string => canonicalizePath(p, { home, cwd: home });
+    const res = checkHostPath(canon(projectDir), {
+      home,
+      roots: roots.map(canon),
+      kind: 'workspace',
+      scanSockets: false,
+      denyHiddenHomeDirs: true,
+    });
+    return { roots, allowed: res.ok, ...(res.ok ? {} : { reason: res.reason }) };
+  } catch {
+    return undefined;
+  }
+}
+
 export function registerInit(program: Command, cli: Cli): void {
   program
     .command('init')
@@ -152,6 +187,7 @@ export function registerInit(program: Command, cli: Cli): void {
       let agentInfo: ReturnType<typeof mcpSnippet> | undefined;
       let rules: string | undefined;
       let contextDefined: boolean | undefined;
+      let projectCheck: ProjectRootsCheck | undefined;
       if (o.agent) {
         agentInfo = mcpSnippet(o.agent);
         rules = await readRuleSnippet();
@@ -159,6 +195,7 @@ export function registerInit(program: Command, cli: Cli): void {
           const rt = await cli.rt();
           const pol = await rt.abox.showPolicy(cli.caller());
           contextDefined = pol.contexts ? o.agent in pol.contexts : undefined;
+          projectCheck = checkAgentProject(pol, o.agent, dir, cli.env['HOME'] || homedir());
         } catch {
           /* the hint is optional */
         }
@@ -177,6 +214,19 @@ export function registerInit(program: Command, cli: Cli): void {
             `      Add it under "contexts:" (see "abox policy show") or use "--agent default".`,
           );
         }
+        if (projectCheck) {
+          lines.push(
+            '',
+            `Agent "${o.agent}" may work on projects below: ${projectCheck.roots.join(', ')}`,
+          );
+          if (!projectCheck.allowed) {
+            lines.push(
+              `note: this project (${dir}) is not usable for it: ${safe(projectCheck.reason ?? '')}`,
+              `      Move the project below one of those folders, or add its folder to workspace.roots`,
+              `      of the agent's profile with "abox policy edit" (the home directory itself is no good root).`,
+            );
+          }
+        }
         if (rules)
           lines.push(
             '',
@@ -193,7 +243,13 @@ export function registerInit(program: Command, cli: Cli): void {
           template: name,
           created,
           ...(agentInfo
-            ? { agent: o.agent, mcp: agentInfo.json, mcpCommand: agentInfo.command, contextDefined }
+            ? {
+                agent: o.agent,
+                mcp: agentInfo.json,
+                mcpCommand: agentInfo.command,
+                contextDefined,
+                ...(projectCheck ? { workspace: projectCheck } : {}),
+              }
             : {}),
           ...(rules ? { rules } : {}),
         },

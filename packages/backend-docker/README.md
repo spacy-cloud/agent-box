@@ -54,7 +54,14 @@ no extra groups, no host namespaces, `/tmp` as size-limited tmpfs, optional read
 filesystem (template label `abox.readonly-rootfs=true`), disk quota where the storage driver
 supports it. The sandbox user is always a non-root numeric uid. Engine sockets, `/proc`, `/sys`,
 `/dev`, `/run` and the engines' own state directories are never bind-mounted. The main process is a
-TTL sleeper, the container exits at `abox.expires` (also after a restart).
+TTL sleeper, the container exits at its deadline (also after a restart). The deadline is
+`abox.expires` or, after `extendExpiry` (`abox extend`, `access_request` kind=ttl), the later one
+that was written to `/usr/local/share/abox/expires` inside the container: labels cannot change on a
+container, so the entrypoint re-reads that root-owned file when its sleep ends, and `start`,
+`inspect` and `list` take the later of both. The file is a volume on a read-only root filesystem, so
+it survives restarts there too; the sandbox user cannot write it. Containers created before this
+(no `abox.expiry-file` label) cannot move their deadline: `extendExpiry` answers `unsupported`. The
+proxy sidecar has no deadline of its own, it is started and stopped with the sandbox.
 
 ## Network modes
 

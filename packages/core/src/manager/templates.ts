@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { isAbsolute, resolve as resolvePath } from 'node:path';
+import { basename, dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { AboxError, isAboxError } from '../errors.js';
 import type { ErrorIssue } from '../errors.js';
 import type { SandboxProvider } from '../provider.js';
@@ -14,6 +14,7 @@ import {
   validateTemplate as validateResolvedTemplate,
 } from '../template/index.js';
 import type { TemplateIssue } from '../template/index.js';
+import { renderTemplateSnapshot, templateRisks, unifiedDiff } from '../template/index.js';
 import type { BackendKind, ProviderCapabilities, ResolvedTemplate } from '../types.js';
 import type { Internals } from './internals.js';
 import type {
@@ -25,6 +26,7 @@ import type {
   TemplateDetails,
   TemplateList,
   TemplateListEntry,
+  TemplateReview,
   TemplateValidation,
   TemplateValidationIssue,
 } from './types.js';
@@ -65,6 +67,7 @@ export function usableProjectDir(
     roots: ctx.workspaceRoots,
     kind: 'workspace',
     extraForbidden: I.forbiddenTrees(),
+    denyHiddenHomeDirs: true,
   });
   if (res.ok) return canonical;
   if (explicit) {
@@ -294,6 +297,92 @@ export async function showTemplate(
   };
 }
 
+/**
+ * Canonical text of the project template at `path` for the trust record, provided the file still
+ * has exactly the approved content (`contentHash`). Best effort: undefined when it cannot be read.
+ */
+export async function trustSnapshot(
+  I: Internals,
+  path: string | undefined,
+  contentHash: string,
+): Promise<string | undefined> {
+  if (!path || basename(dirname(path)) !== '.sandbox') return undefined;
+  try {
+    const t = await catalogFor(I, dirname(dirname(path))).loadFile(path, 'project');
+    return t.contentHash === contentHash ? renderTemplateSnapshot(t) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Review material for a template that is about to be trusted. Compared against (first match): the
+ * last trusted version of the same template (what changed since the approval), the template it
+ * `extends` (what it adds to a known template), else nothing (the full content).
+ */
+export async function reviewTemplate(
+  I: Internals,
+  caller: Caller,
+  name: string,
+  o: { projectDir?: string; workspacePath?: string; expectedContentHash?: string } = {},
+): Promise<TemplateReview> {
+  const ctx = await I.context(caller);
+  if (typeof name !== 'string' || name.length === 0 || name.length > 64)
+    throw new AboxError('invalid_input', 'template name required');
+  const { template, catalog } = await loadTemplate(
+    I,
+    ctx,
+    name,
+    projectDirCandidates(I, ctx, o.projectDir, o.workspacePath),
+  );
+  const text = renderTemplateSnapshot(template);
+  const toLabel = `${template.source.kind} template ${template.name}${template.source.path ? ` (${template.source.path})` : ''}`;
+
+  let against: TemplateReview['against'] = { kind: 'none', label: 'nothing (new content)' };
+  let baseline = '';
+  let fromLabel = '/dev/null';
+  const previous =
+    template.source.kind === 'project'
+      ? I.state.templateTrust.previousVersion({
+          name: template.name,
+          ...(template.source.path ? { path: template.source.path } : {}),
+          exceptHash: template.contentHash,
+        })
+      : undefined;
+  if (previous) {
+    baseline = previous.snapshot;
+    against = {
+      kind: 'previous',
+      template: template.name,
+      label: `the version of ${template.name} trusted on ${new Date(previous.trustedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC by ${previous.trustedBy}`,
+    };
+    fromLabel = `trusted version of ${template.name} (${previous.contentHash.slice(0, 12)})`;
+  } else {
+    const parent = await catalog.getParent(template.name).catch(() => undefined);
+    if (parent) {
+      baseline = renderTemplateSnapshot(parent);
+      against = {
+        kind: 'extends',
+        template: parent.name,
+        label: `${parent.source.kind} template ${parent.name}, which it extends`,
+      };
+      fromLabel = `${parent.source.kind} template ${parent.name}`;
+    }
+  }
+  return {
+    template: template.name,
+    source: template.source,
+    contentHash: template.contentHash,
+    trusted: isTrusted(I, template),
+    against,
+    diff: unifiedDiff(baseline, text, { fromLabel, toLabel, context: 4 }),
+    risks: templateRisks(template),
+    ...(o.expectedContentHash !== undefined && o.expectedContentHash !== template.contentHash
+      ? { changedSinceRequest: true }
+      : {}),
+  };
+}
+
 const PATHLIKE = /[/\\]|\.ya?ml$/i;
 
 export async function validateTemplateOp(
@@ -324,6 +413,7 @@ export async function validateTemplateOp(
           roots: ctx.workspaceRoots,
           kind: 'workspace',
           extraForbidden: I.forbiddenTrees(),
+          denyHiddenHomeDirs: true,
         });
         if (!res.ok)
           throw new AboxError(

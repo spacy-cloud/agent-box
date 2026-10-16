@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,8 @@ const run = promisify(execFile);
 const DOCKER = process.env.ABOX_TEST_DOCKER === '1';
 const FULL = DOCKER && process.env.ABOX_TEST_DOCKER_FULL === '1';
 const LABEL = 'abox-test=template-build';
+/** Marks everything this run creates so the cleanup never touches a concurrent run's objects. */
+const RUN_LABEL = `abox-test-run=${randomUUID()}`;
 const built: string[] = [];
 
 async function docker(
@@ -28,7 +31,7 @@ async function docker(
 }
 
 function renderDockerfile(t: ResolvedTemplate): string {
-  const lines = [`FROM ${t.base.os}`, `LABEL ${LABEL}`, 'COPY steps/ /abox-steps/'];
+  const lines = [`FROM ${t.base.os}`, `LABEL ${LABEL} ${RUN_LABEL}`, 'COPY steps/ /abox-steps/'];
   t.build.forEach((s, i) => {
     lines.push(
       `# ${s.name.replace(/\n/g, ' ')}`,
@@ -56,7 +59,19 @@ async function build(t: ResolvedTemplate): Promise<string> {
     await writeFile(join(ctx, 'Dockerfile'), renderDockerfile(t));
     const tag = `abox-test/tpl-${t.name}:${t.hash.slice(0, 12)}`;
     built.push(tag);
-    await docker(['build', '--pull=false', '--label', LABEL, '-t', tag, ctx]);
+    // --force-rm: a failing RUN step otherwise leaves its exited intermediate container behind.
+    await docker([
+      'build',
+      '--pull=false',
+      '--force-rm',
+      '--label',
+      LABEL,
+      '--label',
+      RUN_LABEL,
+      '-t',
+      tag,
+      ctx,
+    ]);
     return tag;
   } finally {
     await rm(ctx, { recursive: true, force: true });
@@ -75,14 +90,23 @@ async function resolveText(text: string): Promise<ResolvedTemplate> {
   return resolveTemplate(parseTemplateYaml(text), { source: { kind: 'user' }, contentText: text });
 }
 
-afterAll(async () => {
-  if (!DOCKER) return;
-  for (const tag of built) await docker(['rmi', '-f', tag]).catch(() => undefined);
-  // Safety net: anything still carrying our label.
-  const { stdout } = await docker(['images', '-q', '--filter', `label=${LABEL}`]).catch(() => ({
+/** Ids (`-q`) of the objects of this run: `docker ps -a` for containers, `docker images` for images. */
+async function ownIds(list: 'ps' | 'images'): Promise<string[]> {
+  const args = list === 'ps' ? ['ps', '-aq'] : ['images', '-q'];
+  const { stdout } = await docker([...args, '--filter', `label=${RUN_LABEL}`]).catch(() => ({
     stdout: '',
   }));
-  const ids = stdout.split('\n').filter(Boolean);
+  return stdout.split('\n').filter(Boolean);
+}
+
+afterAll(async () => {
+  if (!DOCKER) return;
+  // Containers first (a failed or interrupted build leaves its intermediate containers), then images.
+  const containers = await ownIds('ps');
+  if (containers.length > 0) await docker(['rm', '-f', '-v', ...containers]).catch(() => undefined);
+  for (const tag of built) await docker(['rmi', '-f', tag]).catch(() => undefined);
+  // Safety net: any image of this run that is still there (untagged layers of a failed build).
+  const ids = await ownIds('images');
   if (ids.length > 0) await docker(['rmi', '-f', ...ids]).catch(() => undefined);
 });
 
@@ -97,6 +121,22 @@ describe.skipIf(!DOCKER)('template build (docker)', () => {
         'agent',
       ]);
       expect((await inSandbox(tag, 'cat /etc/alpine-release')).trim()).toMatch(/^3\.22/);
+    },
+    5 * 60_000,
+  );
+
+  it(
+    'a failing build step leaves no container behind',
+    async () => {
+      const t = await resolveText(`apiVersion: 1
+name: failing-step
+backend: docker
+base: { os: "alpine:3.22" }
+setup:
+  - run: exit 3
+`);
+      await expect(build(t)).rejects.toThrow();
+      expect(await ownIds('ps')).toEqual([]);
     },
     5 * 60_000,
   );

@@ -771,9 +771,9 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
     });
 
     it('timeout works even when the pids limit is exhausted', async () => {
-      // 6 processes are the sandbox's own (init, main sleep, wrapper, watchdog + its sleep, shell): fill the rest
+      // 7 processes are the sandbox's own (init, deadline shell + its sleep, wrapper, watchdog + its sleep, shell): fill the rest
       const s = await sb({ resources: { ...template.resources, pids: 30 } });
-      const r = await run(s, 'i=0; while [ $i -lt 24 ]; do sleep 100 & i=$((i+1)); done; wait', {
+      const r = await run(s, 'i=0; while [ $i -lt 23 ]; do sleep 100 & i=$((i+1)); done; wait', {
         timeoutMs: 2000,
       });
       expect(r.timedOut).toBe(true);
@@ -1442,6 +1442,98 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect((await provider.inspect(s.id)).state).toBe('expired');
       expect((await provider.list({ state: 'expired' })).map((i) => i.id)).toContain(s.id);
       await expect(provider.start(s.id)).rejects.toMatchObject({ code: 'conflict' });
+    });
+
+    describe('extendExpiry', () => {
+      const EXPIRY_PATH = '/usr/local/share/abox/expires';
+      const roTemplate = (): ResolvedTemplate =>
+        makeTemplate({ ...template, labels: { 'abox.readonly-rootfs': 'true' } });
+
+      for (const readonlyRootfs of [false, true]) {
+        it(`moves the in-container deadline (${readonlyRootfs ? 'read-only' : 'writable'} rootfs), survives stop/start and reads back`, async () => {
+          const now = Date.now();
+          const s = await sb(
+            {
+              createdAt: now,
+              expiresAt: now + 5000,
+              ...(readonlyRootfs
+                ? { template: roTemplate(), labels: { 'abox.readonly-rootfs': 'true' } }
+                : {}),
+            },
+            true,
+          );
+          const moved = now + 60_000;
+          await provider.extendExpiry!(s.id, moved);
+          // the label is immutable, the stored deadline is what inspect / list report now
+          expect((await inspectRaw(s)).Config.Labels['abox.expires']).toBe(String(s.expiresAt));
+          const info = await provider.inspect(s.id);
+          expect(info.expiresAt).toBeGreaterThanOrEqual(moved);
+          expect(info.expiresAt).toBeLessThan(moved + 1000);
+          expect((await provider.list()).find((i) => i.id === s.id)?.expiresAt).toBe(
+            info.expiresAt,
+          );
+          // the sandbox user can not move it itself
+          const w = await run(s, `echo 9999999999 > ${EXPIRY_PATH}; echo rc=$?`);
+          expect(w.stdout).toMatch(/rc=[1-9]/);
+          // well past the original deadline
+          await new Promise((r) => setTimeout(r, Math.max(0, s.expiresAt - Date.now()) + 3000));
+          expect((await inspectRaw(s)).State.Running).toBe(true);
+          expect((await provider.inspect(s.id)).state).toBe('running');
+          expect((await run(s, 'echo alive')).stdout).toBe('alive\n');
+          // a restart honours the moved deadline (the label's is over)
+          await provider.stop(s.id);
+          await provider.start(s.id);
+          expect((await run(s, 'echo again')).stdout).toBe('again\n');
+          // never earlier than the current one; an equal one is a no-op
+          await expect(provider.extendExpiry!(s.id, s.expiresAt + 1000)).rejects.toMatchObject({
+            code: 'invalid_input',
+          });
+          await provider.extendExpiry!(s.id, info.expiresAt);
+        }, 60_000);
+      }
+
+      it('exits at the moved deadline and not at the original one', async () => {
+        const now = Date.now();
+        const s = await sb({ createdAt: now, expiresAt: now + 4000 }, true);
+        await provider.extendExpiry!(s.id, now + 9000);
+        await new Promise((r) => setTimeout(r, 6500));
+        expect((await inspectRaw(s)).State.Running).toBe(true);
+        for (let i = 0; i < 20 && (await inspectRaw(s)).State.Running; i++)
+          await new Promise((r) => setTimeout(r, 500));
+        const after = await inspectRaw(s);
+        expect(after.State.Running).toBe(false);
+        expect(after.State.ExitCode).toBe(0);
+        expect(Date.parse(after.State.FinishedAt)).toBeGreaterThanOrEqual(now + 8500);
+        expect((await provider.inspect(s.id)).state).toBe('expired');
+      }, 40_000);
+
+      it('works on a stopped sandbox and survives a snapshot restore', async () => {
+        const now = Date.now();
+        const s = await sb({ createdAt: now, expiresAt: now + 5000 }, true);
+        const snap = await provider.snapshot!(s.id, 'before-extend');
+        await provider.stop(s.id);
+        await provider.extendExpiry!(s.id, now + 60_000);
+        await provider.start(s.id);
+        await provider.restore!(s.id, snap); // the snapshot holds the old deadline
+        await new Promise((r) => setTimeout(r, Math.max(0, s.expiresAt - Date.now()) + 3000));
+        expect((await inspectRaw(s)).State.Running).toBe(true);
+        expect((await run(s, 'echo alive')).stdout).toBe('alive\n');
+      }, 60_000);
+
+      it('rejects an expired sandbox, bad values and unknown ids', async () => {
+        const s = spec({ expiresAt: Date.now() - 1000 });
+        await track.create(s, false);
+        await expect(provider.extendExpiry!(s.id, Date.now() + 60_000)).rejects.toMatchObject({
+          code: 'conflict',
+        });
+        const live = await sb({}, false);
+        await expect(provider.extendExpiry!(live.id, Number.NaN)).rejects.toMatchObject({
+          code: 'invalid_input',
+        });
+        await expect(
+          provider.extendExpiry!('local/doesnotexist', Date.now() + 60_000),
+        ).rejects.toMatchObject({ code: 'not_found' });
+      });
     });
   });
 

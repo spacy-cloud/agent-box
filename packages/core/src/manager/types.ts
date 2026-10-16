@@ -126,6 +126,27 @@ export interface TemplateDetails {
   warnings: string[];
 }
 
+/**
+ * What an approver should see before a project template is trusted: the resolved template as a
+ * unified diff against the template it extends (or its previously trusted version, or nothing),
+ * plus the risky points in plain words.
+ */
+export interface TemplateReview {
+  template: string;
+  source: { kind: TemplateSourceKind; path?: string };
+  contentHash: string;
+  /** Whether this exact content is trusted already. */
+  trusted: boolean;
+  /** What the diff compares against: the last trusted version, the template it extends, or nothing (full content). */
+  against: { kind: 'previous' | 'extends' | 'none'; label: string; template?: string };
+  /** Unified diff of the resolved template (`+` lines are the new content); empty when nothing differs. */
+  diff: string;
+  /** The risky points of the template as sentences. */
+  risks: string[];
+  /** Set when `expectedContentHash` was passed and the file no longer has that content. */
+  changedSinceRequest?: boolean;
+}
+
 export type TemplateIssueKind = 'schema' | 'invalid' | 'unsupported' | 'policy';
 
 export interface TemplateValidationIssue extends ErrorIssue {
@@ -649,20 +670,52 @@ export interface OrphanResource extends ForeignResource {
   host: string;
   /** Backend through which it was found. */
   backend: BackendKind;
+  /**
+   * Set when `gc --orphans` will not remove it: its instance (or the resource itself, when it has
+   * no `abox.instance` label) is running or was created or started less than an hour ago, so it
+   * probably belongs to another abox home in use. Absent: stale, would be removed.
+   */
+  skip?: string;
+}
+
+/** The orphan resources of one `abox.instance` value (`''`: no or empty label). */
+export interface OrphanInstanceGroup {
+  instance: string;
+  /** Number of resources found. */
+  resources: number;
+  /** How many of them are running containers. */
+  running: number;
+  /** Newest creation or start time (ms since the epoch) of any of them. */
+  newestAt?: number;
+  /**
+   * Running or recently (< 1 h) created or started resources. For `instance: ''` this is true when
+   * at least one resource is active; the others are still judged one by one.
+   */
+  active: boolean;
+  /** Resources that are (or, in a dry run, would be) removed; the rest has a `skip` reason. */
+  selected: number;
+  /** Why `resources - selected` resources are skipped; absent when none is. */
+  skipReason?: string;
 }
 
 export interface GcOrphansOptions {
   /** Remove what is found. Default: only list. */
   remove?: boolean;
-  /** Only objects whose `abox.instance` label has exactly this value. */
+  /** Only objects whose `abox.instance` label has exactly this value. Naming an instance also selects it when it looks active. */
   instance?: string;
+  /** Also select resources of instances that are running or were created or started within the last hour. */
+  includeActive?: boolean;
 }
 
 export interface GcOrphansReport {
   /** True when nothing was removed (the default). */
   dryRun: boolean;
+  /** Time of the check (ms since the epoch); ages are relative to it. */
+  now: number;
   /** Everything found: abox-labelled objects whose instance is not this installation's. */
   resources: OrphanResource[];
+  /** `resources` by instance, stale ones first. */
+  instances: OrphanInstanceGroup[];
   removed: OrphanResource[];
   /** Backends that could not be searched (not supported, or the engine is unreachable). */
   skipped: Array<{ host: string; backend: BackendKind; reason: string }>;

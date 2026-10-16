@@ -5,7 +5,14 @@ import { DockerProvider } from './provider.js';
 
 /** An engine stand-in: containers, networks and volumes with labels; records what is removed. */
 function fakeEngine(objects: {
-  containers?: Array<{ id: string; name: string; labels: Record<string, string>; state?: string }>;
+  containers?: Array<{
+    id: string;
+    name: string;
+    labels: Record<string, string>;
+    state?: string;
+    /** `State.StartedAt` as the engine reports it; default: never started. */
+    startedAt?: string;
+  }>;
   networks?: Array<{ id: string; name: string; labels: Record<string, string> }>;
   volumes?: Array<{ name: string; labels: Record<string, string> }>;
 }) {
@@ -54,7 +61,14 @@ function fakeEngine(objects: {
     getContainer: (ref: string) => {
       const c = (objects.containers ?? []).find((x) => x.id === ref);
       return {
-        inspect: () => (c ? Promise.resolve({ Id: c.id, Config: { Labels: c.labels } }) : gone()),
+        inspect: () =>
+          c
+            ? Promise.resolve({
+                Id: c.id,
+                Config: { Labels: c.labels },
+                State: { StartedAt: c.startedAt ?? '0001-01-01T00:00:00Z' },
+              })
+            : gone(),
         remove: (opts: unknown) => {
           calls.removed.push(`container:${ref}`);
           calls.removeOpts.push(opts);
@@ -111,6 +125,7 @@ describe('listForeign / removeForeign (engine stand-in)', () => {
           'abox.id': 'local/bbbbbbbb',
         }),
         state: 'exited',
+        startedAt: '2024-03-04T05:06:07.123456789Z',
       },
       {
         id: 'c-proxy',
@@ -170,8 +185,11 @@ describe('listForeign / removeForeign (engine stand-in)', () => {
       role: 'sandbox',
       state: 'exited',
       createdAt: 1_700_000_000_000,
+      startedAt: Date.parse('2024-03-04T05:06:07.123Z'),
       engine: 'docker',
     });
+    // never started: no start time rather than year 1
+    expect(found.find((f) => f.ref === 'c-proxy')).not.toHaveProperty('startedAt');
     expect(found.find((f) => f.ref === 'c-empty')?.instance).toBe('');
     expect(found.find((f) => f.ref === 'c-legacy')?.instance).toBe('');
     expect(found.find((f) => f.ref === 'n-other')?.createdAt).toBe(
@@ -180,6 +198,18 @@ describe('listForeign / removeForeign (engine stand-in)', () => {
     expect(found.find((f) => f.ref === 'vol-other')?.createdAt).toBe(
       Date.parse('2024-02-03T04:05:06Z'),
     );
+  });
+
+  it('a container that vanishes between list and inspect is still listed, without a start time', async () => {
+    const { docker } = fakeEngine(objects);
+    const gone = docker.getContainer.bind(docker);
+    (docker as unknown as { getContainer: unknown }).getContainer = (ref: string) =>
+      ref === 'c-other'
+        ? { inspect: () => Promise.reject(Object.assign(new Error('gone'), { statusCode: 404 })) }
+        : gone(ref);
+    const found = await new DockerProvider(host, { docker, instanceId: mine }).listForeign();
+    expect(found.find((f) => f.ref === 'c-other')).not.toHaveProperty('startedAt');
+    expect(found.map((f) => f.ref)).toContain('c-other');
   });
 
   it('an installation without an id treats every instance id as foreign, unlabelled objects as its own', async () => {

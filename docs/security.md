@@ -84,6 +84,15 @@ Mount checks happen in the core, not in the backend.
 - **Canonicalization first.** Paths are resolved (symlinks followed, `..` removed) _before_ they
   are checked.
 - **Allowed roots.** Only paths below allowed roots (for example `~/projects`) are permitted.
+  Without a `policy.yaml` the built-in policy applies: agents may only use workspaces below
+  `~/projects`, `~/Projekte`, `~/src`, `~/code`, `~/dev`, `~/work`, `~/git` and `~/repos`. The home
+  directory as a whole is never a root. Independently of any roots, an agent can never use a path
+  inside a hidden directory directly below the home directory (`~/.claude`, `~/.codex`, `~/.cache`,
+  ...), because those hold credentials and tool configuration. Humans are not limited by these
+  roots; the forbidden-path list applies to everyone.
+- **Image registries.** Free image names (`base.os`) are limited by the profile key
+  `images.registries` (default for agents: `docker.io/library`; the built-in templates' base images
+  are always accepted). An image outside the list needs approval; with an empty list it is denied.
 - **Forbidden by default:** the home directory as a whole, `~/.ssh`, `~/.gnupg`, `~/.config`,
   `~/.aws`, browser profiles, `/etc`, `/var/run`, container engine sockets, and other sandboxes'
   data.
@@ -221,6 +230,13 @@ A `.sandbox/*.yaml` file from a repository is external input. The first time a t
 Approval is bound to that **content hash**. If the file changes, approval is required again. This
 works like `direnv allow`.
 
+Before a project template is trusted, abox shows what it does: the resolved template as a diff
+against the last trusted version of the same template, or against the template it extends, or in
+full when there is nothing to compare with, plus its risks (setup commands that run as root during
+the build, mounts, network, secrets, isolation). `abox create`, `abox template build`,
+`abox template review <name>` and `abox approvals show <id>` show it. An approval is bound to the
+content hash; if the file changes after the request, `approvals show` warns.
+
 ## Audit log
 
 - Each entry records time, actor (human or agent context), action, sandbox, decision (allowed,
@@ -288,6 +304,20 @@ Docker backend through the real manager and checks, among others:
 The tests run only with `ABOX_TEST_DOCKER=1` against a local engine and are not part of the
 default `pnpm test`. A failing test there is a finding, not noise.
 
+**What CI runs** (`.github/workflows/ci.yml`, on Linux with Node 24, for every push and pull request
+to `main` and `dev`):
+
+| Job                      | Runs                                                                                                                                                                                           | Not covered                                                 |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Lint, Build              | ESLint, Prettier check, `tsc -b`                                                                                                                                                               |                                                             |
+| Test                     | `pnpm test`: unit and process-backend contract tests, no container engine                                                                                                                      | everything that is guarded below                            |
+| Docker integration tests | `pnpm test:docker` (`ABOX_TEST_DOCKER=1`): Docker backend, proxy, `packages/e2e` security suite against the runner's rootful Docker engine                                                     | Podman, rootless Docker, remote engines                     |
+| GUI end-to-end tests     | The Electron app with Playwright under `xvfb`, without `ABOX_TEST_DOCKER`: 17 of 21 specs run; the 4 that need Docker (terminal, template build, ssh against a throwaway sshd) skip themselves | the Docker-guarded GUI specs, AppImage build and smoke test |
+
+Not run in CI: the VM backend (`ABOX_TEST_VM=1`, needs KVM), the real-keyring test
+(`ABOX_TEST_KEYRING=1`), Podman, the AppImage, other distributions, and anything that needs a real
+remote host. See [CONTRIBUTING.md](../CONTRIBUTING.md#opt-in-test-switches) for the switches.
+
 ## Known limitations and not verified
 
 abox is pre-release software and has not been independently audited. Everything below is a
@@ -335,6 +365,10 @@ of this documentation; it will be published per release alongside the changelog.
   masked; transformed or partial values are not. `inject: env` and `inject: file` expose the
   value to code in the sandbox by design.
 - Secrets need a Secret Service keyring; there is no fallback store.
+- **Real libsecret/KWallet is not verified in CI.** `LibsecretStore` is tested against a fake
+  `secret-tool` runner; the test against a real keyring (`ABOX_TEST_KEYRING=1`) is manual and not
+  run in CI, which has no Secret Service session. Behaviour with a locked keyring, with KWallet
+  and with other `secret-tool` versions is therefore unverified.
 
 ### Policy, audit and agents
 
@@ -360,12 +394,19 @@ of this documentation; it will be published per release alongside the changelog.
 
 - **The Orca plugin has not been tested in a running Orca**; it was validated against Orca's own
   manifest parser and exercised with mocks, and it was written against the CLI source.
-- **The agent-kit skill's triggering has not been evaluated interactively**: the structure is
-  tested, whether Claude invokes `use-sandbox` for the right tasks is not (five manual scenarios
-  are listed and marked "not yet run").
+- **The agent-kit skill's triggering is verified headless only, with single samples.** The
+  structure is tested automatically. Whether Claude invokes `use-sandbox` for the right tasks was
+  checked on 2026-10-17 with headless `claude -p` runs (Claude Code 2.1.301, model `sonnet`): with
+  the first description one of four positive scenarios failed (Claude ran the risky command on the
+  host), with the current one all passed, and the negative controls did not load the skill. That
+  is one sample per scenario (three for the fixed one) of a nondeterministic model, other plugins
+  and the global `CLAUDE.md` were not isolated, and policy denial was only partly covered. **The
+  slash commands (`/abox:new`, `/abox:list`, ...) have not been run at all**; they need an
+  interactive session. Details in `packages/agent-kit/README.md`.
 - The desktop app is unreleased (no published package). Its end-to-end tests run under a virtual
-  display (`xvfb`; 21 tests, including the Docker-guarded terminal, template and ssh ones) and
-  pass; they are not part of the default `pnpm test`. An AppImage builds and starts
+  display (`xvfb`; 21 tests, including the Docker-guarded terminal, template and ssh ones, which
+  pass locally); CI runs them without the Docker-guarded ones; they are not part of the default
+  `pnpm test`. An AppImage builds and starts
   (`pnpm --filter @abox/app dist` and `smoke`), but it is neither signed nor published, and it has
   not been tried on other distributions.
 

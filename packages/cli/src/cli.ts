@@ -69,6 +69,12 @@ export function jsonRequested(argv: readonly string[]): boolean {
   return false;
 }
 
+/** Extra output for a confirmation: lines for the terminal, details for the `--json` error. */
+export interface ConfirmationExtras {
+  lines?: string[];
+  details?: Record<string, unknown>;
+}
+
 export class Cli {
   globals: Globals = { json: false, quiet: false };
   private runtime?: Promise<AboxRuntime>;
@@ -329,18 +335,26 @@ export class Cli {
    */
   async confirmed<T extends { status: string }>(
     op: (caller: Caller) => Promise<T | ConfirmationRequired>,
-    opts: { yes?: boolean },
+    opts: {
+      yes?: boolean;
+      /** More material for the decision (e.g. the diff of a project template); failures are ignored. */
+      explain?: (c: ConfirmationRequired) => Promise<ConfirmationExtras | undefined>;
+    },
   ): Promise<Exclude<T, ConfirmationRequired>> {
     const first = await op(this.caller(false));
     if (first.status !== 'confirmation_required') return first as Exclude<T, ConfirmationRequired>;
     const c = first as ConfirmationRequired;
-    if (!this.json && !this.quiet) this.describeConfirmation(c);
+    const extras = await opts.explain?.(c).catch(() => undefined);
+    if (!this.json && !this.quiet) {
+      this.describeConfirmation(c);
+      for (const line of extras?.lines ?? []) this.err(`${line}\n`);
+    }
     let go = opts.yes === true;
     if (!go && this.interactive) go = await this.confirm('Proceed?');
     if (!go) {
       throw new CliError('approval_required', 'confirmation required and not given', {
         hint: this.interactive ? 'Declined.' : 'Re-run with --yes to confirm (non-interactive).',
-        details: { reasons: c.reasons, risks: c.risks },
+        details: { reasons: c.reasons, risks: c.risks, ...(extras?.details ?? {}) },
       });
     }
     const second = await op(this.caller(true));

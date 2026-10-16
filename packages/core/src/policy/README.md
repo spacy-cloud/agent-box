@@ -20,7 +20,8 @@ host `local`, approval `medium`, built-in limits (never unlimited).
 
 Built-in profiles: `human` (always present; approval `open`, broad rights; a `human`
 profile in the file is merged on top of it unless it uses `extends`) and, without a
-policy file, `default` (workspace roots `['~']` - the forbidden list still applies) plus
+policy file, `default` (workspace roots `DEFAULT_WORKSPACE_ROOTS`: `~/projects`, `~/Projekte`, `~/src`, `~/code`,
+`~/dev`, `~/work`, `~/git`, `~/repos`; never `~` itself) plus
 the agent contexts `default`, `claude-code`, `codex`, `cursor` and `orca` (`BUILTIN_AGENT_CONTEXTS`), all using
 profile `default`, so `abox mcp serve --agent claude-code` works without a policy.yaml. A policy.yaml replaces the
 built-in policy completely and defines its own contexts. Every other context id is unknown -> `policy_denied`.
@@ -45,6 +46,25 @@ symlinks component-wise (`link/..` follows the physical parent), and cannot be e
 TOCTOU (path replaced after the check) is out of scope; providers must not follow
 symlinks in the final mount component.
 
+## Hidden home directories (agents)
+
+For agent contexts every workspace and mount path below a hidden (dot) directory directly under the
+home directory (`~/.claude`, `~/.codex`, `~/.cache`, `~/.local`, ...) is denied, whatever the roots say
+(`denyHiddenHomeDirs` of `checkHostPath`, set by the engine and the manager for `kind: agent`). Humans are
+not subject to it (the forbidden list above still is). A path outside the roots is denied with a hint
+naming `workspace.roots` (`mounts.roots` for mounts) and `abox policy edit`.
+
+## Image registries (`images.registries`)
+
+Profile key `images: { registries: [...] }`: registries or registry paths (`docker.io/library`, `ghcr.io`,
+`ghcr.io/my-org`, `*`) that free image names (`base.os` of container backends, `docker`/`podman`/`python`)
+may come from. Default for profiles that do not set it: `['docker.io/library']`; the built-in `human` profile
+has `['*']`. Base images of the built-in templates (`KNOWN_BASE_IMAGES`) are always accepted. Matching
+(`imageAllowedByRegistries`) parses the reference (`imageRepository`: tag and digest dropped, Docker Hub short
+names expanded, malformed names never match) and compares path components. `base.dockerfile` is an unchecked
+image. Result: like a network destination beyond the allowlist, approval `image_registry` (all modes), deny when
+the list is empty.
+
 ## Create rules (`evaluateCreate`)
 
 Deny rules are evaluated first and all reasons are collected; **deny always wins over approval**.
@@ -56,7 +76,8 @@ Deny rules are evaluated first and all reasons are collected; **deny always wins
 | cpus / memory / ttl above profile `limits` or host limits                                                                                                                                         | deny with exact numbers; `effective` holds the clamped (strictest) values |
 | owner sandbox count >= `limits.sandboxes`; host count >= host `sandboxes`                                                                                                                         | deny                                                                      |
 | workspace mode not in `workspace.modes`; `mount` on remote host                                                                                                                                   | deny                                                                      |
-| workspace path forbidden / outside `workspace.roots` / missing host path                                                                                                                          | deny                                                                      |
+| workspace path forbidden / hidden home directory (agents) / outside `workspace.roots` / missing host path                                                                                         | deny                                                                      |
+| base image outside `images.registries` (and not a built-in base); `base.dockerfile` unless `*`                                                                                                    | approval `image_registry` (all modes); deny if `registries` is empty      |
 | mounts with `mounts: deny`                                                                                                                                                                        | deny                                                                      |
 | mount forbidden, outside `mounts.roots`, `rw` while only `ro`, bad/duplicate/system target                                                                                                        | deny                                                                      |
 | network mode not in `network.modes`                                                                                                                                                               | deny                                                                      |

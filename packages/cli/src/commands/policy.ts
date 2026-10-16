@@ -82,6 +82,7 @@ export function registerPolicy(program: Command, cli: Cli): void {
                     'network',
                     `${prof.network.modes.join('|')}; presets ${prof.network.allow_presets.join(',') || '-'}; extra ${prof.network.allow.join(',') || '-'}`,
                   ],
+                  ['images', `registries ${prof.images.registries.join(', ') || 'none'}`],
                   [
                     'mounts',
                     prof.mounts

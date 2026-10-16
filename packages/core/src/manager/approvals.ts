@@ -3,6 +3,7 @@ import type { Approval } from '../state/approval-queue.js';
 import { hashRequest } from '../state/approval-queue.js';
 import type { AgentContext } from '../policy/index.js';
 import type { Internals } from './internals.js';
+import { trustSnapshot } from './templates.js';
 import type {
   ApprovalDecision,
   ApprovalView,
@@ -298,7 +299,14 @@ async function decide(
         ? { contentHash: tpl.contentHash, name: tpl.name, path: tpl.source?.path }
         : undefined;
       if (t?.contentHash && /^[0-9a-f]{64}$/.test(t.contentHash)) {
-        I.state.templateTrust.trust(t.contentHash, { path: t.path ?? t.name ?? '', by: ctx.owner });
+        // Keep what was approved, so the next change of this template is reviewed as a diff against it.
+        const snapshot = await trustSnapshot(I, t.path, t.contentHash);
+        I.state.templateTrust.trust(t.contentHash, {
+          path: t.path ?? t.name ?? '',
+          by: ctx.owner,
+          ...(t.name ? { name: t.name } : {}),
+          ...(snapshot ? { snapshot } : {}),
+        });
         I.audit(ctx.owner, 'template.trust', {
           decision: 'approved',
           details: {

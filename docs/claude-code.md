@@ -27,6 +27,12 @@ Or in the project's `.mcp.json` (`abox init --agent claude-code` prints this):
 write one, define the context yourself ([MCP: identity and contexts](mcp.md#identity-and-contexts)).
 Claude Code lists the tools as `mcp__abox__<tool>`.
 
+Under the built-in policy Claude can only use projects below `~/projects`, `~/Projekte`, `~/src`,
+`~/code`, `~/dev`, `~/work`, `~/git` and `~/repos`, never your home directory as a whole and never
+hidden folders such as `~/.claude`. `abox init --agent claude-code` run in your project says
+whether the project qualifies; otherwise add its folder to `workspace.roots` with
+`abox policy edit`.
+
 ## Option 2: the `agent-kit` plugin
 
 The plugin lives in `packages/agent-kit` and bundles the MCP wiring, a decision skill, slash
@@ -98,8 +104,10 @@ installing, as with any code. The plugin gives Claude no power over abox policy.
 The plugin's structure is covered by automated tests (`pnpm vitest run packages/agent-kit`:
 manifests parse, skills are well formed, every tool name used exists, the subagent is limited to
 abox tools and `Read`, the hook is silent and never blocks). **Whether Claude actually loads the
-`use-sandbox` skill for the right tasks has not been evaluated in an interactive session yet**;
-five manual scenarios are listed in `packages/agent-kit/README.md`, all marked "not yet run".
+`use-sandbox` skill for the right tasks was verified headless only (`claude -p`, 2026-10-17, single
+samples)**: with the first description one scenario failed, with the current one all passed. The
+slash commands and an interactive session are untested; the scenarios and results are in
+`packages/agent-kit/README.md`.
 
 ## Option 3: rules in `CLAUDE.md` / `AGENTS.md`
 

@@ -268,9 +268,21 @@ async function assertApplicable(I: Internals, rec: SandboxRecord, apply: ApplySp
       }
       return;
     }
-    case 'ttl':
+    case 'ttl': {
+      // Extending a deadline the backend cannot move would show time left that the sandbox does not have.
+      const provider = await I.providerForRecord(rec);
+      if (!provider.extendExpiry) throw ttlUnsupported(rec);
       return;
+    }
   }
+}
+
+function ttlUnsupported(rec: SandboxRecord): AboxError {
+  return new AboxError(
+    'unsupported',
+    `backend '${rec.backend}' cannot extend the lifetime of a running sandbox`,
+    { hint: 'Create a new sandbox with a longer ttl (overrides.ttl).' },
+  );
 }
 
 /** Apply an allowed/approved access change. Returns a human-readable summary. */
@@ -288,6 +300,14 @@ async function applyAccess(
     let message: string;
     if (apply.kind === 'ttl') {
       const expiresAt = Math.max(fresh.expiresAt, fresh.createdAt + apply.totalTtlMs);
+      if (expiresAt > fresh.expiresAt) {
+        // The backend enforces the deadline itself (container entrypoint, guest timer, ...): move
+        // it first. If that fails the registry keeps the old expiry, so nothing claims time that
+        // the sandbox will not get.
+        const provider = await I.providerForRecord(fresh);
+        if (!provider.extendExpiry) throw ttlUnsupported(fresh);
+        await provider.extendExpiry(fresh.id, expiresAt);
+      }
       I.state.sandboxes.setExpiresAt(fresh.id, expiresAt);
       I.state.sandboxes.setEffective(fresh.id, {
         ...eff,

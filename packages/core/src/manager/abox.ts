@@ -63,6 +63,7 @@ import {
   buildTemplate,
   gcImages,
   listTemplates,
+  reviewTemplate,
   showTemplate,
   validateTemplateOp,
 } from './templates.js';
@@ -115,6 +116,7 @@ import type {
   StartProcessResult,
   TemplateDetails,
   TemplateList,
+  TemplateReview,
   TemplateValidation,
 } from './types.js';
 
@@ -180,6 +182,18 @@ export class Abox {
     o: { projectDir?: string } = {},
   ): Promise<TemplateDetails> {
     return showTemplate(this.I, caller, name, o);
+  }
+  /**
+   * Review material for trusting a project template: the resolved template as a diff against what
+   * it extends (or its last trusted version), and its risks. `expectedContentHash` (from an
+   * approval request) flags a file that changed since.
+   */
+  reviewTemplate(
+    caller: Caller,
+    name: string,
+    o: { projectDir?: string; workspacePath?: string; expectedContentHash?: string } = {},
+  ): Promise<TemplateReview> {
+    return reviewTemplate(this.I, caller, name, o);
   }
   validateTemplate(
     caller: Caller,

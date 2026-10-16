@@ -156,7 +156,11 @@ paths are limited to about 100 characters).
 - **TTL**: `inspect()`/`list()` report `expired` once `expiresAt < now`; `start()`/`exec()` refuse expired
   sandboxes. Enforcement does not depend on abox running: the guest arms a transient systemd timer
   (`systemd-run --on-active=<remaining>`) that powers it off at expiry, and the QEMU process runs under
-  `timeout` and is killed 30 s after expiry even if the guest is stuck or compromised.
+  a small `sh` watchdog and is killed 30 s after expiry even if the guest is stuck or compromised.
+  `extendExpiry()` (`abox extend`) moves all three: it re-arms the guest timer through the guest
+  agent, rewrites the kill time the watchdog re-reads every 2 s, and stores the new `expiresAt`; if
+  one of them fails the old deadline stays. A VM that was started by a version without the
+  watchdog answers `unsupported` until it is stopped and started once.
 - **Hardening of the QEMU process**: seccomp (`-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny`),
   `-nodefaults -no-user-config`, no display/VNC/SPICE, monitor and agent only on unix sockets in a 0700
   directory, no TCP listener of any kind, a bounded 64 KiB console ring buffer (`logs()`), a pid file and a

@@ -31,6 +31,7 @@ import type {
 } from '@abox/core';
 import { buildImage, pullImage } from './build.js';
 import { renderDockerfile } from './dockerfile.js';
+import { effectiveExpiresAt, hasMovableExpiry, toEpochSeconds, writeExpiryFile } from './expiry.js';
 import { effectiveFromInspect, infoFromLabels } from './info.js';
 import { isAbortError, mapEngineError, statusOf } from './errors.js';
 import { Demux, openTty, runExec, simpleExec, streamExec } from './exec.js';
@@ -41,6 +42,7 @@ import {
   CA_CERT_PATH,
   CA_DIR,
   EGRESS_NETWORK,
+  EXPIRY_FILE,
   LABEL,
   OPEN_NETWORK,
   PROXY_ALIAS,
@@ -315,6 +317,7 @@ export class DockerProvider implements SandboxProvider {
       mounts: !this.remote,
       snapshots: true,
       tty: true,
+      extendExpiry: true,
       limits: { cpus: true, memory: true, pids: true, disk: this.facts?.diskQuota ?? false },
       nonRootUser: true,
       secretInjection: ['proxy', 'env', 'file'],
@@ -664,9 +667,10 @@ export class DockerProvider implements SandboxProvider {
     return c;
   }
 
-  private toInfo(c: Docker.ContainerInspectInfo): SandboxInfo {
+  private async toInfo(c: Docker.ContainerInspectInfo): Promise<SandboxInfo> {
+    const labels = c.Config.Labels ?? {};
     const info = infoFromLabels(
-      c.Config.Labels ?? {},
+      labels,
       c.State.Status,
       c.Id,
       this.kind,
@@ -675,13 +679,14 @@ export class DockerProvider implements SandboxProvider {
         error: Boolean(c.State.Error),
         oomKilled: Boolean(c.State.OOMKilled),
       },
+      await effectiveExpiresAt(this.docker.getContainer(c.Id), labels),
     );
     info.effective = effectiveFromInspect(c);
     return info;
   }
 
   async inspect(id: SandboxId): Promise<SandboxInfo> {
-    return this.guard(async () => this.toInfo(await this.load(id)));
+    return this.guard(async () => await this.toInfo(await this.load(id)));
   }
 
   async list(filter: SandboxFilter = {}): Promise<SandboxInfo[]> {
@@ -696,9 +701,23 @@ export class DockerProvider implements SandboxProvider {
       if (this.instanceId !== undefined) label.push(`${LABEL.instance}=${this.instanceId}`);
       const items = await this.docker.listContainers({ all: true, filters: { label } });
       const now = Date.now();
-      return items
-        .filter((i) => this.ownsSandbox(i.Labels))
-        .map((i) => infoFromLabels(i.Labels ?? {}, i.State, i.Id, this.kind, now))
+      // A deadline that was moved after creation lives in the container, not in the labels.
+      const infos = await Promise.all(
+        items
+          .filter((i) => this.ownsSandbox(i.Labels))
+          .map(async (i) =>
+            infoFromLabels(
+              i.Labels ?? {},
+              i.State,
+              i.Id,
+              this.kind,
+              now,
+              undefined,
+              await effectiveExpiresAt(this.docker.getContainer(i.Id), i.Labels),
+            ),
+          ),
+      );
+      return infos
         .filter((i) => i.id !== '' && (!filter.state || i.state === filter.state))
         .sort((a, b) => a.createdAt - b.createdAt);
     });
@@ -736,18 +755,32 @@ export class DockerProvider implements SandboxProvider {
       const filters = { label: [`${LABEL.managed}=1`] };
       const out: ForeignResource[] = [];
       const containers = await this.docker.listContainers({ all: true, filters });
-      for (const c of containers) {
-        const labels = c.Labels ?? {};
-        if (this.ownsInstance(labels)) continue;
+      const foreignContainers = containers.filter((c) => !this.ownsInstance(c.Labels ?? {}));
+      // The list call has no start time; "was this started a minute ago" decides whether a foreign
+      // container is another abox home's live sandbox, so ask for it (a vanished one is skipped).
+      const startedAt = await Promise.all(
+        foreignContainers.map(async (c) => {
+          try {
+            const started = Date.parse(
+              (await this.docker.getContainer(c.Id).inspect()).State?.StartedAt,
+            );
+            return started > 0 ? started : undefined; // "0001-01-01..." = never started
+          } catch {
+            return undefined;
+          }
+        }),
+      );
+      foreignContainers.forEach((c, i) => {
         out.push({
           kind: 'container',
           ref: c.Id,
           name: (c.Names?.[0] ?? c.Id.slice(0, 12)).replace(/^\//, ''),
           state: c.State,
           ...(c.Created ? { createdAt: c.Created * 1000 } : {}),
-          ...this.foreignBase(labels),
+          ...(startedAt[i] !== undefined ? { startedAt: startedAt[i] } : {}),
+          ...this.foreignBase(c.Labels ?? {}),
         });
-      }
+      });
       const networks = await this.docker.listNetworks({ filters });
       for (const n of networks) {
         const labels = n.Labels ?? {};
@@ -1182,6 +1215,7 @@ export class DockerProvider implements SandboxProvider {
       [LABEL.isolation]: this.currentIsolation,
       [LABEL.created]: String(spec.createdAt),
       [LABEL.expires]: String(spec.expiresAt),
+      [LABEL.expiryFile]: '1',
       [LABEL.networkMode]: spec.network.mode,
       [LABEL.user]: `${spec.user.name}:${templateUid}`,
       [LABEL.workspacePath]: wsPath,
@@ -1204,7 +1238,7 @@ export class DockerProvider implements SandboxProvider {
       }),
       User: `${uid}:${gid}`,
       WorkingDir: wsPath,
-      Entrypoint: ttlEntrypoint(spec.expiresAt),
+      Entrypoint: ttlEntrypoint(spec.expiresAt, EXPIRY_FILE),
       Cmd: [],
       Tty: false,
       OpenStdin: false,
@@ -1276,7 +1310,7 @@ export class DockerProvider implements SandboxProvider {
     // Proxy CA
     if (proxyId && spec.network.injections.length > 0) await this.installCa(proxyId, created.id);
 
-    return this.toInfo(await c.inspect());
+    return await this.toInfo(await c.inspect());
   }
 
   // -------------------------------------------------------------------------
@@ -1570,7 +1604,8 @@ export class DockerProvider implements SandboxProvider {
     return this.guard(async () => {
       const c = await this.load(id);
       const labels = c.Config.Labels ?? {};
-      const expires = Number(labels[LABEL.expires] ?? 0);
+      // The deadline may have been moved after creation (`extendExpiry`): labels cannot say.
+      const expires = await effectiveExpiresAt(this.docker.getContainer(c.Id), labels);
       if (expires > 0 && expires <= Date.now()) {
         throw new AboxError('conflict', `Sandbox ${id} has expired and cannot be started`, {
           hint: 'Remove it (`abox gc` / `abox rm`) and create a new one.',
@@ -1596,6 +1631,43 @@ export class DockerProvider implements SandboxProvider {
         if (statusOf(e) !== 304) throw e;
       }
       if (labels[LABEL.tmpFiles] === '1') await this.restoreTmpFiles(c.Id);
+    });
+  }
+
+  /**
+   * Move the deadline of the container: the entrypoint re-reads `EXPIRY_FILE` when its sleep ends,
+   * and `start` / `inspect` / `list` take the later of that and `abox.expires`. The file is
+   * written as root (the sandbox user can not touch it) and works on running and stopped
+   * containers. The egress proxy sidecar has no deadline of its own: it is started and stopped
+   * together with the sandbox, so there is nothing to move there.
+   */
+  async extendExpiry(id: SandboxId, expiresAt: number): Promise<void> {
+    return this.guard(async () => {
+      if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
+        throw new AboxError('invalid_input', `Invalid expiry ${expiresAt}`);
+      }
+      const c = await this.load(id);
+      const labels = c.Config.Labels ?? {};
+      if (!hasMovableExpiry(labels)) {
+        throw new AboxError(
+          'unsupported',
+          `Sandbox ${id} was created by an older version of abox: its lifetime is fixed in the container and cannot be extended`,
+          { hint: 'Create a new sandbox with a longer ttl (overrides.ttl).' },
+        );
+      }
+      const container = this.docker.getContainer(c.Id);
+      const current = await effectiveExpiresAt(container, labels);
+      if (current <= Date.now()) {
+        throw new AboxError('conflict', `Sandbox ${id} has expired and cannot be extended`);
+      }
+      if (toEpochSeconds(expiresAt) < toEpochSeconds(current)) {
+        throw new AboxError(
+          'invalid_input',
+          `The new expiry must not be earlier than the current one (${new Date(current).toISOString()})`,
+        );
+      }
+      if (toEpochSeconds(expiresAt) === toEpochSeconds(current)) return;
+      await writeExpiryFile(container, expiresAt);
     });
   }
 
@@ -2141,6 +2213,8 @@ export class DockerProvider implements SandboxProvider {
         throw new AboxError('not_found', `Unknown snapshot ${snapshotId}`);
       }
       const wasRunning = c.State.Running;
+      // The snapshot holds the deadline of its time: carry the current one over.
+      const deadline = await effectiveExpiresAt(this.docker.getContainer(c.Id), c.Config.Labels);
       const oldName = c.Name.replace(/^\//, '');
       const old = this.docker.getContainer(c.Id);
       if (wasRunning)
@@ -2177,8 +2251,14 @@ export class DockerProvider implements SandboxProvider {
         await old.rename({ name: oldName }).catch(() => undefined);
         throw e;
       }
+      try {
+        if (hasMovableExpiry(c.Config.Labels)) await writeExpiryFile(created, deadline);
+      } catch (e) {
+        await created.remove({ force: true, v: true }).catch(() => undefined);
+        await old.rename({ name: oldName }).catch(() => undefined);
+        throw e;
+      }
       await old.remove({ force: true, v: true });
-      void created;
       if (wasRunning) await this.start(id);
     });
   }

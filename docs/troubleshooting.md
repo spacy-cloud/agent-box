@@ -52,12 +52,16 @@ of the error body.
 
 ```text
 error [policy_denied]: workspace path /tmp/proj is outside the allowed workspace roots (/home/user)
-hint: Use a path inside one of the allowed roots, or ask the human to add a root to the profile in policy.yaml.
+hint: Use a path inside one of the allowed roots, or ask the human to add the project directory to workspace.roots of the profile with `abox policy edit` (`abox init --agent <name>` shows the current roots).
 ```
 
 The directory you passed with `--workspace` is not below a **workspace root** of the profile that
 is asking. For you the root is your home directory; for agents it is whatever `workspace.roots`
-in their profile says (`~/projects`, for example).
+in their profile says. Without a `policy.yaml` the agent roots are `~/projects`, `~/Projekte`,
+`~/src`, `~/code`, `~/dev`, `~/work`, `~/git` and `~/repos`; `abox init --agent <name>` in the
+project directory tells you whether it qualifies. To allow another folder, add it to
+`workspace.roots` of the agent's profile with `abox policy edit`. Paths inside hidden directories
+directly below your home (`~/.claude`, `~/.cache`, ...) are always refused for agents.
 
 **Symlinked directories matter.** abox resolves symlinks _before_ checking. If `~/projects` is a
 symlink to `/data/projects`, the real path is `/data/projects/app`, which is not below your home
@@ -249,37 +253,56 @@ separation is deliberate, so two homes on one engine never delete each other's s
 `abox doctor` and `abox gc` therefore show nothing (`abox doctor` only warns that "abox resources of
 another or unknown instance" exist).
 
-`abox gc --orphans` finds them, from any home:
+`abox gc --orphans` finds them, from any home. It groups the leftovers by instance and tells you which
+instances look like they are still in use:
 
 ```console
 $ abox gc --orphans
-3 abox resource(s) that do not belong to this abox home (they may belong to ANOTHER abox home on this machine):
-KIND       NAME                  INSTANCE          ABOX NAME  STATE    AGE
-container  abox-local-7faf91da   3f2a9c01d4be7a65  my-work    running  2d03h
-container  abox-proxy-7faf91da   3f2a9c01d4be7a65  -          running  2d03h
-network    abox-int-7faf91da     3f2a9c01d4be7a65  -          -        2d03h
-nothing was removed; re-run with --yes to remove the resources listed above
+7 abox resource(s) of 2 instances that do not belong to this abox home (they may belong to ANOTHER abox home on this machine):
+
+instance 3f2a9c01d4be7a65: 3 resource(s), 0 running, newest 2d03h ago
+  KIND       NAME                 ABOX NAME  STATE   AGE    ACTION
+  container  abox-local-7faf91da  my-work    exited  2d03h  remove
+  container  abox-proxy-7faf91da  -          exited  2d03h  remove
+  network    abox-int-7faf91da    -          -       2d03h  remove
+
+instance 9be41d7c0a2f6e58: 4 resource(s), 3 running, newest 46s ago
+  warning: instance 9be41d7c0a2f6e58 looks active (3 running, newest 46s ago) - probably another abox home in use
+  skipped by default; --include-active or --instance 9be41d7c0a2f6e58 selects it
+  KIND       NAME                 ABOX NAME  STATE    AGE  ACTION
+  container  abox-local-0243c013  other      running  46s  skip (active)
+  ...
+Remove 3 resource(s) of 1 stale instance? (1 active instance skipped) [y/N]
 ```
 
 It lists the abox-labelled containers, networks and volumes whose `abox.instance` is not the current
 home's (or empty) and removes nothing by default. **Read the list before you remove anything:** the
 resources may belong to another abox home on this machine that is still alive (another `ABOX_HOME`, another
-user in the docker group, a CI job); abox cannot tell a lost home from a live one. Objects without abox
+user in the docker group, a CI job); abox cannot tell a lost home from a live one for certain. It guesses
+from activity: an instance with a running container, or with anything created or started less than an hour
+ago, is _active_ and is **skipped** unless you ask for it. Only _stale_ instances (nothing running, nothing
+newer than an hour) are offered for removal, and the question names exactly what goes. Objects without abox
 labels are never listed, and environment images and the shared `abox-open` / `abox-egress` networks are
 left alone.
 
+Note what this means for the case "I deleted the home but its sandboxes are still running": that instance
+looks active, because it _is_ running. Stop the containers first (`docker stop`) or name the instance
+explicitly once you are sure it is yours.
+
 ```sh
-abox gc --orphans                              # list (dry run); on a terminal it then asks before removing
-abox gc --orphans --instance 3f2a9c01d4be7a65  # only one home's resources: the safest way if you know its id
-abox gc --orphans --yes                        # remove everything listed, without asking
-abox gc --orphans --json                       # the list as JSON; add --yes to remove
+abox gc --orphans                              # list (dry run); on a terminal it then asks before removing the stale ones
+abox gc --orphans --instance 3f2a9c01d4be7a65  # only one home's resources: the safest way if you know its id; also works for a running one
+abox gc --orphans --yes                        # remove all stale instances listed, without asking (active ones stay)
+abox gc --orphans --include-active             # also the active ones; on a terminal you must type "yes"
+abox gc --orphans --json                       # the groups and skip reasons as JSON; add --yes to remove
 ```
 
-The instance id shows in the `INSTANCE` column; if you still have the old data directory somewhere,
-it is the content of `data/instance-id`. If other homes are alive on the machine, use `--instance`. Each
-removal is written to the audit log (`resource.gc_orphan`). Only Docker, Podman and Python (container
-mode) are searched; the other backends report "not supported". Without abox, the same objects can be found with
-`docker ps -a --filter label=abox.managed=1` and removed with `docker rm -f`.
+The instance id shows in the heading of each group; if you still have the old data directory somewhere,
+it is the content of `data/instance-id`. If other homes are alive on the machine, use `--instance` rather
+than `--yes` alone. Each removal is written to the audit log (`resource.gc_orphan`). Only Docker, Podman
+and Python (container mode) are searched; the other backends report "not supported". Without abox, the
+same objects can be found with `docker ps -a --filter label=abox.managed=1` and removed with
+`docker rm -f`.
 
 ## Getting help
 

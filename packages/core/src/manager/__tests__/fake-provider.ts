@@ -47,6 +47,10 @@ export interface FakeOptions {
   foreign?: ForeignResource[];
   /** `removeForeign` fails for the object with this `ref`. */
   failForeignRemove?: string;
+  /** The backend cannot move its deadline: no `extendExpiry` (default: it can). */
+  noExtendExpiry?: boolean;
+  /** `extendExpiry` fails with this message (the backend refuses to move its deadline). */
+  failExtendExpiry?: string;
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -64,6 +68,8 @@ export class FakeProvider implements SandboxProvider {
   readonly prepareCalls: Array<{ hash: string; opts: PrepareOptions }> = [];
   readonly networkUpdates: Array<{ id: SandboxId; allow: string[]; injections: number }> = [];
   readonly gcCalls: string[][] = [];
+  /** Every `extendExpiry` call that was accepted. */
+  readonly expiryUpdates: Array<{ id: SandboxId; expiresAt: number }> = [];
   /** Foreign objects that are still there / the refs `removeForeign` deleted. */
   readonly foreignResources: ForeignResource[] = [];
   readonly foreignRemoved: string[] = [];
@@ -81,6 +87,7 @@ export class FakeProvider implements SandboxProvider {
   readonly opts: FakeOptions;
   private readonly caps: ProviderCapabilities;
   updateNetwork?: SandboxProvider['updateNetwork'];
+  extendExpiry?: SandboxProvider['extendExpiry'];
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
   networkEvents?: SandboxProvider['networkEvents'];
@@ -118,6 +125,18 @@ export class FakeProvider implements SandboxProvider {
           this.foreignResources.splice(i, 1);
           this.foreignRemoved.push(r.ref);
         }
+        return Promise.resolve();
+      };
+    }
+    if (!opts.noExtendExpiry) {
+      this.caps.extendExpiry = true;
+      this.extendExpiry = (id, expiresAt) => {
+        const sb = this.get(id);
+        if (this.opts.failExtendExpiry)
+          return Promise.reject(new AboxError('backend_error', this.opts.failExtendExpiry));
+        // a new object: `specs` keeps the spec the sandbox was created with
+        sb.spec = { ...sb.spec, expiresAt };
+        this.expiryUpdates.push({ id, expiresAt });
         return Promise.resolve();
       };
     }

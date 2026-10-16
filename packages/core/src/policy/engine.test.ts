@@ -12,6 +12,8 @@ import {
   type CreateRequest,
   type SandboxRef,
 } from './engine.js';
+import { resolveContext } from './context.js';
+import { defaultPolicy, parsePolicy } from './load.js';
 import { canonicalizePath } from './paths.js';
 import {
   GIB,
@@ -343,6 +345,171 @@ describe('workspace', () => {
     const withPath = run({}, { workspace: { mode: 'empty', hostPath: env.sshDir } });
     expect(withPath.decision).toBe('allow');
     expect(withPath.requestDigest.workspace).toEqual({ mode: 'empty' });
+  });
+});
+
+describe('workspace: built-in default policy (agents)', () => {
+  const agent = (): ReturnType<typeof makeContext> =>
+    resolveContext(defaultPolicy(), 'claude-code', { home: env.home });
+  const create = (hostPath: string, mode: 'copy' | 'worktree' = 'copy'): CreateEvaluation =>
+    evaluateCreate(
+      mkReq(env, agent(), {
+        template: { name: 'node-dev', isolation: 'container', hash: 'h', contentHash: 'c' },
+        workspace: { mode, hostPath },
+      }),
+    );
+
+  it('allows a project below ~/projects and below roots that do not exist yet', () => {
+    expect(create(env.app).decision).toBe('allow');
+    const later = join(env.home, 'Projekte', 'neu');
+    expect(create(later).decision).toBe('allow');
+    expect(create(join(env.home, 'src', 'x')).decision).toBe('allow');
+  });
+  it('does not allow the home directory as a whole nor ordinary home folders', () => {
+    expectDeny(create(env.home), 'protected path the home directory');
+    expectDeny(create(env.datasets), 'outside the allowed workspace roots');
+    expectDeny(create(join(env.home, 'Documents', 'taxes')), 'outside the allowed workspace roots');
+  });
+  it('denies a workspace outside the roots with a hint naming policy edit and workspace.roots', () => {
+    const r = create(env.datasets);
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') {
+      expect(r.hint).toContain('abox policy edit');
+      expect(r.hint).toContain('workspace.roots');
+    }
+  });
+  it.each(['.claude', '.codex', '.cache', '.config/abox', '.ssh', '.local/share'])(
+    'denies ~/%s',
+    (rel) => {
+      mkdirSync(join(env.home, rel), { recursive: true });
+      expectDeny(create(join(env.home, rel)));
+    },
+  );
+  it('denies hidden home directories even with a profile root of ~', () => {
+    const dir = join(env.home, '.claude', 'projects', 'x');
+    mkdirSync(dir, { recursive: true });
+    const r = run({ workspace: { roots: ['~'] } }, { workspace: { mode: 'copy', hostPath: dir } });
+    expectDeny(r, 'hidden');
+    expect(
+      run(
+        { workspace: { roots: ['~'] } },
+        { workspace: { mode: 'copy', hostPath: join(env.home, 'datasets') } },
+      ).decision,
+    ).toBe('allow');
+  });
+  it('applies to additional mounts of agents too', () => {
+    const dir = join(env.home, '.codex');
+    mkdirSync(dir, { recursive: true });
+    expectDeny(
+      run(
+        { mounts: { roots: ['~'], access: ['ro'] } },
+        { mounts: [{ hostPath: dir, target: '/x', access: 'ro' }] },
+      ),
+      'hidden',
+    );
+  });
+  it('does not change anything for humans', () => {
+    const dir = join(env.home, '.hidden-project');
+    mkdirSync(dir, { recursive: true });
+    const r = evaluateCreate(
+      mkReq(env, humanContext(env), {
+        workspace: { mode: 'copy', hostPath: dir },
+      }),
+    );
+    expect(r.decision).toBe('allow');
+    expect(
+      evaluateCreate(
+        mkReq(env, humanContext(env), { workspace: { mode: 'copy', hostPath: env.datasets } }),
+      ).decision,
+    ).toBe('allow');
+  });
+});
+
+describe('base image registries', () => {
+  const tpl = (os: string | undefined, over: Record<string, unknown> = {}) => ({
+    name: 'node-dev',
+    isolation: 'container' as const,
+    hash: 'h',
+    contentHash: 'c',
+    backend: 'docker' as const,
+    base: { ...(os ? { os } : {}), osFamily: 'debian' as const },
+    ...over,
+  });
+  const withImage = (os: string | undefined, overrides: Record<string, unknown> = {}) =>
+    run(overrides, { template: tpl(os) });
+
+  it('built-in agent profile: official Docker Hub images and the built-in bases pass', () => {
+    expect(withImage('ubuntu:24.04').decision).toBe('allow');
+    expect(withImage('debian:12-slim').decision).toBe('allow');
+    expect(withImage('docker.io/library/fedora:42').decision).toBe('allow');
+  });
+  it('an image outside the allowlist needs approval (like destinations beyond the network allowlist)', () => {
+    const r = withImage('ghcr.io/someone/tools:1');
+    expect(approvalKinds(r)).toEqual(['image_registry']);
+    if (r.decision === 'approval') {
+      expect(r.reasons.join(' ')).toContain('base image "ghcr.io/someone/tools:1"');
+      expect(r.reasons.join(' ')).toContain('images.registries');
+    }
+    for (const approval of MODES)
+      expect(approvalKinds(withImage('myorg/app', { approval })), approval).toContain(
+        'image_registry',
+      );
+  });
+  it('a profile without any registry denies images that are not built in', () => {
+    const r = withImage('debian:12', { images: { registries: [] } });
+    expectDeny(r, 'no image registry allowlist');
+    if (r.decision === 'deny') expect(r.hint).toContain('abox policy edit');
+    expect(withImage('ubuntu:24.04', { images: { registries: [] } }).decision).toBe('allow');
+  });
+  it('registries can be widened to a registry or a path prefix', () => {
+    const o = { images: { registries: ['docker.io/library', 'ghcr.io/my-org'] } };
+    expect(withImage('ghcr.io/my-org/tools:1', o).decision).toBe('allow');
+    expect(approvalKinds(withImage('ghcr.io/other/tools:1', o))).toEqual(['image_registry']);
+    expect(withImage('ghcr.io/other/tools:1', { images: { registries: ['*'] } }).decision).toBe(
+      'allow',
+    );
+  });
+  it('is only for container backends and for templates that say what their base is', () => {
+    expect(run({}, { template: tpl('ubuntu-24.04', { backend: 'vm' }) }).decision).toBe('allow');
+    expect(run({}, { template: tpl('ghcr.io/x/y', { backend: 'process' }) }).decision).toBe(
+      'allow',
+    );
+    expect(run({}, {}).decision).toBe('allow');
+  });
+  it('a Dockerfile base counts as an unchecked image unless any image is allowed', () => {
+    const r = run(
+      {},
+      { template: tpl(undefined, { base: { dockerfile: './Dockerfile', osFamily: 'unknown' } }) },
+    );
+    expect(approvalKinds(r)).toEqual(['image_registry']);
+    expect(
+      run(
+        { images: { registries: ['*'] } },
+        { template: tpl(undefined, { base: { dockerfile: './Dockerfile', osFamily: 'unknown' } }) },
+      ).decision,
+    ).toBe('allow');
+  });
+  it('a malformed image name is never allowed by a prefix', () => {
+    expect(approvalKinds(withImage('docker.io/library/../evil'))).toEqual(['image_registry']);
+  });
+  it('humans may use any image by default; a configured human profile restricts them', () => {
+    const human = (os: string): CreateEvaluation =>
+      evaluateCreate(mkReq(env, humanContext(env), { template: tpl(os) }));
+    expect(human('ghcr.io/someone/tools:1').decision).toBe('allow');
+    const policy = parsePolicy(
+      'profiles:\n  human: { images: { registries: [docker.io/library] } }\n',
+      {
+        kind: 'file',
+        path: '/t/policy.yaml',
+      },
+    );
+    const restricted = resolveContext(policy, 'human', { home: env.home });
+    const r = evaluateCreate(mkReq(env, restricted, { template: tpl('ghcr.io/x/y') }));
+    expect(approvalKinds(r)).toEqual(['image_registry']);
+    expect(
+      evaluateCreate(mkReq(env, restricted, { template: tpl('ghcr.io/x/y'), humanConfirmed: true }))
+        .decision,
+    ).toBe('allow');
   });
 });
 

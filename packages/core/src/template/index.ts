@@ -61,3 +61,9 @@ export {
   type ValidateOptions,
   type ValidationResult,
 } from './validate.js';
+export {
+  renderTemplateSnapshot,
+  templateRisks,
+  unifiedDiff,
+  type UnifiedDiffOptions,
+} from './review.js';

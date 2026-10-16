@@ -12,7 +12,8 @@ import { BIN, makeEnv, runBin, type TestEnv } from './harness.js';
  * Two abox homes share the engine: `lost` creates sandboxes and is then deleted (the user ran
  * `rm -rf ~/abox-test`), `current` is the home we run `gc --orphans` from. The engine is shared with
  * other people's abox objects, so every removal here is limited to the instance id of `lost`
- * (`--instance`); the unrestricted listing is only ever a dry run.
+ * (`--instance`); the unrestricted listing is only ever a dry run. Never add a `--yes` without
+ * `--instance` here: it would remove whatever stale instances other people left on the engine.
  */
 const DOCKER = process.env['ABOX_TEST_DOCKER'] === '1';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -144,6 +145,43 @@ describe.runIf(DOCKER)('abox gc --orphans against Docker', () => {
     expect(data.resources.some((r) => r.kind === 'network')).toBe(true);
     expect(data.resources.find((r) => r.aboxName === 'lost-plain')?.state).toBe('running');
     // still there
+    expect(idsByInstance('container', lostInstance)).toHaveLength(lostContainers.length);
+  }, 120_000);
+
+  it('by default an instance created a moment ago is listed as active and skipped', async () => {
+    const human = await runBin(current, ['gc', '--orphans', '--dry-run']);
+    expect(human.code, human.stderr).toBe(0);
+    expect(human.stdout).toMatch(
+      new RegExp(
+        `warning: instance ${lostInstance} looks active \\(\\d+ running, newest [\\d.]+m?s ago\\)`,
+      ),
+    );
+    expect(human.stdout).toContain('probably another abox home in use');
+    expect(human.stdout).toContain('skip (active)');
+
+    const json = await runBin(current, ['gc', '--orphans', '--json']);
+    expect(json.code, json.stderr).toBe(0);
+    const data = json.json.data as {
+      dryRun: boolean;
+      removed: unknown[];
+      instances: Array<{
+        instance: string;
+        running: number;
+        active: boolean;
+        selected: number;
+        skipReason?: string;
+      }>;
+      resources: Array<{ instance: string; skip?: string }>;
+    };
+    const group = data.instances.find((g) => g.instance === lostInstance);
+    expect(group).toMatchObject({ active: true, selected: 0 });
+    expect(group?.running).toBeGreaterThanOrEqual(2);
+    expect(group?.skipReason).toContain(`instance ${lostInstance} looks active`);
+    const ours = data.resources.filter((r) => r.instance === lostInstance);
+    expect(ours.length).toBeGreaterThanOrEqual(lostContainers.length + lostNetworks.length);
+    expect(ours.every((r) => r.skip !== undefined)).toBe(true);
+    expect(data.instances.some((g) => g.instance === currentInstance)).toBe(false);
+    expect(data.removed).toEqual([]);
     expect(idsByInstance('container', lostInstance)).toHaveLength(lostContainers.length);
   }, 120_000);
 

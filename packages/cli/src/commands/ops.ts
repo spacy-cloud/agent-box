@@ -1,5 +1,11 @@
 import type { Command } from 'commander';
-import type { AuditEntry, AuditFilter, DoctorReport, GcOrphansReport } from '@abox/core';
+import type {
+  AuditEntry,
+  AuditFilter,
+  DoctorReport,
+  GcOrphansReport,
+  OrphanInstanceGroup,
+} from '@abox/core';
 import type { Cli } from '../cli.js';
 import { CliError } from '../errors.js';
 import {
@@ -22,32 +28,64 @@ function detailsText(e: AuditEntry): string {
     .join(' ');
 }
 
-function orphanListing(r: GcOrphansReport, now: number): string {
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+/** "instance X looks active (3 running, newest 46s ago) - probably another abox home in use" */
+function activeWarning(g: OrphanInstanceGroup, now: number): string {
+  const facts = `${g.running} running${g.newestAt === undefined ? '' : `, newest ${formatDuration(Math.max(0, now - g.newestAt))} ago`}`;
+  return g.instance === ''
+    ? `some resources without an instance label look active (${facts}) - probably another abox home in use; each is judged by its own state`
+    : `instance ${safe(g.instance)} looks active (${facts}) - probably another abox home in use`;
+}
+
+function orphanListing(cli: Cli, r: GcOrphansReport): string {
   const lines: string[] = [];
   if (r.resources.length === 0) {
     lines.push('no abox resources of other instances found');
   } else {
     lines.push(
-      `${r.resources.length} abox resource(s) that do not belong to this abox home (they may belong to ANOTHER abox home on this machine):`,
-      renderTable(
-        [
-          { header: 'KIND' },
-          { header: 'NAME', max: 40 },
-          { header: 'INSTANCE', max: 20 },
-          { header: 'ABOX NAME', max: 24 },
-          { header: 'STATE' },
-          { header: 'AGE' },
-        ],
-        r.resources.map((x) => [
-          x.kind,
-          x.name,
-          x.instance || '(none)',
-          x.aboxName ?? '-',
-          x.state ?? '-',
-          x.createdAt === undefined ? '-' : formatDuration(Math.max(0, now - x.createdAt)),
-        ]),
-      ),
+      `${r.resources.length} abox resource(s) of ${plural(r.instances.length, 'instance', 'instances')} that do not belong to this abox home (they may belong to ANOTHER abox home on this machine):`,
     );
+    for (const g of r.instances) {
+      const newest =
+        g.newestAt === undefined
+          ? ''
+          : `, newest ${formatDuration(Math.max(0, r.now - g.newestAt))} ago`;
+      lines.push(
+        '',
+        `${g.instance === '' ? '(no instance label)' : `instance ${safe(g.instance)}`}: ${g.resources} resource(s), ${g.running} running${newest}`,
+      );
+      if (g.active) lines.push(cli.style('yellow', `  warning: ${activeWarning(g, r.now)}`));
+      if (g.skipReason !== undefined)
+        lines.push(
+          `  skipped by default; --include-active or --instance${g.instance === '' ? " ''" : ` ${safe(g.instance)}`} selects ${g.selected === 0 ? 'it' : 'the rest'}`,
+        );
+      lines.push(
+        renderTable(
+          [
+            { header: 'KIND' },
+            { header: 'NAME', max: 40 },
+            { header: 'ABOX NAME', max: 24 },
+            { header: 'STATE' },
+            { header: 'AGE' },
+            { header: 'ACTION' },
+          ],
+          r.resources
+            .filter((x) => x.instance === g.instance)
+            .map((x) => [
+              x.kind,
+              x.name,
+              x.aboxName ?? '-',
+              x.state ?? '-',
+              x.createdAt === undefined ? '-' : formatDuration(Math.max(0, r.now - x.createdAt)),
+              x.skip === undefined ? 'remove' : 'skip (active)',
+            ]),
+        )
+          .split('\n')
+          .map((l) => `  ${l}`)
+          .join('\n'),
+      );
+    }
   }
   const unsupported = r.skipped.filter((s) => s.reason === 'not supported');
   if (unsupported.length > 0)
@@ -256,16 +294,35 @@ export function registerOps(program: Command, cli: Cli): void {
     .option('--dry-run', 'only show what would be removed')
     .option(
       '--orphans',
-      'instead of the normal cleanup: list abox containers, networks and volumes whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted); they may belong to ANOTHER abox home on this machine; nothing is removed without --yes or a confirmation',
+      'instead of the normal cleanup: list abox containers, networks and volumes whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted), grouped by instance; they may belong to ANOTHER abox home on this machine, so instances with running containers or anything created or started less than an hour ago are listed but skipped; nothing is removed without --yes or a confirmation',
     )
-    .option('--instance <id>', 'with --orphans: only resources of this abox.instance')
-    .option('-y, --yes', 'with --orphans: remove what is listed without asking')
+    .option(
+      '--instance <id>',
+      'with --orphans: only resources of this abox.instance; naming an instance also selects it when it looks active',
+    )
+    .option(
+      '--include-active',
+      'with --orphans: also remove instances that have running containers or resources created or started less than an hour ago (probably another abox home in use); on a terminal you must type "yes"',
+    )
+    .option(
+      '-y, --yes',
+      'with --orphans: remove the stale instances listed without asking (needed when not on a terminal)',
+    )
     .action(
-      async (o: { dryRun?: boolean; orphans?: boolean; instance?: string; yes?: boolean }) => {
+      async (o: {
+        dryRun?: boolean;
+        orphans?: boolean;
+        instance?: string;
+        includeActive?: boolean;
+        yes?: boolean;
+      }) => {
         if (o.orphans) return gcOrphans(cli, o);
-        for (const flag of ['instance', 'yes'] as const)
+        for (const flag of ['instance', 'includeActive', 'yes'] as const)
           if (o[flag] !== undefined)
-            throw new CliError('invalid_input', `--${flag} only works together with --orphans`);
+            throw new CliError(
+              'invalid_input',
+              `--${flag === 'includeActive' ? 'include-active' : flag} only works together with --orphans`,
+            );
         const rt = await cli.rt();
         const r = await rt.abox.gc(cli.caller(), { ...(o.dryRun ? { dryRun: true } : {}) });
         cli.success(r, () => {
@@ -285,12 +342,15 @@ export function registerOps(program: Command, cli: Cli): void {
   /** `abox gc --orphans`: list (default), then remove after --yes or an interactive confirmation. */
   async function gcOrphans(
     cli: Cli,
-    o: { dryRun?: boolean; instance?: string; yes?: boolean },
+    o: { dryRun?: boolean; instance?: string; includeActive?: boolean; yes?: boolean },
   ): Promise<void> {
     if (o.dryRun && o.yes)
       throw new CliError('invalid_input', '--dry-run and --yes exclude each other');
     const rt = await cli.rt();
-    const filter = o.instance !== undefined ? { instance: o.instance } : {};
+    const filter = {
+      ...(o.instance !== undefined ? { instance: o.instance } : {}),
+      ...(o.includeActive ? { includeActive: true } : {}),
+    };
     const remove = (): Promise<GcOrphansReport> =>
       rt.abox.gcOrphans(cli.caller(), { ...filter, remove: true });
     if (cli.json) {
@@ -299,21 +359,51 @@ export function registerOps(program: Command, cli: Cli): void {
     }
     let report = o.yes ? await remove() : await rt.abox.gcOrphans(cli.caller(), filter);
     if (cli.quiet && !o.yes) return;
-    if (!cli.quiet) cli.out(`${orphanListing(report, Date.now())}\n`);
+    if (!cli.quiet) cli.out(`${orphanListing(cli, report)}\n`);
+    const selectable = (r: GcOrphansReport): number => r.resources.filter((x) => !x.skip).length;
     if (!o.yes) {
-      if (report.resources.length === 0 || o.dryRun) return;
-      if (!cli.interactive) {
-        cli.out('nothing was removed; re-run with --yes to remove the resources listed above\n');
+      const n = selectable(report);
+      const skippedGroups = report.instances.filter((g) => g.skipReason !== undefined).length;
+      if (n === 0 || o.dryRun) {
+        if (n === 0 && skippedGroups > 0 && !cli.quiet)
+          cli.out(
+            `nothing to remove: ${plural(skippedGroups, 'active instance', 'active instances')} skipped (--include-active or --instance <id> selects them)\n`,
+          );
         return;
       }
-      if (!(await cli.confirm(`Remove ${report.resources.length} resource(s)?`))) {
+      if (!cli.interactive) {
+        cli.out(
+          `nothing was removed; re-run with --yes to remove the ${n} resource(s) marked "remove" above${o.includeActive || o.instance !== undefined ? '' : ' (--instance <id> limits it to one instance)'}\n`,
+        );
+        return;
+      }
+      const groups = report.instances.filter((g) => g.selected > 0);
+      // Resources of instances that look active are only selected on request: make that explicit.
+      const activeGroups = (o.includeActive || o.instance !== undefined ? groups : []).filter(
+        (g) => g.active,
+      );
+      const summary = `Remove ${n} resource(s) of ${
+        activeGroups.length === 0
+          ? plural(groups.length, 'stale instance', 'stale instances')
+          : `${plural(groups.length, 'instance', 'instances')}, ${activeGroups.length} of them ACTIVE (running or newer than 1h)`
+      }?${skippedGroups > 0 ? ` (${plural(skippedGroups, 'active instance', 'active instances')} skipped)` : ''}`;
+      // Active instances need the whole word: a reflexive "y" must not remove another home's sandboxes.
+      const answer = await cli.readLine(
+        activeGroups.length > 0 ? `${summary} Type "yes" to remove them: ` : `${summary} [y/N] `,
+      );
+      const go =
+        answer !== undefined &&
+        (activeGroups.length > 0 ? answer.trim() === 'yes' : /^\s*(y|yes|j|ja)\s*$/i.test(answer));
+      if (!go) {
         cli.out('nothing was removed\n');
         return;
       }
       report = await remove();
     }
     cli.success(report, () => {
-      const lines = [`removed ${report.removed.length} of ${report.resources.length} resource(s)`];
+      const lines = [
+        `removed ${report.removed.length} of ${selectable(report)} resource(s)${report.resources.length > selectable(report) ? `, ${report.resources.length - selectable(report)} skipped` : ''}`,
+      ];
       for (const e of report.errors) lines.push(`  error: ${safe(e)}`);
       return lines.join('\n');
     });

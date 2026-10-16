@@ -41,6 +41,13 @@ network, secrets as environment variables, ...) make a command ask `Proceed? [y/
 Without a terminal, or with `--json`, the command fails with exit code 3 unless you pass
 `--yes`. `--yes` only ever confirms for you, the human; it never overrides a denial by policy.
 
+For an unapproved project template the confirmation shows the template first: the resolved
+template as a unified diff against the template it extends (or against its last trusted version,
+or in full when there is nothing to compare with) and the risky points in plain words. With
+`--json` the same review is in `details.templateReview` of the exit-3 error. `abox template review
+<name>` shows it on demand, and `abox approvals show <id>` shows it for an agent's `template_trust`
+request.
+
 Network mode `open` is never silent: the concept wants at least isolation `hardened` for it, and
 agents are held to that by their profile (`isolation.network_open`, a denial otherwise). For you,
 the human, no isolation minimum is enforced (you may run a `container` or even a `none` sandbox),
@@ -68,7 +75,7 @@ Failure (the exit code is set as usual):
   "ok": false,
   "code": "policy_denied",
   "message": "workspace path /tmp/proj is outside the allowed workspace roots (/home/user)",
-  "hint": "Use a path inside one of the allowed roots, or ask the human to add a root to the profile in policy.yaml.",
+  "hint": "Use a path inside one of the allowed roots, or ask the human to add the project directory to workspace.roots of the profile with `abox policy edit` (`abox init --agent <name>` shows the current roots).",
   "issues": [{ "path": "resources.memory", "line": 7, "column": 11, "message": "..." }],
   "details": { "reasons": ["..."] }
 }
@@ -82,23 +89,24 @@ Failure (the exit code is set as usual):
 The shape of `data` per command (field names are camelCase; timestamps are milliseconds since the
 epoch):
 
-| Command             | `data`                                                                                                                                                   |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create`            | `{status, sandbox, idempotent, warnings, durationMs}`; `sandbox` is the object below                                                                     |
-| `ls`                | `{sandboxes: [...], orphans: [...], unreachableHosts: [...]}`, plus `hostProblems: {host: reason}` when a host is listed as unreachable                  |
-| `inspect`           | the sandbox object plus `processes`, `pendingApprovals` and `effective` (`policy`: what was granted, `provider`: what the backend reports)               |
-| `start`, `stop`     | `{results: [{id, sandbox}]}`                                                                                                                             |
-| `exec`              | `{status: "completed", exitCode, stdout, stderr, truncated, timedOut, durationMs, logRef}`                                                               |
-| `export`            | `{format, files, flagged, stats, warnings, content, sandboxId, ...}`; `branch`/`commit` or `outDir`/`written` depending on the format                    |
-| `approvals ls`      | `{approvals: [...]}`                                                                                                                                     |
-| `audit`             | `{entries: [{seq, ts, actor, action, sandboxId, decision, details, prevHash, hash}]}` (with `--jsonl`: one entry per line instead)                       |
-| `template ls`       | `{templates: [...], problems: [...]}`                                                                                                                    |
-| `template validate` | `{ok, issues, warnings, name, source, policy: {decision, reasons}}`                                                                                      |
-| `policy show`       | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}`                                                                            |
-| `token ls`          | `{tokens: [{id, contextId, label, createdAt, lastUsedAt, revokedAt}]}`                                                                                   |
-| `doctor`            | on problems, an error body with `details.report`; see [troubleshooting](troubleshooting.md#abox-doctor)                                                  |
-| `gc`, `reconcile`   | the report objects (`dryRun`, `sandboxes`, `workspaces`, `images`, `logs`, ...; `orphans`, `ghosts`, `interrupted`, `expired`, `unreachable`, `applied`) |
-| `gc --orphans`      | `{dryRun, resources: [{kind, ref, name, instance, aboxName, sandboxId, role, state, createdAt, engine, host, backend}], removed, skipped, errors}`       |
+| Command             | `data`                                                                                                                                                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create`            | `{status, sandbox, idempotent, warnings, durationMs}`; `sandbox` is the object below                                                                                                                                                                          |
+| `ls`                | `{sandboxes: [...], orphans: [...], unreachableHosts: [...]}`, plus `hostProblems: {host: reason}` when a host is listed as unreachable                                                                                                                       |
+| `inspect`           | the sandbox object plus `processes`, `pendingApprovals` and `effective` (`policy`: what was granted, `provider`: what the backend reports)                                                                                                                    |
+| `start`, `stop`     | `{results: [{id, sandbox}]}`                                                                                                                                                                                                                                  |
+| `exec`              | `{status: "completed", exitCode, stdout, stderr, truncated, timedOut, durationMs, logRef}`                                                                                                                                                                    |
+| `export`            | `{format, files, flagged, stats, warnings, content, sandboxId, ...}`; `branch`/`commit` or `outDir`/`written` depending on the format                                                                                                                         |
+| `approvals ls`      | `{approvals: [...]}`                                                                                                                                                                                                                                          |
+| `audit`             | `{entries: [{seq, ts, actor, action, sandboxId, decision, details, prevHash, hash}]}` (with `--jsonl`: one entry per line instead)                                                                                                                            |
+| `template ls`       | `{templates: [...], problems: [...]}`                                                                                                                                                                                                                         |
+| `template review`   | `{template, source, contentHash, trusted, against: {kind, label, template?}, diff, risks, changedSinceRequest?}`                                                                                                                                              |
+| `template validate` | `{ok, issues, warnings, name, source, policy: {decision, reasons}}`                                                                                                                                                                                           |
+| `policy show`       | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}`                                                                                                                                                                                 |
+| `token ls`          | `{tokens: [{id, contextId, label, createdAt, lastUsedAt, revokedAt}]}`                                                                                                                                                                                        |
+| `doctor`            | on problems, an error body with `details.report`; see [troubleshooting](troubleshooting.md#abox-doctor)                                                                                                                                                       |
+| `gc`, `reconcile`   | the report objects (`dryRun`, `sandboxes`, `workspaces`, `images`, `logs`, ...; `orphans`, `ghosts`, `interrupted`, `expired`, `unreachable`, `applied`)                                                                                                      |
+| `gc --orphans`      | `{dryRun, now, resources: [{kind, ref, name, instance, aboxName, sandboxId, role, state, createdAt, startedAt, engine, host, backend, skip}], instances: [{instance, resources, running, newestAt, active, selected, skipReason}], removed, skipped, errors}` |
 
 The sandbox object has `id`, `name`, `host`, `owner`, `template`, `templateHash`, `backend`,
 `isolation`, `state`, `createdAt`, `expiresAt`, `ttlRemainingMs`, `expired`, `stale`,
@@ -130,18 +138,18 @@ killed by the timeout gives 5. A reader that goes away (`abox ls | head -1`) is 
 
 ## Files and environment
 
-| Location                                     | Content                                                                                                  |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `~/.config/abox/config.yaml`                 | optional settings, see below                                                                             |
-| `~/.config/abox/policy.yaml`                 | the policy; without it a built-in conservative policy applies (see [security](security.md#policy-model)) |
-| `~/.config/abox/templates/`                  | your templates                                                                                           |
-| `~/.config/abox/hosts.yaml`                  | host profiles (metadata only, no keys or passwords)                                                      |
-| `~/.config/abox/known_hosts`                 | host keys you confirmed in abox                                                                          |
-| `~/.local/share/abox/state.db`               | SQLite state: sandboxes, approvals, audit log, template trust, tokens                                    |
-| `~/.local/share/abox/logs/`                  | per-sandbox command output (mode 0600, rotated, three days by default)                                   |
-| `~/.local/share/abox/sandboxes/`, `exports/` | workspace staging per sandbox; exports made by agents                                                    |
-| `~/.cache/abox/`                             | disposable caches (for example VM base images)                                                           |
-| `$XDG_RUNTIME_DIR/abox/`                     | sockets and pid files (fallback `/tmp/abox-<uid>`)                                                       |
+| Location                                     | Content                                                                                                                                            |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `~/.config/abox/config.yaml`                 | optional settings, see below                                                                                                                       |
+| `~/.config/abox/policy.yaml`                 | the policy; without it the built-in policy applies (agents: projects below ~/projects, ~/src, ... only) (see [security](security.md#policy-model)) |
+| `~/.config/abox/templates/`                  | your templates                                                                                                                                     |
+| `~/.config/abox/hosts.yaml`                  | host profiles (metadata only, no keys or passwords)                                                                                                |
+| `~/.config/abox/known_hosts`                 | host keys you confirmed in abox                                                                                                                    |
+| `~/.local/share/abox/state.db`               | SQLite state: sandboxes, approvals, audit log, template trust, tokens                                                                              |
+| `~/.local/share/abox/logs/`                  | per-sandbox command output (mode 0600, rotated, three days by default)                                                                             |
+| `~/.local/share/abox/sandboxes/`, `exports/` | workspace staging per sandbox; exports made by agents                                                                                              |
+| `~/.cache/abox/`                             | disposable caches (for example VM base images)                                                                                                     |
+| `$XDG_RUNTIME_DIR/abox/`                     | sockets and pid files (fallback `/tmp/abox-<uid>`)                                                                                                 |
 
 Directories are created with mode 0700. `ABOX_HOME=<dir>` moves everything to
 `<dir>/{config,data,cache,run}`; this is how the test suites and this documentation isolate
@@ -204,6 +212,16 @@ List available templates (builtin, user, project)
 `abox template show [options] <name>`
 
 Show a resolved template
+
+| Argument | Meaning       |
+| -------- | ------------- |
+| `name`   | template name |
+
+#### `abox template review`
+
+`abox template review [options] <name>`
+
+Show what a (project) template does before you trust it: a diff against the template it extends or its last trusted version
 
 | Argument | Meaning       |
 | -------- | ------------- |
@@ -340,6 +358,10 @@ Give a sandbox more time (added to its current expiry)
 | Option      | Meaning                |
 | ----------- | ---------------------- |
 | `-y, --yes` | confirm without asking |
+
+The backend's own deadline moves too, so the sandbox keeps running past its old expiry. A
+sandbox whose backend cannot move its deadline (created by an older abox version, or a VM started
+by one until it is restarted) answers `unsupported` and keeps its expiry.
 
 ### `abox exec`
 
@@ -632,12 +654,13 @@ Compare the registry with the backends; with --apply, clean up leftovers
 
 Remove expired sandboxes, stale workspaces, unused images and old logs; with --orphans, find and remove leftovers of other abox homes
 
-| Option            | Meaning                                                                                                                                                                                                                                                          |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--dry-run`       | only show what would be removed                                                                                                                                                                                                                                  |
-| `--orphans`       | instead of the normal cleanup: list abox containers, networks and volumes whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted); they may belong to ANOTHER abox home on this machine; nothing is removed without --yes or a confirmation |
-| `--instance <id>` | with --orphans: only resources of this abox.instance                                                                                                                                                                                                             |
-| `-y, --yes`       | with --orphans: remove what is listed without asking                                                                                                                                                                                                             |
+| Option             | Meaning                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--dry-run`        | only show what would be removed                                                                                                                                                                                                                                                                                                                                                                         |
+| `--orphans`        | instead of the normal cleanup: list abox containers, networks and volumes whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted), grouped by instance; they may belong to ANOTHER abox home on this machine, so instances with running containers or anything created or started less than an hour ago are listed but skipped; nothing is removed without --yes or a confirmation |
+| `--instance <id>`  | with --orphans: only resources of this abox.instance; naming an instance also selects it when it looks active                                                                                                                                                                                                                                                                                           |
+| `--include-active` | with --orphans: also remove instances that have running containers or resources created or started less than an hour ago (probably another abox home in use); on a terminal you must type "yes"                                                                                                                                                                                                         |
+| `-y, --yes`        | with --orphans: remove the stale instances listed without asking (needed when not on a terminal)                                                                                                                                                                                                                                                                                                        |
 
 ### `abox token`
 
@@ -875,14 +898,22 @@ Print a shell completion script (bash, zsh or fish)
   Every home stamps its own instance id (`<data dir>/instance-id`) as label `abox.instance` on what it
   creates and only sees and cleans up its own objects. `--orphans` lists the abox-labelled containers
   (sandboxes and proxy sidecars), networks and volumes of the engine whose `abox.instance` is not this
-  home's (or is empty): name, instance id, sandbox name, state and age. **These may belong to another,
-  live abox home on the same machine** (another `ABOX_HOME`, another user in the docker group, CI), and
-  abox cannot tell. It therefore only lists, unless you pass `--yes` or answer `y` to the question on a
-  terminal (`--dry-run` never asks); `--instance <id>` limits both to one home. Objects without an
-  abox label, the shared `abox-open` / `abox-egress` networks and environment images are never
-  touched. With `--json` the list is returned and `--yes` is required to remove it. Backends other
-  than Docker, Podman and Python (`process`, `vm`) report "not supported". Every removal is audited
-  as `resource.gc_orphan`.
+  home's (or is empty), **grouped by instance** with a summary per instance (resources, running,
+  age of the newest). **These may belong to another, live abox home on the same machine** (another
+  `ABOX_HOME`, another user in the docker group, CI), and abox cannot tell for sure, so it guesses
+  from activity: an instance with a running container, or anything created or started less than an
+  hour ago, is **active**. It gets a warning line ("instance X looks active (N running, newest 46s ago) -
+  probably another abox home in use") and is **skipped**: only stale instances (nothing running,
+  nothing newer than an hour) are offered for removal. `--include-active` or naming the instance with
+  `--instance <id>` selects active ones too; on a terminal you then have to type the word `yes` (`y` is
+  not enough), without a terminal `--yes` is required. Resources without an instance label are judged
+  one by one by their own state and age. Without `--yes` it only lists and asks, naming exactly what
+  goes ("Remove 3 resource(s) of 1 stale instance? (2 active instances skipped)"); `--dry-run` never
+  asks. Objects without an abox label, the shared `abox-open` / `abox-egress` networks and
+  environment images are never touched. With `--json` the groups and the `skip` reason of every
+  skipped resource are returned and `--yes` is required to remove. Backends other than Docker, Podman
+  and Python (`process`, `vm`) report "not supported". Every removal is audited as
+  `resource.gc_orphan`.
 - **`abox token`** creates tokens for the HTTP MCP server, see [MCP](mcp.md#http).
 - **`abox init`** writes `.sandbox/<directory>-dev.yaml` (never overwriting without `--force`) and
   prints the MCP configuration and a rules snippet for an agent.

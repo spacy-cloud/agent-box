@@ -296,6 +296,8 @@ export interface ForeignResource {
   state?: string;
   /** Creation time in ms since the epoch, when the engine reports it. */
   createdAt?: number;
+  /** Last start time of a container in ms since the epoch; absent when it never ran or is unknown. */
+  startedAt?: number;
   /** Which engine holds it (`docker` | `podman`); the same engine can be reached through several backends. */
   engine: string;
 }
@@ -379,6 +381,11 @@ export interface ProviderCapabilities {
   mounts: boolean;
   snapshots: boolean;
   tty: boolean;
+  /**
+   * `extendExpiry` can move the deadline of a live sandbox (`abox extend`, `access_request`
+   * kind=ttl). Absent / false: the deadline is fixed at creation and extending is `unsupported`.
+   */
+  extendExpiry?: boolean;
   /** Which resource limits are actually enforced. */
   limits: { cpus: boolean; memory: boolean; pids: boolean; disk: boolean };
   /** Can run as a non-root user inside the sandbox. */

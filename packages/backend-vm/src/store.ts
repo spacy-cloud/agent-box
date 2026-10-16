@@ -136,6 +136,10 @@ export class Layout {
   runDir(short: string): string {
     return join(this.runRoot, short);
   }
+  /** Epoch second at which the host kills QEMU; read by the watchdog that wraps QEMU (see `HARD_LIMIT_SCRIPT`). */
+  hardLimitFile(short: string): string {
+    return join(this.runDir(short), 'hardlimit');
+  }
   qmpSocket(short: string): string {
     return join(this.runDir(short), 'qmp.sock');
   }

@@ -201,11 +201,24 @@ $ abox policy show
 $ abox policy show --context claude-code     # the resolved rights of one agent context
 ```
 
-Without a `policy.yaml`, a conservative built-in policy applies, with the agent contexts
+Without a `policy.yaml`, a built-in policy applies, with the agent contexts
 `default`, `claude-code`, `codex`, `cursor` and `orca`, all using the profile `default`: up to 3
 sandboxes, 4 CPUs, 8 GB, 4 hours, the templates `node-dev`, `py-dev`, `py-offline` and
 `alpine-min`, workspace modes `worktree`, `clone`, `copy`, `empty`, network `none` or `allowlist`
 with the `npm`, `pypi` and `github` presets, no extra mounts, no secrets.
+
+**Where agents may work.** An agent can only use projects below these folders (they do not have
+to exist): `~/projects`, `~/Projekte`, `~/src`, `~/code`, `~/dev`, `~/work`, `~/git` and
+`~/repos`. Your home directory as a whole is not a root, and an agent never gets a path inside a
+hidden folder of your home directory (`~/.claude`, `~/.codex`, `~/.cache`, ...), whatever the
+roots say. A project anywhere else is refused with `policy_denied` and a hint. To allow another
+folder, add it to `workspace.roots` of the profile with `abox policy edit`.
+`abox init --agent claude-code` tells you whether the current project is usable. You, the human,
+are not limited by these roots.
+
+Free image names in templates (`base.os`) are limited for agents to the official Docker Hub images
+(`images.registries: [docker.io/library]`); the base images of the built-in templates are always
+fine. Anything else needs your approval, see [templates](templates.md#choosing-the-operating-system).
 
 **A `policy.yaml` replaces the built-in policy entirely.** Once you write one, the built-in agent
 contexts are gone: define every context you need (`contexts:`) and the profiles they use. See

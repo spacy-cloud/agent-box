@@ -9,6 +9,7 @@ import { WORKSPACE_MODES } from '../types.js';
 import { NETWORK_PRESETS } from '../template/network-presets.js';
 import type { ContextDef, Policy, PolicySource, ResolvedProfile } from './model.js';
 import { PolicyFileSchema, type RawPolicy, type RawProfile } from './schema.js';
+import { DEFAULT_IMAGE_REGISTRIES } from './images.js';
 import { parseDuration, parseSize } from './units.js';
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,7 @@ export const BUILTIN_HUMAN_PROFILE: RawProfile = {
     allow_presets: Object.keys(NETWORK_PRESETS),
     allow: ['*'],
   },
+  images: { registries: ['*'] },
   mounts: { roots: ['~'], access: ['ro', 'rw'] },
   secrets: { allowed: ['*'], inject: ['proxy', 'env', 'file'] },
   isolation: { min: 'none', network_open: 'none', mounts: 'none', secrets_env: 'none' },
@@ -49,11 +51,29 @@ export const BUILTIN_AGENT_CONTEXTS: readonly string[] = [
 ];
 
 /**
- * Policy used when no policy.yaml exists. The `default` profile may use any
- * directory below `~` as workspace root; the forbidden-path list (`~`, `~/.ssh`,
- * `~/.config`, ...) still applies. The agent context `default` lets an MCP/CLI
- * connection started with `--agent <id>` work out of the box for the built-in agent
- * contexts (`BUILTIN_AGENT_CONTEXTS`: default, claude-code, codex, cursor, orca; all
+ * Workspace roots of the built-in `default` profile: the usual project directories (they need not
+ * exist). The home directory as a whole is never a root; for agents hidden directories below the
+ * home directory (`~/.claude`, `~/.cache`, ...) are refused on top of that (see `checkHostPath`).
+ */
+export const DEFAULT_WORKSPACE_ROOTS: readonly string[] = Object.freeze([
+  '~/projects',
+  '~/Projekte',
+  '~/src',
+  '~/code',
+  '~/dev',
+  '~/work',
+  '~/git',
+  '~/repos',
+]);
+
+/**
+ * Policy used when no policy.yaml exists. The `default` profile may use directories below the
+ * usual project folders (`DEFAULT_WORKSPACE_ROOTS`: ~/projects, ~/Projekte, ~/src, ...) as
+ * workspace; the home directory as a whole is no root, and the forbidden-path list (`~`,
+ * `~/.ssh`, `~/.config`, ...) plus the rule against hidden home directories still apply. Free
+ * image names are limited to the official Docker Hub images (`DEFAULT_IMAGE_REGISTRIES`). The agent
+ * context `default` lets an MCP/CLI connection started with `--agent <id>` work out of the box for the
+ * built-in agent contexts (`BUILTIN_AGENT_CONTEXTS`: default, claude-code, codex, cursor, orca; all
  * mapped to profile `default`); every other context id is unknown and therefore denied.
  * A policy.yaml replaces this policy completely (and so may redefine or drop these contexts).
  */
@@ -64,8 +84,12 @@ profiles:
     approval: medium
     templates: [node-dev, py-dev, py-offline, alpine-min]
     limits: { sandboxes: 3, cpus: 4, memory: 8g, ttl: 4h }
-    workspace: { roots: ['~'], modes: [worktree, clone, copy, empty] }
+    # Agents: projects below these folders only (the home directory itself is never a root).
+    # Add your own with \`abox policy edit\`.
+    workspace: { roots: [${DEFAULT_WORKSPACE_ROOTS.join(', ')}], modes: [worktree, clone, copy, empty] }
     network: { modes: [none, allowlist], allow_presets: [npm, pypi, github], allow: [] }
+    # Registries free image names of a template base may come from (the base images of the built-in templates are always fine).
+    images: { registries: [${DEFAULT_IMAGE_REGISTRIES.join(', ')}] }
     mounts: deny
     secrets: { allowed: [], inject: [proxy] }
     isolation: { min: container, network_open: vm, mounts: container, secrets_env: container }
@@ -354,7 +378,15 @@ export function mergeProfiles(parent: RawProfile, child: RawProfile): RawProfile
   for (const key of ['approval', 'templates', 'hosts'] as const) {
     if (child[key] !== undefined) (out as Record<string, unknown>)[key] = child[key];
   }
-  for (const key of ['limits', 'workspace', 'network', 'secrets', 'isolation', 'exec'] as const) {
+  for (const key of [
+    'limits',
+    'workspace',
+    'network',
+    'images',
+    'secrets',
+    'isolation',
+    'exec',
+  ] as const) {
     if (child[key] !== undefined) {
       (out as Record<string, unknown>)[key] = { ...(parent[key] ?? {}), ...child[key] };
     }
@@ -396,6 +428,7 @@ function applyDefaults(name: string, p: RawProfile): ResolvedProfile {
       allow_presets: [...(p.network?.allow_presets ?? [])],
       allow: [...(p.network?.allow ?? [])],
     },
+    images: { registries: [...(p.images?.registries ?? DEFAULT_IMAGE_REGISTRIES)] },
     mounts,
     secrets: {
       allowed: [...(p.secrets?.allowed ?? [])],
