@@ -8,6 +8,9 @@
       "path": "packages/backend-docker"
     },
     {
+      "path": "packages/backend-vm"
+    },
+    {
       "path": "packages/backend-process"
     },
     {

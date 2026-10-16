@@ -16,3 +16,5 @@ export type { ApprovalKind } from './state/index.js';
 export type { ApprovalKind as PolicyApprovalKind } from './policy/index.js';
 export type { SecretConfig } from './config/index.js';
 export type { SecretConfig as InjectionSecretConfig } from './secrets/index.js';
+export * from './manager/index.js';
+export * from './hosts/index.js';

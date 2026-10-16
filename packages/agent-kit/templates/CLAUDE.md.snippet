@@ -1,0 +1,10 @@
+## Running untrusted code (abox sandboxes)
+
+Run unknown or untrusted code only in an abox sandbox, never directly on this machine. This covers: installing dependencies, running scripts or tests from code you did not write, `curl ... | sh`, and risky experiments.
+
+- Use the abox MCP tools (`template_list`, `sandbox_create`, `sandbox_exec`, `sandbox_export`, `sandbox_delete`). With the `abox` Claude Code plugin, follow the skill `use-sandbox`; otherwise follow the steps below.
+- Create the sandbox with an isolated workspace (`worktree`, `clone` or `copy`), not a host mount.
+- Return changes as a diff (`sandbox_export`, format `diff`) for human review. Do not apply them to the host yourself. Point out `flagged` files.
+- Always delete the sandbox when done (`sandbox_delete`).
+- If a sandbox action is denied by policy, do not work around it. Ask for access with `access_request` and a clear reason, or tell the human. If it is pending approval, tell the human to run `abox approvals approve <approval_id>` and retry with the same `request_id`.
+- Never put secrets (tokens, keys, `.env` contents) into a sandbox.

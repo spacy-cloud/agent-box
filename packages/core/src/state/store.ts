@@ -9,6 +9,7 @@ import { HostCache } from './host-cache.js';
 import { PolicyRevisions } from './policy-revisions.js';
 import { ProcessRegistry } from './process-registry.js';
 import { SandboxRegistry } from './sandbox-registry.js';
+import { TemplatePins } from './template-pins.js';
 import { TemplateTrust } from './template-trust.js';
 
 export interface StateStoreOptions extends OpenDatabaseOptions {
@@ -27,6 +28,7 @@ export class StateStore {
   readonly approvals: ApprovalQueue;
   readonly audit: AuditLog;
   readonly templateTrust: TemplateTrust;
+  readonly templatePins: TemplatePins;
   readonly policyRevisions: PolicyRevisions;
   readonly processes: ProcessRegistry;
   readonly hosts: HostCache;
@@ -40,6 +42,7 @@ export class StateStore {
     this.approvals = new ApprovalQueue(ctx);
     this.audit = new AuditLog(ctx, opts.audit);
     this.templateTrust = new TemplateTrust(ctx);
+    this.templatePins = new TemplatePins(ctx);
     this.policyRevisions = new PolicyRevisions(ctx);
     this.processes = new ProcessRegistry(ctx);
     this.hosts = new HostCache(ctx);

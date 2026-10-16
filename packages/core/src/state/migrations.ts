@@ -125,4 +125,18 @@ CREATE TABLE agent_tokens (
 );
 `,
   },
+  {
+    version: 2,
+    name: 'template_pins',
+    sql: `
+CREATE TABLE template_pins (
+  template_hash TEXT PRIMARY KEY,
+  template      TEXT NOT NULL,
+  backend       TEXT NOT NULL,
+  pinned_base   TEXT,
+  image_ref     TEXT,
+  updated_at    INTEGER NOT NULL
+);
+`,
+  },
 ];
