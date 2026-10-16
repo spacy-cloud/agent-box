@@ -553,13 +553,20 @@ describe.skipIf(!DOCKER)('security: hardening checks (real Docker through the ma
       const id = (await ctx.create(A, { template: 'alpine-min', workspace: { mode: 'empty' } }))
         .sandbox.id;
       const short = id.split('/')[1]!;
-      const p = await ctx.abox.startProcess(
-        A,
-        id,
-        { command: 'f() { f | f & }; f' },
-        { waitForApprovalMs: 0 },
-      );
-      expect(p.status).toBe('started');
+      // The bomb can exhaust the pids limit before abox's own start wrapper finishes; then
+      // startProcess reports a fork failure. Both outcomes are fine - what matters is the
+      // containment checked below.
+      try {
+        const p = await ctx.abox.startProcess(
+          A,
+          id,
+          { command: 'f() { f | f & }; f' },
+          { waitForApprovalMs: 0 },
+        );
+        expect(p.status).toBe('started');
+      } catch (e) {
+        expect((e as Error).message).toMatch(/fork|Resource temporarily unavailable/i);
+      }
       await sleep(4000);
       const top =
         (await docker(['top', `abox-local-${short}`, '-eo', 'pid'])).stdout.trim().split('\n')
