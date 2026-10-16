@@ -9,6 +9,8 @@ import {
 } from '@abox/core';
 import { createDockerProvider, createPodmanProvider } from '@abox/backend-docker';
 import { createProcessProvider } from '@abox/backend-process';
+import { createPythonProvider } from '@abox/backend-python';
+import { createVmProvider } from '@abox/backend-vm';
 
 /** What a provider-factory maker may use to configure its backend. */
 export interface ProviderContext {
@@ -59,12 +61,22 @@ registry.set(
   (ctx) => (host) => createProcessProvider(host, { dataDir: host.dataDir ?? ctx.paths.dataDir }),
 );
 
-// TODO(lead): register the two remaining backends once their packages are finished:
-//   import { createVmProvider } from '@abox/backend-vm';
-//   registerProvider('vm', ({ paths }) => (host) =>
-//     createVmProvider(host, { dataDir: paths.dataDir, cacheDir: paths.cacheDir }));
-//   import { createPythonProvider } from '@abox/backend-python';
-//   registerProvider('python', (ctx) => (host) => createPythonProvider(host, { ... }));
+registry.set(
+  'vm',
+  (ctx) => (host) =>
+    createVmProvider(host, {
+      dataDir: host.dataDir ?? ctx.paths.dataDir,
+      cacheDir: join(ctx.paths.cacheDir, 'vm'),
+    }),
+);
+registry.set(
+  'python',
+  (ctx) => (host) =>
+    createPythonProvider(host, {
+      docker: { socketPath: engineSocket('docker', ctx, host.engineSocket) },
+      dataDir: host.dataDir ?? ctx.paths.dataDir,
+    }),
+);
 
 /** Registers (or replaces) the backend `kind`. Call before `openAbox`. */
 export function registerProvider(kind: BackendKind, maker: ProviderFactoryMaker): void {

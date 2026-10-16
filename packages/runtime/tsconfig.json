@@ -24,6 +24,9 @@
     },
     {
       "path": "../backend-vm"
+    },
+    {
+      "path": "../backend-python"
     }
   ]
 }

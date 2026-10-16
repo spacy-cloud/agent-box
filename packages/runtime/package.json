@@ -26,6 +26,7 @@
     "@abox/core": "workspace:*",
     "@abox/backend-docker": "workspace:*",
     "@abox/backend-process": "workspace:*",
-    "@abox/backend-vm": "workspace:*"
+    "@abox/backend-vm": "workspace:*",
+    "@abox/backend-python": "workspace:*"
   }
 }
