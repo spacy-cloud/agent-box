@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an idea or improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        abox is in early development. Please check [docs/architecture.md](https://github.com/spacy-cloud/agent-box/blob/main/docs/architecture.md)
+        first: the feature may already be planned. Requests that weaken security defaults need a
+        strong justification.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what is missing or hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How could it work? Mention the surface (CLI, MCP, GUI) and any security implications.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to work on this.
