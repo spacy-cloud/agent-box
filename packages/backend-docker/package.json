@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@abox/core": "workspace:*",
+    "@abox/proxy": "workspace:*",
     "dockerode": "^5.0.1",
     "tar-stream": "^3.2.2"
   },
