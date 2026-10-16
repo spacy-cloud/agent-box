@@ -108,6 +108,9 @@ importers:
         specifier: ^3.2.2
         version: 3.2.2
     devDependencies:
+      '@abox/contract-tests':
+        specifier: workspace:*
+        version: link:../contract-tests
       '@types/dockerode':
         specifier: ^4.0.2
         version: 4.0.2

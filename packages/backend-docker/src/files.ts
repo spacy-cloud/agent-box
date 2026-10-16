@@ -4,7 +4,7 @@ import { pipeline } from 'node:stream';
 import type Docker from 'dockerode';
 import { AboxError } from '@abox/core';
 import { statusOf } from './errors.js';
-import { tarFromEntries, readFirstEntry, type MemEntry } from './tar.js';
+import { tarFromEntries, readFirstEntry, reownArchive, type MemEntry } from './tar.js';
 
 /** Validate and normalise an absolute path inside a sandbox. */
 export function sandboxPath(p: string, what = 'path'): string {
@@ -51,6 +51,33 @@ export async function putArchiveStream(
   } catch (e) {
     throw failure ?? e;
   }
+}
+
+/**
+ * Give everything below `dir` to `uid:gid` (content and modes unchanged), and `dir` itself when
+ * `includeRoot` is set; a missing `dir` is ignored. Works on a created, not yet started container
+ * and needs no capability inside it. The engine applies the ownership of a directory entry only
+ * to directories it extracts below the target, so the root is re-owned through its parent, which
+ * is impossible when `dir` is a volume on a read-only root filesystem (`includeRoot: false`).
+ */
+export async function reownDir(
+  c: Docker.Container,
+  dir: string,
+  uid: number,
+  gid: number,
+  includeRoot: boolean,
+): Promise<void> {
+  const parent = path.posix.dirname(dir);
+  let archive: Readable;
+  try {
+    archive = (await c.getArchive({
+      path: includeRoot ? dir : `${dir}/.`,
+    })) as unknown as Readable;
+  } catch (e) {
+    if (statusOf(e) === 404) return;
+    throw e;
+  }
+  await putArchiveStream(c, reownArchive(archive, { uid, gid }), includeRoot ? parent : dir);
 }
 
 /** Create `dir` and missing parents (owned by uid:gid) without needing a running container. */
