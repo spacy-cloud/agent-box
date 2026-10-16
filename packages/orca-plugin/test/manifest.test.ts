@@ -78,7 +78,7 @@ describe('orca-plugin.json against the schema derived from Orca 1.4.224', () => 
 
   it('does not contain personal data', () => {
     const text = readFileSync(manifestPath, 'utf8');
-    expect(text).not.toMatch(/jojo|joern|gmail|@[a-z0-9-]+\.[a-z]{2,}/i);
+    expect(text).not.toMatch(/@[a-z0-9-]+\.[a-z]{2,}/i); // no e-mail addresses in the manifest
   });
 
   it('is installable on the Orca version it was derived from, and not on older ones', () => {

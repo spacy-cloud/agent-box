@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createServer, type Server } from 'node:net';
+import { userInfo } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AboxError, type Caller, type HostResolver } from '@abox/core';
@@ -321,7 +322,7 @@ describe.skipIf(!DOCKER)('security: hardening checks (real Docker through the ma
             // /workspace/proc-root points at the sandbox's own /proc/1/root (not the host's)
             expect(
               (await sh(ctx, A, id, 'ls /workspace/proc-root/home 2>&1 | head -3')).stdout,
-            ).not.toContain('joern');
+            ).not.toContain(userInfo().username);
           },
         );
       }, 180_000);

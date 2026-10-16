@@ -350,13 +350,13 @@ describe('errors', () => {
     const { a, id } = await setup({
       fake: {
         execHandler: () => {
-          throw new TypeError('secret /home/joern/path detail');
+          throw new TypeError('secret /home/alice/path detail');
         },
       },
     });
     const r = await a.call('sandbox_exec', { id, argv: ['x'] });
     expect(r.isError).toBe(true);
     expect(r.s['code']).toBe('internal');
-    expect(JSON.stringify(r)).not.toContain('/home/joern');
+    expect(JSON.stringify(r)).not.toContain('/home/alice');
   });
 });
