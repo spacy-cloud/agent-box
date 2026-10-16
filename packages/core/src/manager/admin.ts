@@ -92,6 +92,76 @@ export function validatePolicyText(text: string): PolicyValidation {
   }
 }
 
+const UNKNOWN_TOOL_WINDOW_MS = 60_000;
+const UNKNOWN_TOOL_BUDGET = 10;
+const unknownToolBudgets = new WeakMap<
+  Internals,
+  Map<string, { start: number; used: number; suppressed: number }>
+>();
+
+/** Strips control, zero-width and bidi characters and cuts the text: attacker-controlled names go into the audit log. */
+function cleanLabel(v: unknown, max: number): string {
+  const t = typeof v === 'string' ? v : String(v);
+  let clean = '';
+  for (const ch of t) {
+    const c = ch.codePointAt(0)!;
+    const bad =
+      c < 0x20 ||
+      (c >= 0x7f && c <= 0x9f) ||
+      (c >= 0x200b && c <= 0x200f) ||
+      (c >= 0x202a && c <= 0x202e) ||
+      (c >= 0x2066 && c <= 0x2069) ||
+      c === 0xfeff;
+    clean += bad ? '?' : ch;
+  }
+  return clean.length > max ? `${clean.slice(0, max)}...` : clean;
+}
+
+/**
+ * MCP surfaces report a tool call for a tool that does not exist (an agent probing for `policy_set`,
+ * `approve`, `ssh_exec`, ...). Recorded as `mcp.unknown_tool` with the tool name, the context and the
+ * names (never the values) of the arguments. Rate limited per agent owner (same tool once a minute,
+ * at most 10 entries a minute; the entry after a burst carries `suppressed`), so probing cannot flood the log.
+ * Humans are ignored. Returns whether an entry was written.
+ */
+export async function auditUnknownTool(
+  I: Internals,
+  caller: Caller,
+  tool: string,
+  argNames: readonly string[] = [],
+): Promise<boolean> {
+  const ctx = await I.context(caller);
+  if (ctx.kind === 'human') return false;
+  const name = cleanLabel(tool, 64);
+  const now = Date.now();
+  let budgets = unknownToolBudgets.get(I);
+  if (!budgets) unknownToolBudgets.set(I, (budgets = new Map()));
+  if (budgets.size > 1000) budgets.clear();
+  let b = budgets.get(ctx.owner);
+  if (!b || now - b.start >= UNKNOWN_TOOL_WINDOW_MS) {
+    b = { start: now, used: 0, suppressed: b?.suppressed ?? 0 };
+    budgets.set(ctx.owner, b);
+  }
+  if (!I.firstWithin(`unknown-tool|${ctx.owner}|${name}`, UNKNOWN_TOOL_WINDOW_MS)) return false;
+  if (b.used >= UNKNOWN_TOOL_BUDGET) {
+    b.suppressed++;
+    return false;
+  }
+  b.used++;
+  const suppressed = b.suppressed;
+  b.suppressed = 0;
+  I.audit(ctx.owner, 'mcp.unknown_tool', {
+    decision: 'deny',
+    details: {
+      tool: name,
+      context: ctx.id,
+      argNames: argNames.slice(0, 10).map((a) => cleanLabel(a, 40)),
+      ...(suppressed > 0 ? { suppressed } : {}),
+    },
+  });
+  return true;
+}
+
 export async function setPolicy(
   I: Internals,
   caller: Caller,

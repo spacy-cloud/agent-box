@@ -48,6 +48,16 @@ Plain statements:
 - A `container` sandbox is **not** a security boundary against a determined attacker with a kernel
   exploit. It is good protection against accidents, careless agents and most untrusted scripts.
 - `none` provides no protection at all. It exists for trusted code and as a reference backend.
+- **Isolation minimums are an agent rule.** `isolation.min`, `network_open`, `mounts` and
+  `secrets_env` of a profile (and the host zone minimums) are enforced against agent contexts as a
+  denial. The built-in `human` profile, i.e. you in the CLI or GUI, does **not** enforce them: you
+  may run a `container` or a `none` sandbox for anything you confirm. What stays for you are
+  confirmations for the risky cases (isolation `none`, untrusted templates, shared hosts, secrets
+  as environment variables or files) and one rule that follows the concept above: **network mode
+  `open` below `hardened` is never silent.** `abox create --net open` (or a template that asks
+  for `open`) on a `container` shows the risk (unrestricted internet access without a hardened
+  sandbox) and needs `y` on the prompt or `--yes`, in every approval mode; the GUI asks the same
+  way. The same applies when you switch a running sandbox to `open`.
 - Stronger levels need additional software that abox does not install for you: `hardened` needs a
   stronger OCI runtime in the engine, selected with `backends.docker.runtime` in `config.yaml`
   (not verified, see below), `vm` needs KVM and QEMU (see [backends](backends.md#vm)).
@@ -114,7 +124,9 @@ Exceptions are possible only per destination and with approval.
 - **No TLS content inspection**, except for hosts configured for secret injection (see below).
 - Programs that do not honor proxy settings **fail** (there is no other route). That is intended
   but can surprise users.
-- Network mode `open` has no filtering and should require a strong isolation level.
+- Network mode `open` has no filtering and should require a strong isolation level: agents need
+  at least the profile's `isolation.network_open` (denial otherwise); for the human context
+  anything below `hardened` needs an explicit confirmation (see [Isolation levels](#isolation-levels)).
 - For VMs the same proxy runs on the host and is reached through a unix socket and QEMU's
   `guestfwd`; see [backends](backends.md#vm) for the trade-offs (reduced QEMU seccomp filter in
   `allowlist` mode, and `open` mode reaching the host's loopback and LAN).
@@ -197,7 +209,9 @@ Properties:
 - **No command blocklist.** `npm test` can run arbitrary code. What matters are the technical
   limits of the environment, not command names.
 - **Policy changes** are versioned (revision in the audit log) and possible only through the CLI or
-  GUI, never through MCP. Attempts are logged.
+  GUI, never through MCP. Attempts are logged, including calls of agents to MCP tools that do not
+  exist (`policy_set`, `approve`, `ssh_exec`, ...): the audit log gets `mcp.unknown_tool` with the
+  tool name and the agent context (rate limited; argument values are never recorded).
 - **Fail closed.** If nobody decides before the timeout, the request is denied.
 
 ## Project template trust
@@ -349,8 +363,11 @@ of this documentation; it will be published per release alongside the changelog.
 - **The agent-kit skill's triggering has not been evaluated interactively**: the structure is
   tested, whether Claude invokes `use-sandbox` for the right tasks is not (five manual scenarios
   are listed and marked "not yet run").
-- The desktop app is unreleased; its end-to-end tests exist but were not run for this release
-  candidate documentation.
+- The desktop app is unreleased (no published package). Its end-to-end tests run under a virtual
+  display (`xvfb`; 21 tests, including the Docker-guarded terminal, template and ssh ones) and
+  pass; they are not part of the default `pnpm test`. An AppImage builds and starts
+  (`pnpm --filter @abox/app dist` and `smoke`), but it is neither signed nor published, and it has
+  not been tried on other distributions.
 
 ### Platform and project
 

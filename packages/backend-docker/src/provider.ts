@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { Readable } from 'node:stream';
-import { Readable as ReadableCtor } from 'node:stream';
+import { PassThrough, Readable as ReadableCtor, pipeline } from 'node:stream';
 import Docker from 'dockerode';
 import { AboxError, parseSandboxId } from '@abox/core';
 import type {
@@ -32,7 +32,7 @@ import { buildImage, pullImage } from './build.js';
 import { renderDockerfile } from './dockerfile.js';
 import { effectiveFromInspect, infoFromLabels } from './info.js';
 import { isAbortError, mapEngineError, statusOf } from './errors.js';
-import { Demux, openTty, runExec, simpleExec } from './exec.js';
+import { Demux, openTty, runExec, simpleExec, streamExec } from './exec.js';
 import { getFile, mkdirP, putArchiveStream, putFile, reownDir, sandboxPath } from './files.js';
 import { buildHostConfig, checkBindSource, checkMountTarget, ttlEntrypoint } from './hostconfig.js';
 import {
@@ -143,9 +143,28 @@ function userIds(c: Docker.ContainerInspectInfo): { uid: number; gid: number } {
   return { uid, gid: Number.isInteger(gid) ? gid : uid };
 }
 
-function underTmp(p: string): boolean {
-  return p === '/tmp' || p.startsWith('/tmp/');
+/**
+ * Mount points of the sandbox's tmpfs mounts (always `/tmp`). The archive API cannot see them: it
+ * reads and writes the image directory hidden below the mount.
+ */
+function tmpfsRoots(c: Docker.ContainerInspectInfo): string[] {
+  const roots = new Set<string>(['/tmp']);
+  for (const t of Object.keys(c.HostConfig?.Tmpfs ?? {})) roots.add(path.posix.normalize(t));
+  for (const m of c.Mounts ?? [])
+    if (m.Type === 'tmpfs') roots.add(path.posix.normalize(m.Destination));
+  return [...roots];
 }
+
+/** The tmpfs mount point that contains (or is) `p`, if any. */
+function tmpfsRootOf(c: Docker.ContainerInspectInfo, p: string): string | undefined {
+  return tmpfsRoots(c).find((r) => p === r || p.startsWith(`${r}/`));
+}
+
+/** `sh -c` script: args are <dir>; creates it and unpacks a tar stream from stdin as the sandbox user. */
+const TMPFS_UNPACK_SCRIPT = 'mkdir -p -- "$1" && exec tar -xpof - -C "$1"';
+/** `sh -c` script: args are <path>; packs it as `./<basename>` (exit 3 when it does not exist). */
+const TMPFS_PACK_SCRIPT =
+  '[ -e "$1" ] || [ -L "$1" ] || exit 3; d=${1%/*}; [ -n "$d" ] || d=/; exec tar -cf - -C "$d" -- "./${1##*/}"';
 
 function envArray(env: Record<string, string>): string[] {
   return Object.entries(env).map(([k, v]) => `${k}=${v}`);
@@ -207,6 +226,18 @@ export class DockerProvider implements SandboxProvider {
       ...(this.opts.extraLabels ?? {}),
       ...(this.instanceId !== undefined ? { [LABEL.instance]: this.instanceId } : {}),
     };
+  }
+
+  /**
+   * Labels for containers. A container inherits the labels of its image, and the environment image
+   * cache is keyed by template hash only: an unscoped provider (no instance id) that reuses an
+   * image built by an installation with an instance id would inherit that foreign `abox.instance`
+   * and could not find its own sandbox right after `create` ("Unknown sandbox"). Containers
+   * therefore always carry the instance label explicitly, with the empty string (read as "no
+   * instance" by `ownsInstance`) for an unscoped provider.
+   */
+  private get containerExtra(): Record<string, string> {
+    return { ...this.extra, [LABEL.instance]: this.instanceId ?? '' };
   }
 
   /** Does an engine object (by its labels) belong to this provider's instance? */
@@ -1022,7 +1053,7 @@ export class DockerProvider implements SandboxProvider {
       if (!k.startsWith('abox.') || k === LABEL.readonlyRootfs) userLabels[k] = v;
     const labels: Record<string, string> = {
       ...userLabels,
-      ...this.extra,
+      ...this.containerExtra,
       [LABEL.managed]: '1',
       [LABEL.role]: 'sandbox',
       [LABEL.id]: spec.id,
@@ -1155,7 +1186,7 @@ export class DockerProvider implements SandboxProvider {
       [LABEL.id]: spec.id,
       [LABEL.host]: spec.host,
       [LABEL.owner]: spec.owner,
-      ...this.extra,
+      ...this.containerExtra,
     };
     const net = await this.docker.createNetwork({
       Name: intName,
@@ -1659,6 +1690,11 @@ export class DockerProvider implements SandboxProvider {
       if (dest === '/') throw new AboxError('invalid_input', 'Cannot copy onto /');
       const { uid, gid } = userIds(c);
       const dir = path.posix.dirname(dest);
+      const tmpfs = tmpfsRootOf(c, dest);
+      if (tmpfs !== undefined) {
+        await this.copyInTmpfs(c, tmpfs, hostPath, dest, { uid, gid });
+        return;
+      }
       const ct = this.docker.getContainer(c.Id);
       await mkdirP(ct, dir, uid, gid);
       await putArchiveStream(
@@ -1674,11 +1710,108 @@ export class DockerProvider implements SandboxProvider {
       const c = await this.load(id);
       const src = sandboxPath(sandboxSrc, 'source');
       if (src === '/') throw new AboxError('invalid_input', 'Cannot copy out /');
+      const tmpfs = tmpfsRootOf(c, src);
+      if (tmpfs !== undefined) {
+        await this.copyOutTmpfs(c, tmpfs, src, hostPath);
+        return;
+      }
       const stream = (await this.docker
         .getContainer(c.Id)
         .getArchive({ path: src })) as unknown as Readable;
       await extractArchiveSafe(stream, hostPath);
     });
+  }
+
+  /** A tmpfs only exists while the container runs: there is nothing to copy to or from otherwise. */
+  private requireRunningForTmpfs(c: Docker.ContainerInspectInfo, root: string, p: string): void {
+    if (c.State.Running) return;
+    throw new AboxError('conflict', `Sandbox ${c.Config.Labels?.[LABEL.id] ?? ''} is not running`, {
+      hint: `${p} is below the tmpfs ${root}, which only exists while the sandbox runs. Start the sandbox first, or use a path outside ${root} (e.g. the workspace).`,
+    });
+  }
+
+  private tmpfsExecError(what: string, r: { exitCode: number; stderr: Buffer }): AboxError {
+    const stderr = r.stderr.toString('utf8').trim().slice(0, 500);
+    if (r.exitCode === 127)
+      return new AboxError('unsupported', `${what}: tar is not installed in the sandbox image`, {
+        hint: 'Use a path outside /tmp (the workspace), or add tar to the template.',
+      });
+    return new AboxError('backend_error', `${what} failed (exit ${r.exitCode})`, {
+      ...(/no space left/i.test(stderr)
+        ? { hint: 'The /tmp tmpfs is full (its size is limited).' }
+        : {}),
+      details: { stderr },
+    });
+  }
+
+  private async copyInTmpfs(
+    c: Docker.ContainerInspectInfo,
+    root: string,
+    hostPath: string,
+    dest: string,
+    ids: { uid: number; gid: number },
+  ): Promise<void> {
+    this.requireRunningForTmpfs(c, root, dest);
+    if (dest === root)
+      throw new AboxError('invalid_input', `Cannot copy onto the tmpfs mount point ${root}`, {
+        hint: `Copy to a path below it, e.g. ${root}/${path.basename(hostPath) || 'name'}.`,
+      });
+    const source = path.resolve(hostPath);
+    await fs.lstat(source); // a missing source is not_found, before anything runs in the sandbox
+    // Archived exactly like for the archive API: host symlinks stay symlinks and are never
+    // followed, special files are skipped, setuid/setgid are dropped, one top-level entry.
+    // Consumed from the first moment (as `putArchiveStream` does): a failure of the host side
+    // (a symlink as source, an unreadable directory) must never become an unhandled error.
+    let sourceError: Error | undefined;
+    const archive = new PassThrough();
+    pipeline(packHostPath(source, path.posix.basename(dest), ids), archive, (err) => {
+      if (err) sourceError = err;
+    });
+    let r: { exitCode: number; stderr: Buffer };
+    try {
+      // The archive API cannot see a tmpfs, so the archive is unpacked by tar inside the sandbox
+      // (as the sandbox user: owner and permissions of a normal user, nothing it could not do anyway).
+      const ex = await streamExec(
+        this.docker,
+        c.Id,
+        ['/bin/sh', '-c', TMPFS_UNPACK_SCRIPT, 'abox-copy-in', path.posix.dirname(dest)],
+        { stdin: archive },
+      );
+      ex.stdout.resume();
+      r = await ex.result;
+    } finally {
+      archive.destroy();
+    }
+    if (sourceError) throw sourceError; // the host side failed (e.g. a symlink as source): the real reason
+    if (r.exitCode !== 0) throw this.tmpfsExecError(`Copying into ${dest}`, r);
+  }
+
+  private async copyOutTmpfs(
+    c: Docker.ContainerInspectInfo,
+    root: string,
+    src: string,
+    hostPath: string,
+  ): Promise<void> {
+    this.requireRunningForTmpfs(c, root, src);
+    const ex = await streamExec(this.docker, c.Id, [
+      '/bin/sh',
+      '-c',
+      TMPFS_PACK_SCRIPT,
+      'abox-copy-out',
+      src,
+    ]);
+    try {
+      // Same host-side rules as for the archive API: nothing is written or linked outside the destination.
+      await extractArchiveSafe(ex.stdout, hostPath);
+    } catch (e) {
+      ex.stdout.destroy();
+      const r = await ex.result.catch(() => undefined);
+      if (r?.exitCode === 3) throw new AboxError('not_found', `No such file or directory: ${src}`);
+      throw e;
+    }
+    const r = await ex.result;
+    if (r.exitCode === 3) throw new AboxError('not_found', `No such file or directory: ${src}`);
+    if (r.exitCode !== 0) throw this.tmpfsExecError(`Copying out ${src}`, r);
   }
 
   async readFile(
@@ -1690,7 +1823,7 @@ export class DockerProvider implements SandboxProvider {
       const c = await this.load(id);
       const p = sandboxPath(sandboxFile, 'file');
       // /tmp is a tmpfs: the archive API only sees the (hidden) image directory behind it.
-      if (c.State.Running && underTmp(p)) return this.readTmpFile(c.Id, p, maxBytes);
+      if (c.State.Running && tmpfsRootOf(c, p)) return this.readTmpFile(c.Id, p, maxBytes);
       return getFile(this.docker.getContainer(c.Id), p, maxBytes);
     });
   }
@@ -1700,7 +1833,7 @@ export class DockerProvider implements SandboxProvider {
       const c = await this.load(id);
       const p = sandboxPath(sandboxFile, 'file');
       if (p === '/') throw new AboxError('invalid_input', 'Invalid file path');
-      if (c.State.Running && underTmp(p)) {
+      if (c.State.Running && tmpfsRootOf(c, p)) {
         await this.writeTmpFile(c.Id, p, data, mode & 0o777);
         return;
       }

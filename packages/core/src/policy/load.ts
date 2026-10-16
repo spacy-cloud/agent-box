@@ -129,7 +129,7 @@ export function loadPolicy(path: string = defaultPolicyPath()): Policy {
   return parsePolicy(text, { kind: 'file', path });
 }
 
-/** Parses and validates policy text. Exported for tests and for `abox policy check`. */
+/** Parses and validates policy text. Exported for tests and for `abox policy validate`. */
 export function parsePolicy(text: string, source: PolicySource): Policy {
   const where = source.kind === 'file' ? source.path : 'built-in default policy';
   const lc = new LineCounter();
@@ -244,7 +244,7 @@ function invalid(where: string, issues: ErrorIssue[]): AboxError {
     `invalid policy in ${where}: ${issues.length} problem(s), first: ${first?.path ? first.path + ': ' : ''}${first?.message ?? 'unknown'}${loc}`,
     {
       issues,
-      hint: 'Fix policy.yaml (only a human may edit it); `abox policy check` re-validates it.',
+      hint: 'Fix policy.yaml (only a human may edit it); `abox policy validate` re-validates it.',
     },
   );
 }

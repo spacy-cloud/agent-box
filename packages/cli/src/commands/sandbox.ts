@@ -209,8 +209,11 @@ export function registerSandbox(program: Command, cli: Cli): void {
             );
           }
           for (const h of list.unreachableHosts) {
+            const why = list.hostProblems?.[h];
+            const shown = list.sandboxes.some((s) => s.host === h);
             lines.push(
-              `host ${safe(h)} is unreachable; its sandboxes are shown as last known (stale)`,
+              `host ${safe(h)} is unreachable${why ? ` (${safe(why)})` : ''}${shown ? '; its sandboxes are shown as last known (stale)' : ': this list may be incomplete'}`,
+              '  check it with "abox host test"',
             );
           }
           return lines.join('\n');

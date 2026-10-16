@@ -1,6 +1,6 @@
 ---
 name: use-sandbox
-description: Use before running untrusted or unknown code, installing dependencies, running third-party scripts or tests, curl-pipe-sh, or risky experiments. Runs them in an isolated abox sandbox instead of the host.
+description: Run risky work in an isolated abox sandbox, not on the host. Covers curl|sh and install scripts, installing packages or tools, unknown or third-party code and tests, risky experiments. Use before such a Bash call, even if the user gave the command.
 ---
 
 # Use an abox sandbox for risky work
@@ -30,7 +30,7 @@ Skip the sandbox for plain reading/editing of the user's own code and for trivia
 3. **Snapshot before risky steps** with `sandbox_snapshot` (if `unsupported`, carry on without). Undo with `sandbox_restore`.
 4. **Work inside.** `sandbox_exec` with `argv` (preferred over `cmd`), `cwd`, `timeout`. Servers or watchers: `sandbox_process_start`, then `sandbox_process_logs`, then `sandbox_process_stop`. Files: `sandbox_read_file`, `sandbox_write_file`, `sandbox_list_dir`.
 5. **Hand results back as a diff.** `sandbox_export` with `format: "diff"` (or `patch`/`branch`). Show it to the human and let them decide. Do not apply it to the host yourself unless asked. Point out every entry in `flagged` (CI files, hooks, build scripts, editor configs): they can run code on the host once used.
-6. **Clean up.** Always finish with `sandbox_delete` (also after errors), unless the human wants to keep it. Check leftovers with `sandbox_list`. A stopped sandbox (`sandbox_stop`) can be resumed with `sandbox_start` until its TTL ends.
+6. **Clean up.** Always finish with `sandbox_delete` (also after errors) once the result is delivered: an untruncated `diff`/`patch` is self-contained, so do not leave the sandbox running just to wait for review. Keep it only if the human asked to. Check leftovers with `sandbox_list`. A stopped sandbox (`sandbox_stop`) can be resumed with `sandbox_start` until its TTL ends.
 
 ## Rules
 

@@ -299,6 +299,29 @@ function invariant(f: Findings, item: Omit<ApprovalItem, 'invariant'>): void {
   f.need({ ...item, invariant: true });
 }
 
+/**
+ * Concept: network mode `open` wants at least isolation `hardened`. Agents are held to that through
+ * `isolation.network_open` (deny). The human profile does not enforce isolation minimums (it may
+ * run anything it confirms), but open network below the minimum is never silent: it is an
+ * invariant approval item, i.e. an explicit human confirmation in every approval mode.
+ */
+export const NETWORK_OPEN_MIN_ISOLATION: IsolationLevel = 'hardened';
+
+function humanOpenNetworkBelowMinimum(
+  f: Findings,
+  ctx: AgentContext,
+  isolation: IsolationLevel | undefined,
+  what: string,
+): void {
+  if (ctx.kind !== 'human') return;
+  if (isolation !== undefined && isolationAtLeast(isolation, NETWORK_OPEN_MIN_ISOLATION)) return;
+  invariant(f, {
+    kind: 'network_open',
+    reason: `${what} with isolation "${isolation ?? 'unknown'}", below "${NETWORK_OPEN_MIN_ISOLATION}" which network mode "open" needs by default`,
+    risk: 'Unrestricted internet access without a hardened sandbox: code in it can reach any destination, exfiltrate data and attack your local network.',
+  });
+}
+
 function checkMount(
   ctx: AgentContext,
   m: { hostPath: string; target: string; access: AccessMode },
@@ -509,6 +532,12 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
       reason: `network mode "open" (unrestricted internet access) for profile "${p.name}"`,
       risk: 'Code in the sandbox can reach any internet destination and exfiltrate data.',
     });
+    humanOpenNetworkBelowMinimum(
+      f,
+      ctx,
+      req.providerIsolation,
+      `network mode "open" for template "${req.template.name}"`,
+    );
   }
   if ((net.privateExceptions?.length ?? 0) > 0) {
     privateExceptions = checkPrivateExceptions(net.privateExceptions, f);
@@ -817,6 +846,12 @@ export function evaluateAccessRequest(
           reason: `switching sandbox ${sandbox.id} to network mode "open"`,
           risk: 'Code in the sandbox can reach any internet destination and exfiltrate data.',
         });
+        humanOpenNetworkBelowMinimum(
+          f,
+          ctx,
+          sandbox.isolation,
+          `switching sandbox ${sandbox.id} to network mode "open"`,
+        );
       } else if (mode === 'allowlist') {
         const dom = evaluateDomains(ctx, d.domains ?? [], f);
         domainApproval(ctx, dom.beyond, dom.profileHasNone, f);

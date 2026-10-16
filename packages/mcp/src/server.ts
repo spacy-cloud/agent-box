@@ -116,7 +116,7 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
   registerTools(register);
   registerResources(server, abox, caller);
   registerPrompts(server);
-  structureArgumentErrors(server);
+  structureArgumentErrors(server, abox, caller);
   return server;
 }
 
@@ -124,7 +124,7 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
  * The SDK reports argument validation failures as text-only error results. Add the same structured shape
  * every other error has (`{ok:false, code:'invalid_input', message}`) so agents get one format.
  */
-function structureArgumentErrors(server: McpServer): void {
+function structureArgumentErrors(server: McpServer, abox: Abox, caller: Caller): void {
   const handlers = (server.server as unknown as { _requestHandlers?: Map<string, unknown> })
     ._requestHandlers;
   const orig = handlers?.get('tools/call') as
@@ -135,6 +135,17 @@ function structureArgumentErrors(server: McpServer): void {
     if (r.isError && !r.structuredContent) {
       const text = r.content.find((c) => c.type === 'text');
       const message = text && 'text' in text ? text.text : 'tool call failed';
+      // A tool that does not exist (policy_set, approve, ssh_exec, ...): the probe is audited, never its argument values.
+      if (message.includes(`Tool ${req.params.name} not found`)) {
+        const args = req.params.arguments;
+        await abox
+          .auditUnknownTool(
+            caller,
+            req.params.name,
+            args && typeof args === 'object' ? Object.keys(args) : [],
+          )
+          .catch(() => undefined);
+      }
       return renderResult(
         fail(/not found|disabled/i.test(message) ? 'not_found' : 'invalid_input', message, {
           hint: 'Check the tool name and arguments against tools/list.',

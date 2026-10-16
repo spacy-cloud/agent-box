@@ -128,6 +128,18 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
         /uid=1000\(dev\) gid=1000\(dev\)[\s\S]*dev:x:1000:1000[\s\S]*\/home\/dev\n\/workspace/,
       );
       expect((await run(s, 'getent passwd ubuntu; echo rc=$?')).stdout).toBe('rc=2\n');
+      // GNU tar (not busybox): copyIn / copyOut under the /tmp tmpfs
+      const dir = path.join(tmp, 'gnu-tar');
+      await fs.mkdir(path.join(dir, 'sub'), { recursive: true });
+      await fs.writeFile(path.join(dir, 'sub', 'f.txt'), 'gnu', { mode: 0o640 });
+      await fs.symlink('sub/f.txt', path.join(dir, 'link'));
+      await provider.copyIn(s.id, dir, '/tmp/gnu');
+      expect(
+        (await run(s, 'cat /tmp/gnu/sub/f.txt; stat -c "%U %a" /tmp/gnu/sub/f.txt')).stdout,
+      ).toBe('gnudev 640\n');
+      await provider.copyOut(s.id, '/tmp/gnu', path.join(tmp, 'gnu-tar-out'));
+      expect(await fs.readFile(path.join(tmp, 'gnu-tar-out', 'sub', 'f.txt'), 'utf8')).toBe('gnu');
+      expect(await fs.readlink(path.join(tmp, 'gnu-tar-out', 'link'))).toBe('sub/f.txt');
     }, 300_000);
 
     it('template.env is baked into the image and applied at runtime; spec.env wins', async () => {
@@ -940,6 +952,129 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
         .resolves.toBeUndefined()
         .catch(() => undefined);
       await expect(fs.access(path.join(tmp, 'escape'))).rejects.toThrow();
+    });
+
+    it('copyIn / copyOut reach the /tmp tmpfs of a running sandbox (the archive API only sees the hidden image dir)', async () => {
+      const s = await sb();
+      const src = path.join(tmp, 'tmpfs-in');
+      await fs.mkdir(path.join(src, 'd', 'empty'), { recursive: true });
+      await fs.writeFile(path.join(src, 'd', 'f.txt'), 'tmp-file');
+      await fs.writeFile(path.join(src, 'secret'), 'x', { mode: 0o600 });
+      await fs.writeFile(path.join(src, 'script.sh'), '#!/bin/sh\n', { mode: 0o755 });
+      await fs.symlink('f.txt', path.join(src, 'd', 'rel'));
+      await fs.symlink('/etc/passwd', path.join(src, 'abs'));
+      await provider.copyIn(s.id, src, '/tmp/in');
+      // visible to the sandbox itself, owned by its user, modes and symlinks preserved
+      const seen = await run(
+        s,
+        'cat /tmp/in/d/f.txt; echo; stat -c "%U %a" /tmp/in /tmp/in/secret /tmp/in/script.sh /tmp/in/d/empty /tmp/in/d/f.txt; for l in /tmp/in/d/rel /tmp/in/abs; do readlink $l; done',
+      );
+      expect(seen.stdout).toBe(
+        'tmp-file\ndev 755\ndev 600\ndev 755\ndev 755\ndev 644\nf.txt\n/etc/passwd\n',
+      );
+      // ... and through the other file APIs
+      expect((await provider.readFile(s.id, '/tmp/in/d/f.txt', 100)).data.toString()).toBe(
+        'tmp-file',
+      );
+      expect((await provider.listDir(s.id, '/tmp/in')).map((e) => e.name)).toEqual([
+        'abs',
+        'd',
+        'script.sh',
+        'secret',
+      ]);
+      // the hidden image directory below the mount was not touched
+      const hidden = await raw
+        .getContainer(`abox-local-${s.id.split('/')[1]}`)
+        .getArchive({ path: '/tmp/in' })
+        .then(
+          () => true,
+          () => false,
+        );
+      expect(hidden).toBe(false);
+
+      // single file, and overwriting an existing file
+      await provider.copyIn(s.id, path.join(src, 'd', 'f.txt'), '/tmp/single.txt');
+      await fs.writeFile(path.join(src, 'd', 'f.txt'), 'v2');
+      await provider.copyIn(s.id, path.join(src, 'd', 'f.txt'), '/tmp/single.txt');
+      expect((await run(s, 'cat /tmp/single.txt')).stdout).toBe('v2');
+      // deeper, not yet existing destination directories are created
+      await provider.copyIn(s.id, path.join(src, 'd', 'f.txt'), '/tmp/new/dir/f.txt');
+      expect((await run(s, 'cat /tmp/new/dir/f.txt')).stdout).toBe('v2');
+
+      // out: what the sandbox wrote itself (the absolute symlink is refused by the safety rules)
+      await run(
+        s,
+        'rm /tmp/in/abs; mkdir /tmp/made && echo made > /tmp/made/m.txt && head -c 300000 /dev/urandom > /tmp/made/big.bin',
+      );
+      const out = path.join(tmp, 'tmpfs-out');
+      await provider.copyOut(s.id, '/tmp/in', out);
+      expect(await fs.readFile(path.join(out, 'd', 'f.txt'), 'utf8')).toBe('tmp-file');
+      expect((await fs.lstat(path.join(out, 'd', 'rel'))).isSymbolicLink()).toBe(true);
+      expect((await fs.stat(path.join(out, 'secret'))).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(path.join(out, 'd', 'empty'))).isDirectory()).toBe(true);
+      const made = path.join(tmp, 'tmpfs-made');
+      await provider.copyOut(s.id, '/tmp/made', made);
+      expect(await fs.readFile(path.join(made, 'm.txt'), 'utf8')).toBe('made\n');
+      expect((await fs.stat(path.join(made, 'big.bin'))).size).toBe(300000);
+      const one = path.join(tmp, 'tmpfs-one.txt');
+      await provider.copyOut(s.id, '/tmp/single.txt', one);
+      expect(await fs.readFile(one, 'utf8')).toBe('v2');
+      // a file named like an option does not confuse tar
+      await run(s, 'echo dash > /tmp/-n');
+      await provider.copyOut(s.id, '/tmp/-n', path.join(tmp, 'tmpfs-dash'));
+      expect(await fs.readFile(path.join(tmp, 'tmpfs-dash'), 'utf8')).toBe('dash\n');
+      // a whole round trip of binary content
+      const blob = Buffer.from(Array.from({ length: 70_000 }, (_, i) => (i * 31) % 256));
+      await fs.writeFile(path.join(tmp, 'blob.bin'), blob);
+      await provider.copyIn(s.id, path.join(tmp, 'blob.bin'), '/tmp/blob.bin');
+      await provider.copyOut(s.id, '/tmp/blob.bin', path.join(tmp, 'blob.back'));
+      expect((await fs.readFile(path.join(tmp, 'blob.back'))).equals(blob)).toBe(true);
+    });
+
+    it('copyIn / copyOut under /tmp: errors are clear (missing, stopped, mount point, tmpfs full, escapes)', async () => {
+      const s = await sb();
+      await expect(
+        provider.copyOut(s.id, '/tmp/missing', path.join(tmp, 'tmpfs-missing')),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        provider.copyIn(s.id, path.join(tmp, 'does-not-exist'), '/tmp/x'),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(provider.copyIn(s.id, tmp, '/tmp')).rejects.toMatchObject({
+        code: 'invalid_input',
+      });
+      // a symlink is refused as the source (it is never followed)
+      await fs.symlink('/etc/passwd', path.join(tmp, 'tmpfs-link'));
+      await expect(
+        provider.copyIn(s.id, path.join(tmp, 'tmpfs-link'), '/tmp/l'),
+      ).rejects.toMatchObject({ code: 'invalid_input' });
+      // the sandbox cannot make copyOut write outside the destination
+      await run(
+        s,
+        'mkdir /tmp/evil && ln -s /etc/passwd /tmp/evil/abs && ln -s ../../../escape /tmp/evil/up',
+      );
+      await expect(
+        provider.copyOut(s.id, '/tmp/evil', path.join(tmp, 'tmpfs-evil')),
+      ).rejects.toMatchObject({ code: 'policy_denied' });
+      await expect(fs.access(path.join(tmp, 'escape'))).rejects.toThrow();
+      // the tmpfs size is limited: a copy that does not fit fails loudly instead of truncating
+      await fs.writeFile(path.join(tmp, 'tmpfs-big.txt'), 'small');
+      const big = path.join(tmp, 'tmpfs-big.bin');
+      const mib = (await run(s, 'df -m /tmp | tail -1 | tr -s " " | cut -d" " -f2')).stdout.trim();
+      await fs.writeFile(big, Buffer.alloc((Number(mib) + 8) * 1024 * 1024, 1));
+      await expect(provider.copyIn(s.id, big, '/tmp/big.bin')).rejects.toMatchObject({
+        code: 'backend_error',
+      });
+      await fs.rm(big);
+      // stopped (or never started): the tmpfs does not exist, so nothing can be copied silently into the void
+      await provider.stop(s.id);
+      await expect(provider.copyIn(s.id, tmp, '/tmp/stopped')).rejects.toMatchObject({
+        code: 'conflict',
+      });
+      await expect(
+        provider.copyOut(s.id, '/tmp/in', path.join(tmp, 'tmpfs-stopped')),
+      ).rejects.toMatchObject({ code: 'conflict' });
+      // outside the tmpfs a stopped sandbox keeps working
+      await provider.copyIn(s.id, path.join(tmp, 'tmpfs-big.txt'), '/workspace/stopped.txt');
     });
 
     it('copy delivery: files owned by the user, symlinks stay symlinks, nothing outside is read', async () => {

@@ -26,6 +26,9 @@ sandboxes as orphans, and `reconcile --remove-orphans` or `gcImages` could delet
   `remove`, which stays idempotent for ids that do not exist at all). `gcImages` only deletes images
   stamped with its own id; environment images are a shared cache (the same template hash gives the
   same tag, a second instance reuses the image), but only the instance that built one may delete it.
+  A container inherits the labels of its image, so containers always carry `abox.instance`
+  explicitly (empty for a provider without an id) instead of inheriting the id of the instance
+  that built the image.
 - Objects **without** the label (created by an older version or by another tool) belong to nobody:
   they are never listed, removed or garbage-collected. `status()` only reports them as a warning
   ("N abox resources (sandboxes) of another or unknown instance present"). A provider without an
@@ -117,8 +120,19 @@ Copy delivery and `none` delivery always keep files owned by the template (sandb
 - `spec.files` under `/tmp` cannot be written at creation because `/tmp` is a tmpfs that is
   mounted at start. They are stored next to the image (`/usr/local/share/abox/tmpfiles`, label
   `abox.tmp-files=1`) and copied into `/tmp` by `start` on every start. `readFile`/`writeFile` on
-  `/tmp` of a running sandbox go through the container (the archive API cannot see a tmpfs);
-  `copyIn`/`copyOut` and `listDir` on a stopped sandbox cannot reach `/tmp` content.
+  `/tmp` of a running sandbox go through the container (the archive API cannot see a tmpfs: it
+  would read and write the image directory hidden below the mount, so a copy would "succeed" and
+  vanish).
+- `copyIn`/`copyOut` below a tmpfs mount (`/tmp`) of a running sandbox stream a tar archive through
+  `tar` inside the container, run as the sandbox user (so the files belong to it, with the modes of
+  the source). The host side keeps all its rules: host symlinks are archived, never followed,
+  special files are skipped, setuid/setgid are dropped, and `copyOut` still refuses anything that
+  would write or link outside the destination. The size is bounded by the tmpfs itself (a copy that
+  does not fit fails with `backend_error`, never truncates silently). This needs `tar` in the image
+  (busybox and GNU tar work; otherwise `unsupported`). On a stopped or not yet started sandbox the
+  tmpfs does not exist: `copyIn`/`copyOut` there reject with `conflict` ("start it first, or use a
+  path outside /tmp"); copying onto the mount point `/tmp` itself is `invalid_input`. `listDir`
+  on a stopped sandbox still cannot see `/tmp` content.
 - `create` with an `expiresAt` in the past succeeds; the sandbox reports `expired` and cannot be
   started.
 

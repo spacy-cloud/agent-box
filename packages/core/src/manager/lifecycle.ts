@@ -6,6 +6,7 @@ import type { SandboxRecord } from '../state/sandbox-registry.js';
 import {
   canonicalizePath,
   evaluateCreate,
+  isWithinFolded,
   type AgentContext,
   type CreateEvaluation,
 } from '../policy/index.js';
@@ -364,6 +365,23 @@ export async function createSandbox(
       );
     }
     wsHostPath = canonicalizePath(raw, { home: I.home, cwd: base });
+  }
+  if (wsHostPath) {
+    const used = workspaceInUse(I, ctx, wsHostPath);
+    if (used) {
+      const by = used.visible ? `sandbox ${used.id}` : 'another sandbox';
+      const msg = `workspace ${wsHostPath} is already used by ${by}; remove it or choose another path/mode`;
+      I.audit(owner, 'sandbox.create', {
+        decision: 'deny',
+        details: { template: req.template, host: hostId, reasons: [msg], code: 'workspace_in_use' },
+      });
+      throw new AboxError('conflict', msg, {
+        hint: used.visible
+          ? `A sandbox in workspace mode "mount" works on the directory itself; "abox rm ${used.id}" frees it.`
+          : 'A sandbox in workspace mode "mount" works on that directory itself.',
+        details: { path: wsHostPath, ...(used.visible ? { sandboxId: used.id } : {}) },
+      });
+    }
   }
   const deliveryKind = deliveryKindFor(wsMode);
   if (!caps.workspaceDelivery.includes(deliveryKind)) {
@@ -801,6 +819,27 @@ async function cleanupFailedCreate(
   });
 }
 
+/**
+ * A project directory that another live sandbox works on directly (workspace mode `mount`) cannot
+ * be used as a workspace again. Callers see the sandbox id only for their own sandboxes (humans:
+ * all); for other owners the generic policy denial applies, so agents learn nothing about them.
+ */
+function workspaceInUse(
+  I: Internals,
+  ctx: { kind: 'human' | 'agent'; owner: string },
+  path: string,
+): { id: SandboxId; visible: boolean } | undefined {
+  for (const r of I.state.sandboxes.list({ includeRemoved: false })) {
+    if (r.state === 'failed' || r.state === 'removed') continue;
+    const ws = r.workspace as Partial<WorkspaceRecord> | null;
+    if (ws?.mode !== 'mount' || !ws.liveTree) continue;
+    if (isWithinFolded(path, ws.liveTree) || isWithinFolded(ws.liveTree, path)) {
+      if (ctx.kind === 'human' || r.owner === ctx.owner) return { id: r.id, visible: true };
+    }
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // list / inspect
 // ---------------------------------------------------------------------------
@@ -835,8 +874,35 @@ export async function listSandboxes(
       /* no local host */
     }
   }
+  // An explicit host filter must name a configured host (unknown -> not_found); a configured host
+  // that cannot be resolved, or has no usable backend, is reported instead of an empty list.
+  const hostProblems: Record<string, string> = {};
+  if (filter.host) {
+    try {
+      const h = await I.resolveHost(filter.host);
+      const usable = h.backends.filter((b) => I.providerFactories[b]);
+      if (usable.length === 0) {
+        hostProblems[filter.host] = `host '${filter.host}' has no usable backend`;
+      } else if (ctx.kind === 'human' && !filter.owner) {
+        for (const b of usable)
+          groups.set(`${filter.host}|${b}`, { host: filter.host, backend: b });
+      }
+    } catch (e) {
+      if (isAboxError(e) && e.code === 'not_found') {
+        throw new AboxError('not_found', `unknown host '${filter.host}'`, {
+          hint: 'List the configured hosts with "abox host ls".',
+          cause: e,
+        });
+      }
+      hostProblems[filter.host] = errMessage(e);
+    }
+  }
   const listed = new Map<string, Map<SandboxId, SandboxInfo> | { error: string }>();
   for (const [key, g] of groups) {
+    if (hostProblems[g.host] !== undefined) {
+      listed.set(key, { error: hostProblems[g.host]! });
+      continue;
+    }
     try {
       const host = await I.resolveHost(g.host);
       const provider = I.providerFor(host, g.backend);
@@ -847,7 +913,16 @@ export async function listSandboxes(
     }
   }
 
-  const unreachable = new Set<string>();
+  const unreachable = new Set<string>(Object.keys(hostProblems));
+  if (filter.host && hostProblems[filter.host] === undefined) {
+    // all backends of the filtered host failed to list: say so instead of showing an empty list
+    const own = [...listed].filter(([k]) => groups.get(k)?.host === filter.host);
+    const failed = own.flatMap(([, l]) => ('error' in l ? [l.error] : []));
+    if (own.length > 0 && failed.length === own.length) {
+      unreachable.add(filter.host);
+      hostProblems[filter.host] = failed[0]!;
+    }
+  }
   const knownIds = new Set(recs.map((r) => r.id));
   const sandboxes: SandboxView[] = [];
   for (const r of recs) {
@@ -857,6 +932,7 @@ export async function listSandboxes(
       sandboxes.push(I.toView(r));
     } else if ('error' in l) {
       unreachable.add(r.host);
+      hostProblems[r.host] ??= l.error;
       sandboxes.push(I.toView({ ...r, stale: true }, { hostReachable: false }));
     } else {
       const info = l.get(r.id);
@@ -900,7 +976,12 @@ export async function listSandboxes(
         states?.includes('removed') ||
         (v.state !== 'removed' && (v.state !== 'failed' || states?.includes('failed')))),
   );
-  return { sandboxes: out, orphans, unreachableHosts: [...unreachable] };
+  return {
+    sandboxes: out,
+    orphans,
+    unreachableHosts: [...unreachable],
+    ...(Object.keys(hostProblems).length > 0 ? { hostProblems } : {}),
+  };
 }
 
 export async function inspectSandbox(

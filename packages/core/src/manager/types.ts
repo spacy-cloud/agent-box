@@ -317,6 +317,8 @@ export interface SandboxList {
   orphans: OrphanView[];
   /** Hosts that could not be reached; their sandboxes are listed from the registry as `stale`. */
   unreachableHosts: string[];
+  /** Why a host is in `unreachableHosts` (resolution error or "no usable backend"), by host id. */
+  hostProblems?: Record<string, string>;
 }
 
 export interface InspectResult extends SandboxView {

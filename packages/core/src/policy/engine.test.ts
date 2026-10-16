@@ -559,6 +559,69 @@ describe('network', () => {
       );
     });
   });
+  describe('mode open for the human profile', () => {
+    const humanOpen = (isolation: CreateRequest['providerIsolation']): CreateEvaluation =>
+      evaluateCreate(
+        mkReq(env, humanContext(env), {
+          network: { mode: 'open', allow: [] },
+          providerIsolation: isolation,
+        }),
+      );
+    it.each(['container'] as const)(
+      'needs an explicit confirmation below hardened (%s), never silent',
+      (isolation) => {
+        const r = humanOpen(isolation);
+        expect(r.decision).toBe('approval');
+        const items = r.decision === 'approval' ? r.items : [];
+        const item = items.find((i) => i.kind === 'network_open');
+        expect(item?.invariant).toBe(true);
+        expect(item?.reason).toContain(`isolation "${isolation}"`);
+        expect(item?.reason).toContain('"hardened"');
+        expect(item?.risk).toContain('Unrestricted internet access');
+      },
+    );
+    it('is allowed with hardened or vm isolation', () => {
+      expect(humanOpen('hardened').decision).toBe('allow');
+      expect(humanOpen('vm').decision).toBe('allow');
+    });
+    it('is satisfied by humanConfirmed, which agents cannot use', () => {
+      const req = mkReq(env, humanContext(env), {
+        network: { mode: 'open', allow: [] },
+        providerIsolation: 'container',
+        humanConfirmed: true,
+      });
+      expect(evaluateCreate(req).decision).toBe('allow');
+      const agent = mkReq(
+        env,
+        makeContext(env, { network: { modes: ['none', 'allowlist', 'open'] } }),
+        {
+          network: { mode: 'open', allow: [] },
+          providerIsolation: 'container',
+          humanConfirmed: true,
+        },
+      );
+      expect(evaluateCreate(agent).decision).toBe('deny'); // agent rules unchanged
+    });
+    it('also applies when a human switches a running sandbox to open', () => {
+      const sandbox: SandboxRef = {
+        id: 'local/abcd1234',
+        owner: 'human',
+        isolation: 'container',
+        network: { mode: 'none', allow: [] },
+      };
+      const r = evaluateAccessRequest(humanContext(env), sandbox, {
+        kind: 'network',
+        details: { mode: 'open' },
+      });
+      expect(r.decision).toBe('approval');
+      const hardened = evaluateAccessRequest(
+        humanContext(env),
+        { ...sandbox, isolation: 'hardened' },
+        { kind: 'network', details: { mode: 'open' } },
+      );
+      expect(hardened.decision).toBe('allow');
+    });
+  });
   describe('private address exceptions', () => {
     it('always need approval, in every mode', () => {
       expectInvariant(

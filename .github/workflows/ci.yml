@@ -27,9 +27,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: ESLint
         run: pnpm lint
-      - name: Prettier (informational for now)
+      - name: Prettier
         run: pnpm format:check
-        continue-on-error: true
 
   build:
     name: Build

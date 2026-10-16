@@ -96,6 +96,22 @@ describe.skipIf(!dockerEnabled)('instance separation on one engine (real docker)
     expect((await raw.getImage(snap).inspect()).Config.Labels['abox.instance']).toBe(idA);
   }, 120_000);
 
+  it('a sandbox created from an image that another instance built belongs to its own instance (labels are inherited from the image)', async () => {
+    // The environment image cache is keyed by template hash only, so instance B and the legacy
+    // provider (no id) create from the image that A built and that carries abox.instance=A.
+    const viaB = await sandbox(B, tA, imgA);
+    expect((await inspectRaw(viaB)).Config.Labels['abox.instance']).toBe(idB);
+    expect((await B.inspect(viaB.id)).id).toBe(viaB.id);
+    const viaL = await sandbox(legacy, tA, imgA);
+    // not the foreign id of the image: the explicit empty value overrides the inherited label
+    expect((await inspectRaw(viaL)).Config.Labels['abox.instance']).toBe('');
+    expect((await legacy.inspect(viaL.id)).id).toBe(viaL.id);
+    expect(await ids(legacy)).toContain(viaL.id);
+    expect(await ids(A)).not.toContain(viaL.id);
+    expect(await ids(A)).not.toContain(viaB.id);
+    await expect(A.inspect(viaL.id)).rejects.toMatchObject({ code: 'not_found' });
+  }, 120_000);
+
   it('list/inspect only see the own instance; legacy objects are invisible', async () => {
     const a = await sandbox(A, tA, imgA);
     const b = await sandbox(B, tB, imgB);

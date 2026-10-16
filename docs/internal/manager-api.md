@@ -54,7 +54,7 @@ interface Caller {
 - **Built-in agent contexts.** Without a `policy.yaml` the built-in default policy defines the agent contexts
   `default`, `claude-code`, `codex`, `cursor` and `orca`, all mapped to the built-in profile `default`
   (`BUILTIN_AGENT_CONTEXTS`), so `abox mcp serve --agent claude-code` works out of the box. A `policy.yaml` replaces the
-  built-in policy as a whole: it must define the contexts it wants (`abox policy init` writes the built-in text as a
+  built-in policy as a whole: it must define the contexts it wants (`abox policy edit` starts from the built-in text as a
   starting point). Every other id stays unknown.
 - `human` is built in. Agent owners are `agent:<id>`. Audit `actor` = owner (`human` / `agent:<id>` /
   `system` for TTL, gc, reconcile).
@@ -155,7 +155,9 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
 - `listSandboxes(caller, {state?, template?, host?, owner?(human), includeRemoved?}) -> {sandboxes, orphans, unreachableHosts}`:
   backend `list()` decides existence and live state; the registry adds metadata. A registry sandbox the
   backend does not report is `stale` + `missingInBackend`; an unreachable host marks its sandboxes `stale`
-  (last known state). `orphans` (backend sandboxes unknown to the registry) are shown to humans only.
+  (last known state). With `host` set, the host must exist (`not_found` otherwise); a host that cannot be
+  resolved or has no usable backend is returned in `unreachableHosts` with the reason in the optional
+  `hostProblems` (host -> message) instead of an empty list. `orphans` (backend sandboxes unknown to the registry) are shown to humans only.
   `failed`/`removed` rows are hidden unless asked for.
 - `inspectSandbox(caller, id) -> SandboxView & {processes, pendingApprovals}` (also collects the proxy's egress decisions, see
   "Network egress in the audit log"): state, template, owner, isolation,
@@ -287,7 +289,11 @@ covered when both are (by `host`, or by `host:80` plus `host:443`); `host:8443` 
 profiles/contexts), `validatePolicy(text)` (pure, no caller), `setPolicy(caller, text)` (human: validates,
 writes `policy.yaml` atomically with mode 0600, records a `PolicyRevision`, audits `policy.set`; any agent
 attempt -> `policy_denied` **and** audit `policy_change_denied`), `listPolicyRevisions(caller)` /
-`getPolicyRevision(caller, rev)` (human only, see above).
+`getPolicyRevision(caller, rev)` (human only, see above). `auditUnknownTool(caller, tool, argNames?)` is for
+surfaces: the MCP server calls it when an agent calls a tool that does not exist (`policy_set`, `approve`,
+`ssh_exec`, ...). It writes `mcp.unknown_tool` (`decision` `deny`, `details`: `tool` (sanitized, at most 64
+characters), `context`, `argNames` (names only, never values), `suppressed` when entries were dropped), rate
+limited per agent owner (the same tool once a minute, at most 10 entries a minute); no-op for `human`.
 
 ### Audit
 

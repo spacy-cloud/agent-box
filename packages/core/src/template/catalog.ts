@@ -115,7 +115,7 @@ export class TemplateCatalog {
       throw new AboxError('not_found', `Template "${name}" not found`, {
         hint: known.length
           ? `Available templates: ${known.join(', ')}`
-          : 'No templates found; check `abox template list`.',
+          : 'No templates found; check `abox template ls`.',
         details: { name },
       });
     }

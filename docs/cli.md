@@ -41,6 +41,13 @@ network, secrets as environment variables, ...) make a command ask `Proceed? [y/
 Without a terminal, or with `--json`, the command fails with exit code 3 unless you pass
 `--yes`. `--yes` only ever confirms for you, the human; it never overrides a denial by policy.
 
+Network mode `open` is never silent: the concept wants at least isolation `hardened` for it, and
+agents are held to that by their profile (`isolation.network_open`, a denial otherwise). For you,
+the human, no isolation minimum is enforced (you may run a `container` or even a `none` sandbox),
+but `abox create --net open` (or a template with `network: open`) on an isolation below
+`hardened` always shows the risk (unrestricted internet access without a hardened sandbox) and asks
+for confirmation, in every approval mode. The GUI shows the same confirmation dialog.
+
 **Interrupting.** Ctrl-C aborts a long operation (image build, create) and cleans up what was
 created so far; the exit code is 130.
 
@@ -78,7 +85,7 @@ epoch):
 | Command             | `data`                                                                                                                                                   |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `create`            | `{status, sandbox, idempotent, warnings, durationMs}`; `sandbox` is the object below                                                                     |
-| `ls`                | `{sandboxes: [...], orphans: [...], unreachableHosts: [...]}`                                                                                            |
+| `ls`                | `{sandboxes: [...], orphans: [...], unreachableHosts: [...]}`, plus `hostProblems: {host: reason}` when a host is listed as unreachable                  |
 | `inspect`           | the sandbox object plus `processes`, `pendingApprovals` and `effective` (`policy`: what was granted, `provider`: what the backend reports)               |
 | `start`, `stop`     | `{results: [{id, sandbox}]}`                                                                                                                             |
 | `exec`              | `{status: "completed", exitCode, stdout, stderr, truncated, timedOut, durationMs, logRef}`                                                               |
@@ -266,6 +273,13 @@ List sandboxes
 | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `--state <state>` | only this state (choices: "requested", "preparing", "created", "running", "stopped", "failed", "expired", "removed") |
 | `-a, --all`       | include removed and failed sandboxes                                                                                 |
+
+With the global `--host <id>`, only that host is listed. An id that is not a configured host is
+`not_found` (exit code 2, hint: `abox host ls`). A configured host that cannot be reached (host key
+not trusted, tunnel down, no engine socket) or that has no usable backend is not shown as an empty
+list: the command prints `host <id> is unreachable (<reason>)` and `--json` lists it in
+`unreachableHosts` with the reason in `hostProblems`. Sandboxes of such a host that are known from
+the registry are listed as `stale` (last known state).
 
 ### `abox inspect`
 

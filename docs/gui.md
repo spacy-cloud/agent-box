@@ -5,11 +5,12 @@ CLI and the MCP server use, so it shows the same sandboxes, the same approval qu
 audit log, and a click in the app goes through the same policy checks as a CLI call. You never
 need the app: everything works without it.
 
-> **Status.** The app is under active development and **has not been released**. There is no
-> installable package yet (an AppImage is planned, see [packaging](../packaging/README.md)). This
-> page describes what the source tree contains; check it against the version you run. The
-> end-to-end tests (`pnpm --filter @abox/app test:e2e`, Playwright on a virtual display) exist but
-> were not run for this documentation.
+> **Status.** The app is **pre-release and has not been published**. There is no installable
+> package to download; you can build an AppImage yourself (`pnpm --filter @abox/app dist`, see
+> [packaging](../packaging/README.md#appimage)). This page describes what the source tree
+> contains; check it against the version you run. The end-to-end tests
+> (`pnpm --filter @abox/app test:e2e`, Playwright on a virtual display) run and pass (21 tests, with
+> `ABOX_TEST_DOCKER=1` including the terminal, template build and ssh ones).
 
 ## Starting it
 

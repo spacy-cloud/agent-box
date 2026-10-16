@@ -71,6 +71,7 @@ Deny rules are evaluated first and all reasons are collected; **deny always wins
 | host zone `shared` / `restricted`                                                                                                                                                                 | approval `host_zone` (all modes)                                          |
 | additional mount within rights                                                                                                                                                                    | approval in `strict`, `medium`; allowed in `open`                         |
 | network mode `open` within rights                                                                                                                                                                 | approval in `strict`, `medium`; allowed in `open`                         |
+| network mode `open` for the **human** context on isolation below `hardened`                                                                                                                       | approval (all modes), see "The human context"                             |
 | approval mode `strict`                                                                                                                                                                            | approval for every creation                                               |
 
 "All modes" = security invariants: needed in `strict`, `medium` and `open`.
@@ -80,6 +81,28 @@ show `items`/`risks`, then re-evaluate with it. `requestDigest` is the canonical
 to hash (`hashRequestDigest`) for approval binding; it contains no secret values and
 excludes counts and the confirmation flag. Bind the policy `contentHash` separately if
 approvals should expire on policy change.
+
+## The human context
+
+The built-in `human` profile (the CLI/GUI user) does not enforce the agent isolation minimums
+(`isolation.min`, `network_open`, `mounts`, `secrets_env`, host zone minimums are denials for agents). It keeps
+the invariant approval items, which a human satisfies with `humanConfirmed` (CLI prompt or `--yes`, GUI dialog):
+isolation `none`, untrusted template, shared/restricted host zone, secrets as env/file, private-address
+exceptions. One more, following the concept "network mode `open` needs at least `hardened`": **network mode
+`open` on a provider isolation below `hardened` is an invariant `network_open` item** (reason names the actual
+isolation, risk: unrestricted internet access without a hardened sandbox), so it is never silent, also with approval
+mode `open`; it applies to `evaluateCreate` and to a network access request that switches a running sandbox to
+`open` (`NETWORK_OPEN_MIN_ISOLATION`). With `hardened` or `vm` an `open` network is allowed without a question for
+the `open` approval mode. Agent rules are unchanged: `isolation.network_open` of the profile is a hard denial, and
+`humanConfirmed` is ignored for agents.
+
+## Workspace in use
+
+A project directory that another live sandbox works on directly (workspace mode `mount`) cannot be a workspace
+again (any mode), nor can a directory above or below it. `createSandbox` answers with error `conflict`
+("workspace ... is already used by sandbox <id>; remove it or choose another path/mode") before the policy
+check, instead of the generic "protected path" denial. Agents get the sandbox id only for their own sandboxes;
+for other owners the generic denial stays, so nothing about foreign sandboxes is revealed.
 
 ## Network destinations and ports
 

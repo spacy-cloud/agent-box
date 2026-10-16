@@ -36,12 +36,39 @@ release. Nothing has been released yet.
   fingerprint confirmation, hardened ssh calls, engine-socket tunnels, `~/.ssh/config` import
   (experimental; verified only against a local sshd container).
 - **Integrations:** Claude Code plugin and marketplace `agent-kit` (skill, slash commands,
-  subagent, opt-in hook); Orca plugin; Electron desktop app (in development).
+  subagent, opt-in hook); Orca plugin; Electron desktop app (unreleased; end-to-end tests pass under xvfb, an AppImage builds with
+  `pnpm --filter @abox/app dist`).
 - **Documentation:** quickstart, template handbook, CLI and MCP references, backends, hosts and
   SSH, GUI, troubleshooting, a consolidated list of known limitations; **packaging:** an AUR
-  `PKGBUILD` for `abox-git` and notes on npm, AppImage and the Claude Code marketplace.
+  `PKGBUILD` for `abox-git` and notes on npm, AppImage (`electron-builder.yml`, `pnpm --filter @abox/app dist` and `smoke`) and the
+  Claude Code marketplace.
 - Open-source baseline: README, security policy, contributing guide, code of conduct, issue and
   pull request templates, CI workflow, Dependabot configuration.
+
+### Changed
+
+- `abox create --net open` (and any create or network switch to `open`) in the human context on an
+  isolation below `hardened` now needs an explicit confirmation (prompt or `--yes`, GUI dialog) in
+  every approval mode; it used to pass silently. Agent rules are unchanged. The human profile still
+  does not enforce the agent isolation minimums otherwise.
+- `abox --host <id> ls`: an unknown host is `not_found` (exit 2); a configured host that is
+  unreachable or has no usable backend is reported (`unreachableHosts`, new optional `hostProblems`)
+  instead of "no sandboxes".
+- A project directory that another sandbox uses in mode `mount` is rejected with `conflict` and a
+  message naming that sandbox, not with a generic "protected path" denial.
+
+### Security
+
+- An agent calling an MCP tool that does not exist (`policy_set`, `approve`, `ssh_exec`, ...) is
+  recorded in the audit log as `mcp.unknown_tool` (tool name, context, argument names only; rate
+  limited).
+
+### Fixed
+
+- The error for an invalid `policy.yaml` pointed to `abox policy check`; the command is
+  `abox policy validate`; the internal docs no longer mention the non-existent `abox policy init`
+  (`abox policy edit` starts from the built-in text).
+- Status texts: the desktop app's end-to-end tests do run, and the AppImage builds.
 
 ### Known limitations
 

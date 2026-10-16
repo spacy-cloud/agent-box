@@ -1,7 +1,7 @@
 # Architecture
 
-This document describes how abox is structured. abox is in early development: statements about
-planned components are marked as such, and the details will change. For the security model see
+This document describes how abox is structured. abox is pre-release: all components below exist
+in the repository, but nothing is published and the details will change. For the security model see
 [security.md](security.md).
 
 ## Principles
@@ -46,15 +46,15 @@ because the npm name `abox` is taken; the binary is `abox`.
 | `packages/core`            | Domain model, template engine, lifecycle, policy, approvals, audit, state     |
 | `packages/backend-docker`  | Docker and Podman via the engine API (Unix socket)                            |
 | `packages/backend-process` | Host process/venv, isolation `none`; reference backend for the contract suite |
-| `packages/backend-python`  | Python runtime, container with `uv`, optional venv level (planned)            |
-| `packages/backend-vm`      | VM or microVM backend (planned)                                               |
+| `packages/backend-python`  | Python runtime, container with `uv`, or a host venv (isolation `none`)        |
+| `packages/backend-vm`      | QEMU/KVM virtual machine backend (isolation `vm`)                             |
 | `packages/contract-tests`  | Shared contract suite that every backend must pass                            |
 | `packages/proxy`           | Egress proxy sidecar: domain allowlist, private-address blocking, injection   |
 | `packages/cli`             | The `abox` command; text or `--json` output                                   |
 | `packages/mcp`             | MCP server on the official TypeScript SDK; stdio and local HTTP               |
 | `packages/app`             | Electron GUI; the main process uses the core, the renderer uses React         |
-| `packages/agent-kit`       | Claude Code plugin: skills, slash commands, `.mcp.json` (planned)             |
-| `packages/orca-plugin`     | Orca manifest and panel (planned)                                             |
+| `packages/agent-kit`       | Claude Code plugin: skills, slash commands, `.mcp.json`                       |
+| `packages/orca-plugin`     | Orca manifest and panel                                                       |
 
 Tooling: pnpm workspaces, strict TypeScript (ESM, `NodeNext`), Zod for schemas, Vitest,
 ESLint, Prettier, Node.js >= 24.
@@ -154,7 +154,8 @@ the host (`local/ab12cd34`, `lab/ef56gh78`). The core hands each provider a `Hos
 tells it how to reach the engine (a local socket or a forwarded socket), so backend code is the
 same locally and remotely.
 
-- **Local first.** Remote hosts are planned and not part of the first releases.
+- **Local first.** `local` is the default and needs no configuration. Remote hosts over SSH are
+  implemented but experimental (see [hosts-ssh.md](hosts-ssh.md)).
 - **Agentless model (M1).** The local abox controls the container engine on the remote machine over
   SSH. Only an engine and SSH access are needed on the remote side. Policy and audit run locally,
   and the remote host trusts the controller. A possible later model (M2) would run abox headless on

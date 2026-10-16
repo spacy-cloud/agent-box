@@ -252,6 +252,8 @@ the sandbox (use `sandbox_inspect` or `sandbox_process_logs`).
 There is no tool to change the policy or the approval mode, to approve or deny a request, to
 create, read or change host profiles or tokens, to see other agents' sandboxes, to run a command
 on the host, or an `ssh_exec`. Remote hosts are reachable only by creating a sandbox on a host
-the context is allowed to use. An agent that tries to change the policy gets `policy_denied` and
-the attempt is recorded in the audit log. Everything else a human does (`abox doctor`, `gc`,
-`reconcile`, `audit`) is not exposed either.
+the context is allowed to use. An agent that calls such a tool anyway (`policy_set`, `approve`,
+`ssh_exec`, or any other name that does not exist) gets `not_found`, and the attempt is recorded
+in the audit log as `mcp.unknown_tool` with the tool name, the agent context and the names (never
+the values) of the arguments; it is rate limited, so probing cannot flood the log. Everything else
+a human does (`abox doctor`, `gc`, `reconcile`, `audit`) is not exposed either.

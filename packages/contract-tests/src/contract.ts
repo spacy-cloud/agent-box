@@ -909,6 +909,49 @@ export function defineProviderContract(opts: ContractOptions): void {
           expect((await readFile(join(dir, 'back.bin'))).equals(BINARY)).toBe(true);
         });
 
+        // /tmp is a tmpfs on some backends (docker): the file APIs must all see the same /tmp, whatever
+        // way the data got there (a copy that lands in a hidden directory is silent data loss).
+        test('copyIn/copyOut under /tmp of a running sandbox see the same files as readFile/writeFile', async () => {
+          const dir = `/tmp/ct-tmpcopy-${randomId('', 4)}`;
+          await provider.writeFile(id, `${dir}/seed`, Buffer.from('seed'));
+          const src = join(await tmp(), 'tree');
+          await mkdir(join(src, 'sub'), { recursive: true });
+          await writeFile(join(src, 'top.txt'), 'top');
+          await writeFile(join(src, 'sub', 'data.bin'), BINARY);
+
+          await provider.copyIn(id, src, `${dir}/in`);
+          expect((await provider.readFile(id, `${dir}/in/top.txt`, 100)).data.toString()).toBe(
+            'top',
+          );
+          expect(
+            (await provider.readFile(id, `${dir}/in/sub/data.bin`, 1 << 20)).data.equals(BINARY),
+          ).toBe(true);
+          expect((await provider.listDir(id, `${dir}/in`)).map((e) => e.name).sort()).toEqual([
+            'sub',
+            'top.txt',
+          ]);
+
+          const one = join(await tmp(), 'one.bin');
+          await writeFile(one, BINARY);
+          await provider.copyIn(id, one, `${dir}/one.bin`);
+          expect((await provider.readFile(id, `${dir}/one.bin`, 1 << 20)).data.equals(BINARY)).toBe(
+            true,
+          );
+
+          // what was written through the file API (or by a command) is what copyOut returns
+          await provider.writeFile(id, `${dir}/written.bin`, BINARY);
+          const back = join(await tmp(), 'written.bin');
+          await provider.copyOut(id, `${dir}/written.bin`, back);
+          expect((await readFile(back)).equals(BINARY)).toBe(true);
+          const tree = join(await tmp(), 'tree-out');
+          await provider.copyOut(id, `${dir}/in`, tree);
+          expect(await readTree(tree)).toEqual(await readTree(src));
+          await expectRejects(
+            provider.copyOut(id, `${dir}/missing-${randomId('', 4)}`, join(await tmp(), 'nope')),
+            'not_found',
+          );
+        });
+
         test('copyIn of a missing host path and copyOut of a missing sandbox path reject with not_found', async () => {
           const dir = await tmp();
           await expectRejects(provider.copyIn(id, join(dir, 'nope'), wsPath('x')), 'not_found');

@@ -363,7 +363,7 @@ export function assertTemplateValid(t: ResolvedTemplate, opts: ValidateOptions =
     `Template "${t.name}" cannot run on backend "${t.backend}": ${first.message}${r.issues.length > 1 ? ` (+${r.issues.length - 1} more)` : ''}`,
     {
       issues: r.issues.map(stripKind),
-      hint: 'Pick a different template or backend (`abox template list`, `abox doctor`).',
+      hint: 'Pick a different template or backend (`abox template ls`, `abox doctor`).',
     },
   );
 }

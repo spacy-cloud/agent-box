@@ -8,7 +8,7 @@ Die ausführliche Beschreibung (englisch) steht in der [README.md](README.md).
 
 > [!WARNING]
 > **Status: Vorabversion, noch kein Release.** Es gibt keine veröffentlichten Pakete (kein npm,
-> kein AppImage, kein Release-Tag). CLI, MCP-Server, fünf Backends, das Claude-Code-Plugin und die
+> kein veröffentlichtes AppImage, kein Release-Tag). CLI, MCP-Server, fünf Backends, das Claude-Code-Plugin und die
 > GUI sind im Repository umgesetzt, aber Schnittstellen, JSON-Ausgabe und Dateiformate sind **nicht
 > stabil**. Was nicht geprüft ist, steht in
 > [docs/security.md](docs/security.md#known-limitations-and-not-verified) (englisch).
@@ -32,20 +32,20 @@ Die ausführliche Beschreibung (englisch) steht in der [README.md](README.md).
 
 ## Bausteine und Stand
 
-| Baustein                                                                | Stand                                                                    |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Core (Template-Engine, Lebenszyklus, Policy und Freigaben, Audit-Log)   | umgesetzt                                                                |
-| Docker-Backend                                                          | umgesetzt, gegen eine Docker-Engine mit Root-Daemon getestet             |
-| Podman-Backend                                                          | umgesetzt, **nicht** gegen ein echtes Podman geprüft                     |
-| Python-Backend (Container mit `uv`, oder Host-venv ohne Isolation)      | umgesetzt                                                                |
-| VM-Backend (QEMU/KVM, eigener Kernel; braucht `/dev/kvm`, x86_64)       | umgesetzt                                                                |
-| Prozess-Backend (keine Isolation, deutlich markiert)                    | umgesetzt                                                                |
-| CLI `abox`, MCP-Server (20 Werkzeuge, stdio und lokales HTTP mit Token) | umgesetzt                                                                |
-| Claude-Code-Plugin `agent-kit`                                          | umgesetzt; Auslösung des Skills nicht interaktiv geprüft                 |
-| Hosts/SSH (Sandboxes auf entfernten Rechnern)                           | umgesetzt, experimentell; nur gegen einen lokalen sshd-Container geprüft |
-| Orca-Plugin                                                             | umgesetzt; nicht in einem laufenden Orca getestet                        |
-| Electron-GUI                                                            | in Entwicklung, nicht veröffentlicht                                     |
-| Pakete (npm, AppImage, AUR)                                             | geplant, siehe [packaging/README.md](packaging/README.md)                |
+| Baustein                                                                | Stand                                                                                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core (Template-Engine, Lebenszyklus, Policy und Freigaben, Audit-Log)   | umgesetzt                                                                                                                                         |
+| Docker-Backend                                                          | umgesetzt, gegen eine Docker-Engine mit Root-Daemon getestet                                                                                      |
+| Podman-Backend                                                          | umgesetzt, **nicht** gegen ein echtes Podman geprüft                                                                                              |
+| Python-Backend (Container mit `uv`, oder Host-venv ohne Isolation)      | umgesetzt                                                                                                                                         |
+| VM-Backend (QEMU/KVM, eigener Kernel; braucht `/dev/kvm`, x86_64)       | umgesetzt                                                                                                                                         |
+| Prozess-Backend (keine Isolation, deutlich markiert)                    | umgesetzt                                                                                                                                         |
+| CLI `abox`, MCP-Server (20 Werkzeuge, stdio und lokales HTTP mit Token) | umgesetzt                                                                                                                                         |
+| Claude-Code-Plugin `agent-kit`                                          | umgesetzt; Auslösung des Skills nicht interaktiv geprüft                                                                                          |
+| Hosts/SSH (Sandboxes auf entfernten Rechnern)                           | umgesetzt, experimentell; nur gegen einen lokalen sshd-Container geprüft                                                                          |
+| Orca-Plugin                                                             | umgesetzt; nicht in einem laufenden Orca getestet                                                                                                 |
+| Electron-GUI                                                            | umgesetzt (E2E-Tests unter xvfb bestehen, AppImage baut lokal); nicht veröffentlicht                                                              |
+| Pakete (npm, AppImage, AUR)                                             | AppImage baut aus dem Quellcode, AUR-`PKGBUILD` geschrieben, npm geplant; nichts veröffentlicht, siehe [packaging/README.md](packaging/README.md) |
 
 ## Voraussetzungen und Bauen
 

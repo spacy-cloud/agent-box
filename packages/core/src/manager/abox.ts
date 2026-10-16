@@ -18,6 +18,7 @@ import {
   reconcileInternal,
   revokeAgentToken,
   setPolicy,
+  auditUnknownTool,
   showPolicy,
   validatePolicyText,
   verifyAgentToken,
@@ -376,6 +377,18 @@ export class Abox {
   /** Human only. An attempt by an agent is audited as `policy_change_denied`. */
   setPolicy(caller: Caller, text: string): Promise<SetPolicyResult> {
     return setPolicy(this.I, caller, text);
+  }
+
+  /**
+   * For surfaces (MCP): an agent called a tool that does not exist. Audited as `mcp.unknown_tool`
+   * (tool name, context, argument names only), rate limited. No-op for humans.
+   */
+  auditUnknownTool(
+    caller: Caller,
+    tool: string,
+    argNames: readonly string[] = [],
+  ): Promise<boolean> {
+    return auditUnknownTool(this.I, caller, tool, argNames);
   }
 
   // -- audit ------------------------------------------------------------------------------------------------

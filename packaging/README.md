@@ -1,7 +1,7 @@
 # Packaging
 
 How abox is meant to reach users. **Nothing here is published yet**: there is no npm package, no
-AppImage and no tagged release. Until then, install from source as described in
+published AppImage and no tagged release. Until then, install from source as described in
 [docs/quickstart.md](../docs/quickstart.md).
 
 | Channel                  | Status                                                                                                             | Where                               |
@@ -9,7 +9,7 @@ AppImage and no tagged release. Until then, install from source as described in
 | Build from source        | works                                                                                                              | [quickstart](../docs/quickstart.md) |
 | AUR `abox-git`           | PKGBUILD written; `bash -n` and `makepkg --printsrcinfo` pass; not built end to end through `makepkg` or submitted | [`aur/`](aur/)                      |
 | npm (`@spacy-cloud/...`) | plan only                                                                                                          | below                               |
-| AppImage (desktop app)   | being built together with the app; not part of this directory yet                                                  | below                               |
+| AppImage (desktop app)   | builds from source (`pnpm --filter @abox/app dist`) and passes a start smoke test; not signed, not published       | below                               |
 | Claude Code marketplace  | marketplace file exists in the repository; works once the repository is public                                     | below                               |
 
 ## AUR: `abox-git`
@@ -66,12 +66,25 @@ points before a first publish:
 
 ## AppImage
 
-The Electron app (`packages/app`) is built with `electron-vite` and packaged with
-`electron-builder` (a dev dependency). The AppImage configuration is being prepared by the app's
-developer; this directory will get build notes when it lands. Things to document then: the
-native module `node-pty` (rebuilt for Electron's ABI), the need for `FUSE` (or
-`--appimage-extract-and-run`), no auto-update and no telemetry, and checksum plus signature
-publication on the GitHub release.
+The Electron app (`packages/app`) is built with `electron-vite` and packaged with `electron-builder`
+(a dev dependency; configuration in `packages/app/electron-builder.yml`: app id `cloud.spacy.abox`,
+Linux x64, targets AppImage and an unpacked `dir`). It is not part of this directory because it
+needs the workspace build, but it is not a plan any more:
+
+```sh
+pnpm install && pnpm build
+pnpm --filter @abox/app dist     # -> packages/app/release/abox-<version>-x86_64.AppImage (+ release/linux-unpacked/)
+pnpm --filter @abox/app smoke    # starts the AppImage under xvfb, checks the window, quits
+```
+
+Status: the AppImage builds and the smoke test passes on the development machine. It is **not
+signed and not published**, there is no checksum publication yet, and it has not been tried on
+other distributions. Things to remember when it ships: the native module `node-pty` is compiled
+once against the system Node (it is N-API, so Electron loads it unchanged and it is unpacked from
+the asar archive); the AppImage needs FUSE 2 (or `--appimage-extract-and-run`); Chromium's sandbox
+needs unprivileged user namespaces (restricted on Ubuntu 24.04 by AppArmor); there is no
+auto-update and no telemetry; checksum and signature must be published with the GitHub release.
+Details: [packages/app/README.md](../packages/app/README.md#appimage).
 
 ## Claude Code marketplace
 

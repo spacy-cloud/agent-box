@@ -11,7 +11,7 @@ _Deutsche Kurzfassung: [README.de.md](README.de.md)._
 
 > [!WARNING]
 > **Status: pre-release (release candidate work).** Nothing has been published yet: there are no
-> packages on npm, no AppImage and no tagged release. The CLI, the MCP server, five backends, the
+> packages on npm, no published AppImage and no tagged release. The CLI, the MCP server, five backends, the
 > Claude Code plugin and the desktop app are implemented in this repository, but APIs, JSON output
 > and file formats are **not stable** and will change. What is not verified is listed in
 > [docs/security.md](docs/security.md#known-limitations-and-not-verified).
@@ -45,21 +45,21 @@ machine.
 
 ## Features by component
 
-| Component          | Description                                                                                     | Status                                                                  |
-| ------------------ | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Core (`core`)      | domain model, template engine, lifecycle, policy and approvals, audit log, SQLite state         | implemented                                                             |
-| Docker backend     | OCI containers through the engine API, hardened defaults, egress proxy sidecar                  | implemented; tested against a rootful Docker engine                     |
-| Podman backend     | same code, Podman's Docker-compatible socket                                                    | implemented; **not verified** against a real Podman                     |
-| Python backend     | container with `uv` (lock file baked into the image), or a host venv (no isolation)             | implemented                                                             |
-| VM backend         | QEMU/KVM virtual machine with its own kernel, cloud images with checksum verification           | implemented; needs `/dev/kvm`, x86_64                                   |
-| Process backend    | host process without isolation (level `none`), clearly marked; reference for the contract tests | implemented                                                             |
-| CLI (`abox`)       | thin layer over the core, text or `--json` output, shell completion                             | implemented                                                             |
-| MCP server         | 20 tools over stdio and local HTTP with token authentication, resources and a prompt            | implemented                                                             |
-| Claude Code plugin | `agent-kit`: decision skill, slash commands, subagent, optional hook, marketplace               | implemented; skill triggering not evaluated interactively               |
-| Electron GUI       | sandboxes, templates, hosts, approvals, audit, policy, terminal                                 | in development, unreleased                                              |
-| Hosts and SSH      | sandboxes on a remote machine over SSH (agentless), host profiles, zones, host-key pinning      | implemented, experimental; verified only against a local sshd container |
-| Orca plugin        | commands and a launcher panel for the Orca IDE                                                  | implemented; not tested in a running Orca                               |
-| Packaging          | npm packages, AppImage, AUR (`abox-git`)                                                        | planned; see [packaging](packaging/README.md)                           |
+| Component          | Description                                                                                     | Status                                                                                                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core (`core`)      | domain model, template engine, lifecycle, policy and approvals, audit log, SQLite state         | implemented                                                                                                                                                |
+| Docker backend     | OCI containers through the engine API, hardened defaults, egress proxy sidecar                  | implemented; tested against a rootful Docker engine                                                                                                        |
+| Podman backend     | same code, Podman's Docker-compatible socket                                                    | implemented; **not verified** against a real Podman                                                                                                        |
+| Python backend     | container with `uv` (lock file baked into the image), or a host venv (no isolation)             | implemented                                                                                                                                                |
+| VM backend         | QEMU/KVM virtual machine with its own kernel, cloud images with checksum verification           | implemented; needs `/dev/kvm`, x86_64                                                                                                                      |
+| Process backend    | host process without isolation (level `none`), clearly marked; reference for the contract tests | implemented                                                                                                                                                |
+| CLI (`abox`)       | thin layer over the core, text or `--json` output, shell completion                             | implemented                                                                                                                                                |
+| MCP server         | 20 tools over stdio and local HTTP with token authentication, resources and a prompt            | implemented                                                                                                                                                |
+| Claude Code plugin | `agent-kit`: decision skill, slash commands, subagent, optional hook, marketplace               | implemented; skill triggering not evaluated interactively                                                                                                  |
+| Electron GUI       | sandboxes, templates, hosts, approvals, audit, policy, terminal                                 | implemented; e2e tests pass under xvfb; AppImage builds locally; unreleased                                                                                |
+| Hosts and SSH      | sandboxes on a remote machine over SSH (agentless), host profiles, zones, host-key pinning      | implemented, experimental; verified only against a local sshd container                                                                                    |
+| Orca plugin        | commands and a launcher panel for the Orca IDE                                                  | implemented; not tested in a running Orca                                                                                                                  |
+| Packaging          | npm packages, AppImage, AUR (`abox-git`)                                                        | AppImage builds from source (`pnpm --filter @abox/app dist`); AUR `PKGBUILD` written; npm planned; nothing published, see [packaging](packaging/README.md) |
 
 Highlights of the design:
 
@@ -125,7 +125,7 @@ pnpm test:docker  # additionally runs the integration tests against a real Docke
 | `packages/mcp`             | `@abox/mcp`             | MCP server                                                       |
 | `packages/runtime`         | `@abox/runtime`         | Wires the manager, backends, hosts and keyring for every surface |
 | `packages/e2e`             | `@abox/e2e`             | End-to-end and security tests against a real engine              |
-| `packages/app`             | `@abox/app`             | Electron GUI (in development)                                    |
+| `packages/app`             | `@abox/app`             | Electron GUI (unreleased)                                        |
 | `packages/agent-kit`       | -                       | Claude Code plugin: skills, commands, `.mcp.json`                |
 | `packages/orca-plugin`     | -                       | Orca plugin manifest, worker and panel                           |
 | `docs/`                    | -                       | user documentation, see below                                    |

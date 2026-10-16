@@ -136,6 +136,8 @@ Things to know:
   (the human) that is your home directory, but never the home directory itself or credential
   folders such as `~/.ssh`. For agents see [MCP identity](mcp.md#identity-and-contexts).
 - `worktree` and `mount` are not available on remote hosts, see [hosts and SSH](hosts-ssh.md).
+- A directory that a `mount` sandbox works on directly cannot be given to another sandbox (in any
+  mode) until the first one is removed: `abox create` answers `conflict` and names that sandbox.
 
 An end-to-end example with a git repository:
 

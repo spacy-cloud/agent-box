@@ -273,7 +273,7 @@ async function resolveChain(
       throw invalid(
         'extends',
         `template "${cur.spec.name}" extends unknown template "${parentName}"`,
-        'Check the name with `abox template list`.',
+        'Check the name with `abox template ls`.',
       );
     }
     assertSpec(found.spec);
