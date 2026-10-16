@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createServer, connect, type AddressInfo, type Server } from 'node:net';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
@@ -40,6 +41,12 @@ function viaProxy(socket: string, request: string, waitMs = 400): Promise<string
       resolve(out);
     }, waitMs);
   });
+}
+
+function hasSocat(): boolean {
+  return (process.env['PATH'] ?? '')
+    .split(':')
+    .some((d) => d !== '' && existsSync(join(d, 'socat')));
 }
 
 describe('egress proxy on a unix socket', () => {
@@ -159,7 +166,9 @@ describe('egress proxy on a unix socket', () => {
 
   it('relayArgv prefers socat; without it the Node relay forwards a connection to the socket', async () => {
     const argv = await relayArgv(dir);
-    expect(argv.at(-1)).toBe(`UNIX-CONNECT:${proxyPaths(dir).socket}`);
+    // socat is optional on the host (e.g. not installed on CI runners): then the Node relay is used.
+    if (hasSocat()) expect(argv.at(-1)).toBe(`UNIX-CONNECT:${proxyPaths(dir).socket}`);
+    else expect(argv[1]).toBe(proxyPaths(dir).relay);
     upstream = createServer((s) => s.on('data', (d) => s.end(`got:${d.toString()}`)));
     const sockPath = join(dir, 'u.sock');
     await new Promise<void>((r) => upstream?.listen(sockPath, () => r()));
