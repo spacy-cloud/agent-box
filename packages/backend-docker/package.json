@@ -1,0 +1,34 @@
+{
+  "name": "@abox/backend-docker",
+  "version": "0.1.0",
+  "description": "abox backend for Docker/Podman via the Engine API",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@abox/core": "workspace:*",
+    "dockerode": "^5.0.1",
+    "tar-stream": "^3.2.2"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^4.0.2",
+    "@types/tar-stream": "^3.1.4"
+  }
+}

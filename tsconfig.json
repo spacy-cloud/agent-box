@@ -1,0 +1,26 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/backend-docker"
+    },
+    {
+      "path": "packages/backend-process"
+    },
+    {
+      "path": "packages/contract-tests"
+    },
+    {
+      "path": "packages/proxy"
+    },
+    {
+      "path": "packages/cli"
+    },
+    {
+      "path": "packages/mcp"
+    }
+  ]
+}

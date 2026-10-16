@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+  - cpu-features
+  - ssh2
