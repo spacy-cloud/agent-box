@@ -102,3 +102,27 @@ describe('migration 3 on an existing database', () => {
     expect(s.snapshots.list('local/cccccccc')).toHaveLength(1);
   });
 });
+
+describe('migration 5 on an existing database', () => {
+  it('upgrades a version 4 database in place; old approvals have no recorded items', () => {
+    const v4 = MIGRATIONS.filter((m) => m.version <= 4);
+    const old = openDatabase(dbPath, { migrations: v4 });
+    old
+      .prepare(
+        `INSERT INTO approvals (id, requester, kind, request, request_hash, risks, status, ttl_ms, created_at, expires_at)
+         VALUES ('a1','agent:x/default','create','{"template":{"name":"t"}}','h','["r"]','pending',60000,1,${Date.now() + 60_000})`,
+      )
+      .run();
+    old.close();
+    const s = open();
+    expect(s.approvals.get('a1')).toMatchObject({ kind: 'create', risks: ['r'], items: [] });
+    const fresh = s.approvals.create({
+      requester: 'agent:x/default',
+      kind: 'create',
+      request: { n: 1 },
+      items: [{ kind: 'mount', reason: 'why', risk: 'what', invariant: false }],
+      ttlMs: 1000,
+    });
+    expect(s.approvals.get(fresh.id)?.items.map((i) => i.kind)).toEqual(['mount']);
+  });
+});

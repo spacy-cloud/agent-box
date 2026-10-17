@@ -173,6 +173,7 @@ export function pendingOutcome(p: PendingApproval, tool: string, requestId?: str
       status: 'pending_approval',
       approvalId: p.approvalId,
       kind: p.kind,
+      kinds: p.kinds,
       reasons: p.reasons,
       risks: p.risks,
       expiresAt: p.expiresAt,

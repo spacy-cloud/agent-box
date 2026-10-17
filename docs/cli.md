@@ -48,6 +48,14 @@ or in full when there is nothing to compare with) and the risky points in plain 
 <name>` shows it on demand, and `abox approvals show <id>` shows it for an agent's `template_trust`
 request.
 
+`abox approvals show <id>` also prints, from the approval itself, the base of the template a
+create or trust request is about (the image with the registry it comes from, or the Dockerfile) and
+the findings that made approval necessary (`Why approval is needed`, one line per policy item with
+its kind such as `image_registry`, `mount` or `template_trust`). With `--json` the approval carries
+them as `base` (`{os, dockerfile, registry}` or `null`), `items`, `kinds` and `reasons`; `abox
+approvals ls --json` has the same fields. Approvals stored by an older version have no `items`
+(empty lists) and no `base` (`null`).
+
 Network mode `open` is never silent: the concept wants at least isolation `hardened` for it, and
 agents are held to that by their profile (`isolation.network_open`, a denial otherwise). For you,
 the human, no isolation minimum is enforced (you may run a `container` or even a `none` sandbox),

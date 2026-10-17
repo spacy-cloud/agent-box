@@ -176,6 +176,8 @@ async function boot(): Promise<void> {
       closeToTray: settings.closeToTray,
     }),
     setCloseToTray: (on) => settings.setCloseToTray(on),
+    recentProjects: () => settings.recentProjects,
+    rememberProject: (dir) => settings.addRecentProject(dir),
     setLocale: (l) => {
       locale = l;
       settings.setLocale(l);

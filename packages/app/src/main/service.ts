@@ -12,6 +12,7 @@ import type { McpConfig, Outputs } from '../shared/types';
 import { mcpClaudeCommand, mcpJsonConfig } from '../shared/mcp-config';
 import { describeBase } from '../shared/image-ref';
 import { templateTarget } from './approval-context';
+import { projectOption } from './projects';
 
 export interface ServiceRuntime {
   abox: Abox;
@@ -106,10 +107,11 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     'sandboxes:stop': (i) => abox.stopSandbox(HUMAN, i.id),
     'sandboxes:remove': (i) => abox.removeSandbox(HUMAN, i.id),
     'sandboxes:extend': (i) => abox.extendTtl(confirmedHuman(i.confirmed), i.id, i.ttl),
-    'sandboxes:create': (i, ctx) => {
-      const { confirmed, progressKey, ...req } = i;
+    'sandboxes:create': async (i, ctx) => {
+      const { confirmed, progressKey, projectDir, ...req } = i;
       const request: CreateSandboxRequest = clean({
         ...req,
+        ...(await projectOption(projectDir)),
         workspace: req.workspace ? clean(req.workspace) : undefined,
         overrides: req.overrides
           ? clean({
@@ -124,10 +126,15 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         },
       });
     },
-    'templates:list': () => abox.listTemplates(HUMAN),
-    'templates:show': (i) => abox.showTemplate(HUMAN, i.name),
-    'templates:review': (i) =>
-      abox.reviewTemplate(HUMAN, i.name, clean({ workspacePath: i.workspacePath })),
+    'templates:list': async (i) => abox.listTemplates(HUMAN, await projectOption(i?.projectDir)),
+    'templates:show': async (i) =>
+      abox.showTemplate(HUMAN, i.name, await projectOption(i.projectDir)),
+    'templates:review': async (i) =>
+      abox.reviewTemplate(
+        HUMAN,
+        i.name,
+        clean({ workspacePath: i.workspacePath, ...(await projectOption(i.projectDir)) }),
+      ),
     'files:list': (i) => abox.listDir(HUMAN, i.id, i.path),
     'export:run': (i) =>
       abox.exportSandbox(
@@ -167,6 +174,18 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
       const a = await abox.getApproval(HUMAN, i.id);
       const target = templateTarget(a.request);
       if (!target) return null;
+      const view = await abox.showPolicy(HUMAN);
+      const profile = target.profile ? view.profiles?.[target.profile] : undefined;
+      const registries = profile ? profile.images.registries : null;
+      if (a.base) {
+        // The base is part of the request the approval is bound to: nothing to resolve again.
+        const use = describeBase(a.base, target.backend, registries);
+        return use && use.source === 'image' && a.base.registry
+          ? { ...use, registry: a.base.registry }
+          : (use ?? null);
+      }
+      // An approval stored before the base was recorded: look the template up again, but only trust it
+      // while the file still has the content the approval was requested for.
       let details;
       try {
         details = await abox.showTemplate(
@@ -178,13 +197,8 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         return null; // the template is gone or not reachable from here: nothing to show
       }
       const tpl = details.template;
-      // An approval covers the content it was requested for; a changed file says nothing about it.
       if (target.contentHash !== undefined && tpl.contentHash !== target.contentHash) return null;
-      const view = await abox.showPolicy(HUMAN);
-      const profile = target.profile ? view.profiles?.[target.profile] : undefined;
-      return (
-        describeBase(tpl.base, tpl.backend, profile ? profile.images.registries : null) ?? null
-      );
+      return describeBase(tpl.base, tpl.backend, registries) ?? null;
     },
     'audit:query': (i) => abox.queryAudit(HUMAN, clean({ ...(i ?? {}) }) as AuditFilter),
     'audit:verify': () => abox.verifyAudit(HUMAN),

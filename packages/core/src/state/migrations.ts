@@ -163,4 +163,12 @@ ALTER TABLE template_trust ADD COLUMN name TEXT;
 ALTER TABLE template_trust ADD COLUMN snapshot TEXT;
 `,
   },
+  {
+    version: 5,
+    name: 'approval_items',
+    // The policy items (kind, reason, risk) behind an approval; NULL for rows written before this migration.
+    sql: `
+ALTER TABLE approvals ADD COLUMN items TEXT;
+`,
+  },
 ];

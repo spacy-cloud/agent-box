@@ -13,6 +13,8 @@ export interface TemplateTarget {
   projectDir?: string;
   /** Name of the policy profile the request was evaluated against. */
   profile?: string;
+  /** Backend the request is for (create requests record it); tells an image base from a vm base. */
+  backend?: string;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -33,5 +35,8 @@ export function templateTarget(request: unknown): TemplateTarget | undefined {
       ? { projectDir: dirname(dirname(path)) }
       : {}),
     ...(typeof request['profile'] === 'string' ? { profile: request['profile'] } : {}),
+    ...(isRecord(request['extra']) && typeof request['extra']['backend'] === 'string'
+      ? { backend: request['extra']['backend'] }
+      : {}),
   };
 }

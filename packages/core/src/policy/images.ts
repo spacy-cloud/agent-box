@@ -69,6 +69,13 @@ export function imageRepository(ref: string): string | undefined {
   return `${registry}/${parts.join('/')}`;
 }
 
+/** Registry host of an image reference (`docker.io` for Docker Hub names); undefined when the reference is malformed. */
+export function imageRegistry(ref: string): string | undefined {
+  const repo = imageRepository(ref);
+  const slash = repo === undefined ? -1 : repo.indexOf('/');
+  return repo !== undefined && slash > 0 ? repo.slice(0, slash) : undefined;
+}
+
 /**
  * Normalizes an `images.registries` entry (`docker.io/library`, `ghcr.io`, `ghcr.io/my-org`, `*`).
  * Undefined when invalid. The first component must be a registry host so that an entry can never

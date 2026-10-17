@@ -243,6 +243,8 @@ export interface PendingApproval {
   status: 'pending_approval';
   approvalId: string;
   kind: string;
+  /** Kinds of the policy findings behind the request (e.g. `image_registry`, `mount`). */
+  kinds: string[];
   reasons: string[];
   risks: string[];
   /** Deadline for the decision; after it the request counts as denied. */
@@ -502,6 +504,15 @@ export interface AccessApplied {
 }
 export type AccessResult = AccessApplied | PendingApproval | ConfirmationRequired;
 
+export interface ApprovalBase {
+  /** Image reference (`base.os`). */
+  os?: string;
+  /** Dockerfile marker (`base.dockerfile`); the images it builds on cannot be checked. */
+  dockerfile?: string;
+  /** Registry host `os` points to (`docker.io` for Docker Hub names). */
+  registry?: string;
+}
+
 export interface ApprovalView {
   id: string;
   kind: string;
@@ -512,6 +523,21 @@ export interface ApprovalView {
   reason: string;
   /** Computed by abox (trusted). */
   risks: string[];
+  /**
+   * Why approval is needed, as the policy engine reported it (computed by abox, trusted): one entry
+   * per finding. Empty for approvals stored by a version that did not record them.
+   */
+  items: ApprovalItem[];
+  /** Distinct kinds of `items` (e.g. `image_registry`, `template_trust`, `mount`). */
+  kinds: string[];
+  /** The `reason` of each item. */
+  reasons: string[];
+  /**
+   * Base of the template a create / template-trust request is about, as bound into the request:
+   * image reference and/or Dockerfile marker and the registry the image maps to. Null for other requests
+   * and for approvals created before the base was part of the request.
+   */
+  base: ApprovalBase | null;
   /** The exact request the decision applies to (no secret values). */
   request: unknown;
   createdAt: number;

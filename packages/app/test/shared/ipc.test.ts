@@ -166,7 +166,7 @@ describe('IPC contract', () => {
   });
 
   describe('template and approval review', () => {
-    it('templates:review takes a template name and optionally the workspace of the sandbox being created', () => {
+    it('templates:review takes a template name and optionally the workspace of the sandbox being created and the picked project folder', () => {
       expect(ok('templates:review', { name: 'proj-tpl' })).toBe(true);
       expect(ok('templates:review', { name: 'proj-tpl', workspacePath: '/home/u/project' })).toBe(
         true,
@@ -176,8 +176,9 @@ describe('IPC contract', () => {
       expect(ok('templates:review', { name: 'x'.repeat(201) })).toBe(false);
       expect(ok('templates:review', { name: 'a', workspacePath: '' })).toBe(false);
       expect(ok('templates:review', { name: 'a', workspacePath: '/x'.repeat(2100) })).toBe(false);
-      // the renderer cannot name where the project directory is, nor claim what the request contained
-      expect(ok('templates:review', { name: 'a', projectDir: '/etc' })).toBe(false);
+      // the project folder must be absolute (the main process checks it again); the renderer cannot claim what a request contained
+      expect(ok('templates:review', { name: 'a', projectDir: '/home/u/project' })).toBe(true);
+      expect(ok('templates:review', { name: 'a', projectDir: 'project' })).toBe(false);
       expect(ok('templates:review', { name: 'a', expectedContentHash: 'abc' })).toBe(false);
     });
     it('approvals:templateReview and approvals:image take nothing but the approval id', () => {
@@ -190,5 +191,44 @@ describe('IPC contract', () => {
         expect(ok(c, { id: 'a1', template: 'x' }), c).toBe(false);
       }
     });
+  });
+});
+
+describe('project folders in the IPC surface', () => {
+  const ok = (c: keyof typeof IPC, v: unknown) => IPC[c].safeParse(v).success;
+
+  it('templates:list takes an optional absolute project folder, nothing else', () => {
+    expect(ok('templates:list', undefined)).toBe(true);
+    expect(ok('templates:list', {})).toBe(true);
+    expect(ok('templates:list', { projectDir: '/home/u/project' })).toBe(true);
+    for (const bad of [
+      'relative',
+      '~/project',
+      '',
+      '/x\u0000y',
+      'file:///tmp',
+      5,
+      'a'.repeat(5000),
+    ])
+      expect(ok('templates:list', { projectDir: bad }), JSON.stringify(bad)).toBe(false);
+    expect(ok('templates:list', { projectDir: '/p', glob: '*' })).toBe(false);
+    expect(ok('templates:list', { path: '/p' })).toBe(false);
+  });
+
+  it('show, review, source, create and remember validate the folder the same way', () => {
+    for (const [c, base] of [
+      ['templates:show', { name: 'p' }],
+      ['templates:review', { name: 'p' }],
+      ['templates:source', { name: 'p' }],
+      ['sandboxes:create', { template: 'p' }],
+    ] as const) {
+      expect(ok(c, { ...base, projectDir: '/home/u/project' }), c).toBe(true);
+      expect(ok(c, { ...base, projectDir: 'project' }), c).toBe(false);
+    }
+    expect(ok('projects:remember', { dir: '/home/u/project' })).toBe(true);
+    expect(ok('projects:remember', { dir: 'project' })).toBe(false);
+    expect(ok('projects:remember', {})).toBe(false);
+    expect(ok('projects:recent', undefined)).toBe(true);
+    expect(ok('projects:recent', {})).toBe(false);
   });
 });

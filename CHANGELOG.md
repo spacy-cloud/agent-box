@@ -10,6 +10,15 @@ release. Nothing has been released yet.
 
 ### Added
 
+- **GUI project folders:** pick a project folder in the Templates view and in the first step of New
+  sandbox, and its `.sandbox/*.yaml` templates are listed with a "project" badge and their trust
+  state, with Review and the normal confirmation before a sandbox is created. The folder is checked
+  by the main process like a human `--project` (absolute, canonical, existing directory, `.sandbox`
+  symlinks refused); recent folders are kept in the app's own settings.
+- **Approvals record why they are needed:** `ApprovalView` has `items`, `kinds`, `reasons` and
+  `base`; `abox approvals show` prints the template base and the findings (also in `--json`), the
+  GUI shows them, and MCP `pending_approval` results carry `kinds`. State migration 5 adds
+  `approvals.items`; older rows keep working.
 - **Core:** backend-neutral domain model; YAML template engine (strict schema with line and column
   errors, `extends`, restrictive defaults, tool presets for Debian/Ubuntu and Alpine, network
   presets, image cache keyed by content hash with base-image digest pinning); sandbox lifecycle with
@@ -68,6 +77,9 @@ release. Nothing has been released yet.
 
 ### Changed
 
+- The create request digest includes the resolved template base (`os` image, `dockerfile`, and the
+  `registry` it maps to), so an approval is bound to the base image and cannot be reused for
+  another. Pending approvals made before this change are requested again once.
 - **GUI:** approvals for a base image outside the profile's `images.registries`
   (`image_registry`) show the image, its registry and the allowed registries, with a warning when
   it is outside the list. Request kinds the app does not know are shown with a generic label and
@@ -114,6 +126,8 @@ release. Nothing has been released yet.
 
 ### Fixed
 
+- GUI: the Templates view's "Review ..." button was unreachable because project templates were
+  never listed; its review dialog now also passes the accessibility check (heading order).
 - `abox extend` / `access_request` kind=ttl now move the deadline the backend itself enforces, not
   just the registry entry: a Docker/Podman sandbox no longer exits at its original TTL while the
   CLI shows time left, and the VM backend re-arms its guest timer and host-side kill time. The new

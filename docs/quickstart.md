@@ -178,15 +178,16 @@ agent is told to wait. You decide:
 $ abox approvals ls
 ID                                    KIND    AGENT           SANDBOX  STATUS   EXPIRES    REQUEST
 70918ad4-c657-457d-8065-4d6daa948f87  create  agent:reviewer  -        pending  in 14m56s
-$ abox approvals show 70918ad4-c657-457d-8065-4d6daa948f87      # the exact request, the agent's reason, abox's own risk text
+$ abox approvals show 70918ad4-c657-457d-8065-4d6daa948f87      # the exact request, the agent's reason, why approval is needed, abox's own risk text
 $ abox approvals approve 70918ad4-c657-457d-8065-4d6daa948f87
 $ abox approvals deny 70918ad4-c657-457d-8065-4d6daa948f87 --note "not now"
 ```
 
 Properties worth knowing:
 
-- An approval is **one-time** and **bound to the exact request** (template content, options,
-  paths, network, resources) and to the current `policy.yaml`. Any change is a new decision.
+- An approval is **one-time** and **bound to the exact request** (template content and its base
+  image, options, paths, network, resources) and to the current `policy.yaml`. Any change is a new
+  decision.
 - The agent's explanation is shown to you as untrusted text. The risk list is computed by abox.
 - A request nobody decides expires (after 15 minutes by default) and counts as denied.
 - Permanent rules are never a side effect of an approval. To allow something for good, edit the

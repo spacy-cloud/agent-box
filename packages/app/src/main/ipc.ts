@@ -1,4 +1,4 @@
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { dialog, clipboard, ipcMain } from 'electron';
@@ -13,6 +13,7 @@ import type { AppInfo, Outputs, SaveResult } from '../shared/types';
 import { toIpcError } from './errors';
 import { senderAllowed } from './guard';
 import { createHostsService } from './hosts';
+import { resolveProjectDir } from './projects';
 import type { HostsService } from './hosts';
 import { createManagerHandlers } from './service';
 import type { ManagerChannel, ManagerHandlers } from './service';
@@ -30,6 +31,9 @@ export interface IpcDeps {
   appInfo(): Omit<AppInfo, 'managerError' | 'paths'>;
   setLocale(l: Locale): void;
   setCloseToTray(on: boolean): void;
+  /** Recently used project folders of this user (most recent first) and a way to add one. */
+  recentProjects(): string[];
+  rememberProject(dir: string): void;
   /** Terminal sessions (sandbox shells and ssh) of this window. */
   tty: TtyManager;
   /** The GUI changed something itself: refresh now. */
@@ -126,6 +130,12 @@ export function registerIpc(d: IpcDeps): IpcHandle {
     'app:settings': (i) => {
       d.setCloseToTray(i.closeToTray);
       return { closeToTray: i.closeToTray };
+    },
+    'projects:recent': () => existingFolders(d.recentProjects()),
+    'projects:remember': async (i) => {
+      const dir = await resolveProjectDir(i.dir);
+      d.rememberProject(dir);
+      return { dir, recent: existingFolders(d.recentProjects()) };
     },
     'files:copyIn': async (i) => {
       const win = d.getWindow();
@@ -296,6 +306,17 @@ export function registerIpc(d: IpcDeps): IpcHandle {
       await tpl?.cleanup();
     },
   };
+}
+
+/** The folders in `dirs` that still exist (a recent folder may have been deleted since). */
+function existingFolders(dirs: string[]): string[] {
+  return dirs.filter((p) => {
+    try {
+      return statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** Maps a hosts channel to the service call (input is already validated by the channel's Zod schema). */

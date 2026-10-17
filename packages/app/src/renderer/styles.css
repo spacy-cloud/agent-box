@@ -317,6 +317,19 @@ label.inline {
 .with-button input {
   flex: 1;
 }
+.with-button.wrap {
+  flex-wrap: wrap;
+}
+.with-button.wrap input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.project-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
 fieldset {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -723,6 +736,11 @@ dialog.modal h2 {
   list-style: disc;
   padding-left: 1.2rem;
   color: var(--danger-fg);
+}
+.reason-list {
+  list-style: disc;
+  padding-left: 1.2rem;
+  margin: 0.3rem 0;
 }
 .dialog-actions {
   display: flex;

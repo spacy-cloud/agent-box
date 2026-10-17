@@ -15,6 +15,7 @@ import {
 } from '../components/ui';
 import { YamlEditor } from '../components/CodeEditor';
 import { TemplateReviewPanel } from '../components/review';
+import { ProjectFolderPicker } from '../components/ProjectFolder';
 import { ListInput, SyncedInput, SyncedTextarea } from '../components/inputs';
 import { osFamilyOf, FAMILY_PACKAGE_MANAGER } from '../../shared/base-images';
 import {
@@ -56,7 +57,10 @@ const DOCKERFILE_BACKENDS = ['docker', 'podman'];
 
 export function TemplatesView() {
   const { t, notify, tick } = useApp();
-  const list = useQuery('templates:list', undefined, { pollMs: 8000 });
+  const [projectDir, setProjectDir] = useState('');
+  const list = useQuery('templates:list', projectDir ? { projectDir } : undefined, {
+    pollMs: 8000,
+  });
   const catalog = useQuery('templates:catalog', undefined, { live: false });
   const [search, setSearch] = useState('');
   const [yaml, setYaml] = useState('');
@@ -138,11 +142,24 @@ export function TemplatesView() {
 
   async function open(name: string) {
     try {
-      const doc = await call('templates:source', { name });
+      const doc = await call('templates:source', { name, ...(projectDir ? { projectDir } : {}) });
       startDraft(doc.yaml, { name: doc.name, kind: doc.source.kind, readOnly: doc.readOnly });
     } catch (e) {
       setLoadError(e);
     }
+  }
+
+  /** Another project folder: a project template of the old one is closed, its review would name the wrong folder. */
+  function changeProject(dir: string) {
+    guard(() => {
+      setProjectDir(dir);
+      if (origin?.kind === 'project') {
+        setOpened(false);
+        setOrigin(null);
+        setYaml('');
+        setSaved('');
+      }
+    });
   }
 
   function newTemplate() {
@@ -195,7 +212,14 @@ export function TemplatesView() {
     }
   }
 
-  const runnable = origin !== null && !dirty && entries.some((e) => e.name === origin.name);
+  const isProject = origin?.kind === 'project';
+  const runnable =
+    origin !== null && !isProject && !dirty && entries.some((e) => e.name === origin.name);
+  const runTitle = isProject
+    ? t('tpl.projectNotBuilt')
+    : !runnable
+      ? t('tpl.needsSave')
+      : undefined;
   // after a build or a save, refresh the list's derived data
   useEffect(() => {
     void list.reload();
@@ -217,6 +241,7 @@ export function TemplatesView() {
 
       <div className="tpl-layout">
         <aside className="tpl-list" aria-label={t('tpl.list')}>
+          <ProjectFolderPicker value={projectDir} onChange={changeProject} />
           <form role="search" onSubmit={(e) => e.preventDefault()}>
             <label className="field">
               <span className="sr-only">{t('tpl.search')}</span>
@@ -294,7 +319,7 @@ export function TemplatesView() {
                   <button
                     type="button"
                     disabled={!runnable}
-                    title={!runnable ? t('tpl.needsSave') : undefined}
+                    title={runTitle}
                     onClick={() => setBuilding(true)}
                   >
                     {t('tpl.build')}
@@ -302,7 +327,7 @@ export function TemplatesView() {
                   <button
                     type="button"
                     disabled={!runnable}
-                    title={!runnable ? t('tpl.needsSave') : undefined}
+                    title={runTitle}
                     onClick={() => setTesting(true)}
                   >
                     {t('tpl.test')}
@@ -321,7 +346,7 @@ export function TemplatesView() {
                   <button
                     type="button"
                     disabled={!runnable || !DOCKERFILE_BACKENDS.includes(form.backend)}
-                    title={!runnable ? t('tpl.needsSave') : undefined}
+                    title={runTitle}
                     onClick={() => void exportYaml('dockerfile')}
                   >
                     {t('tpl.exportDockerfile')}
@@ -388,7 +413,11 @@ export function TemplatesView() {
         <TestDialog name={origin.name} onClose={() => setTesting(false)} />
       ) : null}
       {reviewing && origin ? (
-        <ReviewDialog name={origin.name} onClose={() => setReviewing(false)} />
+        <ReviewDialog
+          name={origin.name}
+          {...(projectDir ? { projectDir } : {})}
+          onClose={() => setReviewing(false)}
+        />
       ) : null}
     </section>
   );
@@ -418,6 +447,11 @@ function TemplateItem(props: { entry: TemplateListEntry; selected: boolean; onOp
           {t(`network.${e.networkMode}`)}
         </Badge>
         {!e.backendAvailable ? <Badge tone="warn">{t('tpl.backendMissing')}</Badge> : null}
+        {e.source.kind === 'project' ? (
+          <Badge tone={e.trusted ? 'ok' : 'warn'}>
+            {e.trusted ? t('tpl.trusted') : t('tpl.untrusted')}
+          </Badge>
+        ) : null}
       </span>
     </button>
   );
@@ -1232,9 +1266,13 @@ function useProgress(key: string): {
 }
 
 /** What a project template does, shown the way the approver sees it (risks and the resolved template as a diff). */
-export function ReviewDialog(props: { name: string; onClose(): void }) {
+export function ReviewDialog(props: { name: string; projectDir?: string; onClose(): void }) {
   const { t } = useApp();
-  const q = useQuery('templates:review', { name: props.name }, { live: false });
+  const q = useQuery(
+    'templates:review',
+    { name: props.name, ...(props.projectDir ? { projectDir: props.projectDir } : {}) },
+    { live: false },
+  );
   return (
     <Dialog
       title={t('tpl.review.title', { name: props.name })}
@@ -1249,7 +1287,12 @@ export function ReviewDialog(props: { name: string; onClose(): void }) {
       <p className="muted">{t('tpl.review.hint')}</p>
       {q.loading && !q.data ? <Loading /> : null}
       {q.error ? <ErrorBox error={q.error} /> : null}
-      {q.data ? <TemplateReviewPanel review={q.data} /> : null}
+      {q.data ? (
+        <>
+          <h3>{t('new.review.title')}</h3>
+          <TemplateReviewPanel review={q.data} />
+        </>
+      ) : null}
     </Dialog>
   );
 }

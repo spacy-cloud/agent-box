@@ -48,6 +48,7 @@ describe('pending approval flow (process backend always needs approval)', () => 
     );
     expect(Array.isArray(r.s['reasons'])).toBe(true);
     expect((r.s['reasons'] as string[]).length).toBeGreaterThan(0);
+    expect((r.s['kinds'] as string[]).length).toBeGreaterThan(0);
     expect(Array.isArray(r.s['risks'])).toBe(true);
     expect(new Date(r.s['expires_at']).getTime()).toBeGreaterThan(Date.now());
     expect(r.text).toContain(aid);

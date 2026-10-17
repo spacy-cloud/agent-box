@@ -182,3 +182,86 @@ contexts:
     expect(changed.stdout).toContain('The file changed after the request was made');
   });
 });
+
+describe('approvals show: base image and why approval is needed', () => {
+  const agentPolicy = (template: string): string => `version: 1
+profiles:
+  agent:
+    approval: medium
+    templates: [${template}]
+    limits: { sandboxes: 5, cpus: 4, memory: 8g, ttl: 4h }
+    workspace: { roots: ['${t.home}'], modes: [copy, empty] }
+    network: { modes: [none, allowlist, open], allow_presets: [], allow: [] }
+    mounts: deny
+    secrets: { allowed: [], inject: [proxy] }
+    isolation: { min: none, network_open: none, mounts: none, secrets_env: none }
+contexts:
+  tester: { profile: agent }
+`;
+
+  async function requestApproval(base: string): Promise<string> {
+    t.write('abox/config/hosts.yaml', 'hosts:\n  local:\n    backends: [docker, process]\n');
+    writePolicy(t, agentPolicy('proj-docker'));
+    const dir = join(t.project, '.sandbox');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'proj-docker.yaml'),
+      `apiVersion: 1\nname: proj-docker\ndescription: Project template with an image from another registry.\nbackend: docker\nbase: { os: ${base} }\n`,
+    );
+    const rt = await openAbox({ env: t.env, contextId: 'tester' });
+    try {
+      const r = await rt.abox.createSandbox(
+        rt.caller,
+        { template: 'proj-docker', workspace: { mode: 'empty' }, projectDir: t.project },
+        { waitForApprovalMs: 0 },
+      );
+      if (r.status !== 'pending_approval') throw new Error(`unexpected ${r.status}`);
+      return r.approvalId;
+    } finally {
+      await rt.close();
+    }
+  }
+
+  it('prints the base image with its registry and the findings behind the request; --json has them too', async () => {
+    const id = await requestApproval('ghcr.io/acme/tools:1');
+    const show = await run(t, ['approvals', 'show', id]);
+    expect(show.code, show.stderr).toBe(0);
+    expect(show.stdout).toMatch(
+      /template base:\s+image ghcr\.io\/acme\/tools:1 \(registry ghcr\.io\)/,
+    );
+    expect(show.stdout).toContain('Why approval is needed (computed by abox):');
+    expect(show.stdout).toContain('- [template_trust]');
+    expect(show.stdout).toMatch(/- \[image_registry\] .*ghcr\.io\/acme\/tools:1/);
+
+    const js = await run(t, ['approvals', 'show', id, '--json']);
+    expect(js.json.data).toMatchObject({
+      base: { os: 'ghcr.io/acme/tools:1', registry: 'ghcr.io' },
+      kinds: expect.arrayContaining(['template_trust', 'image_registry']),
+    });
+    expect(js.json.data.reasons.join(' ')).toContain('ghcr.io/acme/tools:1');
+    expect(js.json.data.items[0]).toMatchObject({ invariant: expect.any(Boolean) });
+    const ls = await run(t, ['approvals', 'ls', '--json']);
+    expect(ls.json.data.approvals[0]).toMatchObject({ id, base: { registry: 'ghcr.io' } });
+  });
+
+  it('a request without an image base prints no base line', async () => {
+    writePolicy(t, agentPolicy('proj-host'));
+    writeProject();
+    const rt = await openAbox({ env: t.env, contextId: 'tester' });
+    let id: string;
+    try {
+      const r = await rt.abox.createSandbox(
+        rt.caller,
+        { template: 'proj-host', workspace: { mode: 'empty' }, projectDir: t.project },
+        { waitForApprovalMs: 0 },
+      );
+      if (r.status !== 'pending_approval') throw new Error(`unexpected ${r.status}`);
+      id = r.approvalId;
+    } finally {
+      await rt.close();
+    }
+    const show = await run(t, ['approvals', 'show', id]);
+    expect(show.stdout).not.toContain('template base');
+    expect(show.stdout).toContain('- [template_trust]');
+  });
+});

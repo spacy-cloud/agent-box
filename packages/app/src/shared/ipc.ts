@@ -34,6 +34,12 @@ const shortText = z.string().min(1).max(200);
 const duration = z.string().regex(/^\d{1,6}(ms|s|m|h|d)$/, 'duration like 30m, 2h or 1d');
 const sizeText = z.string().regex(/^\d{1,6}(\.\d+)?[kmgt]?b?$/i, 'size like 512m or 4g');
 const absPath = z.string().min(1).max(4096);
+/**
+ * A project folder (the directory whose `.sandbox/*.yaml` are project templates): an absolute path, as a
+ * native dialog or a recent-folders entry delivers it. The main process canonicalises it and checks it
+ * like the CLI does for a human `--project`; relative paths and `~` are refused here.
+ */
+const projectDir = absPath.refine((p) => p.startsWith('/') && !p.includes('\0'), 'absolute path');
 const none = z.undefined();
 
 const auditFilter = z
@@ -60,6 +66,8 @@ export const createRequestSchema = z
       .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'letters, digits . _ -')
       .optional(),
     host: shortText.optional(),
+    /** Folder whose `.sandbox/*.yaml` project templates `template` may name (default: the workspace). */
+    projectDir: projectDir.optional(),
     workspace: z
       .object({
         mode: z.enum(WORKSPACE_MODES).optional(),
@@ -205,13 +213,25 @@ export const IPC = {
   'sandboxes:remove': z.object({ id }).strict(),
   'sandboxes:extend': z.object({ id, ttl: duration, confirmed: z.boolean().optional() }).strict(),
   'sandboxes:create': createRequestSchema,
-  'templates:list': none,
-  'templates:show': z.object({ name: shortText }).strict(),
+  /** `projectDir`: also list the project templates of that folder (`.sandbox/*.yaml`); builtin and user ones always. */
+  'templates:list': z.object({ projectDir: projectDir.optional() }).strict().optional(),
+  'templates:show': z.object({ name: shortText, projectDir: projectDir.optional() }).strict(),
   /**
    * Review material for a project template (what it adds, its risks). `workspacePath`: the workspace of a
-   * sandbox being created, where a project template may live; the main process checks it like the manager.
+   * sandbox being created, where a project template may live; `projectDir`: the folder picked for the list.
+   * The main process checks both like the manager.
    */
-  'templates:review': z.object({ name: shortText, workspacePath: absPath.optional() }).strict(),
+  'templates:review': z
+    .object({
+      name: shortText,
+      workspacePath: absPath.optional(),
+      projectDir: projectDir.optional(),
+    })
+    .strict(),
+  /** Recently used project folders (per user of the app, kept in the app's settings, not in any repository). */
+  'projects:recent': none,
+  /** Checks a folder like a human `--project` (absolute, exists, a directory) and remembers it as recent. */
+  'projects:remember': z.object({ dir: projectDir }).strict(),
 
   'files:list': z.object({ id, path: z.string().max(4096).optional() }).strict(),
   /** The host side is chosen in a native dialog by the human, never passed by the renderer. */
@@ -310,7 +330,7 @@ export const IPC = {
 
   // -- template editor --------------------------------------------------------------------------------------
   'templates:catalog': none,
-  'templates:source': z.object({ name: shortText }).strict(),
+  'templates:source': z.object({ name: shortText, projectDir: projectDir.optional() }).strict(),
   'templates:validate': z.object({ yaml: yamlText }).strict(),
   'templates:save': z.object({ yaml: yamlText, overwrite: z.boolean().optional() }).strict(),
   'templates:build': z

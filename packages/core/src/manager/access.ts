@@ -203,6 +203,7 @@ export async function accessRequest(
     request: { ...ev.requestDigest, policy: I.policy.contentHash, apply },
     reasons: ev.reasons,
     risks: ev.risks,
+    items: ev.items,
     agentReason: input.reason,
     waitMs: Math.max(0, o.waitForApprovalMs ?? 0),
     signal: o.signal,

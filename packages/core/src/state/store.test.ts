@@ -168,6 +168,34 @@ describe('ApprovalQueue', () => {
     expect(s.approvals.list({ status: 'pending' })).toHaveLength(1);
   });
 
+  it('keeps the policy items behind an approval; rows without them read as an empty list', () => {
+    const s = open();
+    const items = [
+      {
+        kind: 'image_registry',
+        reason: 'base image "x" is outside',
+        risk: 'untrusted',
+        invariant: false,
+      },
+      { kind: 'mount', reason: 'mount /data', risk: 'reads the host', invariant: true },
+    ];
+    const a = s.approvals.create({
+      requester: 'agent:a/default',
+      kind: 'create',
+      request: req,
+      items,
+      ttlMs: 60_000,
+    });
+    expect(a.items).toEqual(items);
+    expect(s.approvals.get(a.id)?.items).toEqual(items);
+    expect(create(s).items).toEqual([]);
+    // a row from before the column existed (NULL) or a damaged value never breaks reading
+    const raw = new DatabaseSync(dbPath);
+    raw.prepare('UPDATE approvals SET items = NULL WHERE id = ?').run(a.id);
+    raw.close();
+    expect(s.approvals.get(a.id)?.items).toEqual([]);
+  });
+
   it('approved entry is bound to the exact request hash and is one-time', () => {
     const s = open();
     const a = create(s);

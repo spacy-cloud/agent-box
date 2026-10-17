@@ -100,7 +100,9 @@ Deny rules are evaluated first and all reasons are collected; **deny always wins
 (agents: ignored); it never overrides a deny. Callers should evaluate without it,
 show `items`/`risks`, then re-evaluate with it. `requestDigest` is the canonical object
 to hash (`hashRequestDigest`) for approval binding; it contains no secret values and
-excludes counts and the confirmation flag. Bind the policy `contentHash` separately if
+excludes counts and the confirmation flag. For a create it includes the template base
+(`template.base`: `os`, `dockerfile`, and the `registry` of an image reference on container backends), so an
+approval is bound to the base image. Bind the policy `contentHash` separately if
 approvals should expire on policy change.
 
 ## The human context

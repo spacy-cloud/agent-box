@@ -13,7 +13,7 @@ import {
   type WorkspaceMode,
 } from '../types.js';
 import { domainCovered, normalizeDomainPattern } from './domains.js';
-import { imageAllowedByRegistries, isKnownBaseImage } from './images.js';
+import { imageAllowedByRegistries, imageRegistry, isKnownBaseImage } from './images.js';
 import type { AgentContext, ApprovalMode } from './model.js';
 import {
   checkHostPath,
@@ -329,6 +329,26 @@ function checkBaseImage(ctx: AgentContext, template: CreateRequest['template'], 
     risk: 'The sandbox is built from an image you have not allowed: its publisher controls everything that runs in it.',
     invariant: false,
   });
+}
+
+/**
+ * The base of the template as recorded in the request digest: the image reference and/or Dockerfile
+ * marker and the registry an image reference points to. An approval is bound to it, so it cannot be
+ * reused for a template with another base, and surfaces can show it without resolving the template again.
+ */
+function digestBase(template: CreateRequest['template']): Record<string, string> | undefined {
+  const base = template.base;
+  if (!base) return undefined;
+  const out: Record<string, string> = {};
+  if (base.os !== undefined) {
+    out['os'] = base.os;
+    if (template.backend === undefined || IMAGE_BACKENDS.includes(template.backend)) {
+      const registry = imageRegistry(base.os);
+      if (registry !== undefined) out['registry'] = registry;
+    }
+  }
+  if (base.dockerfile !== undefined) out['dockerfile'] = base.dockerfile;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function elevated(f: Findings, ctx: AgentContext, item: Omit<ApprovalItem, 'invariant'>): void {
@@ -729,6 +749,7 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
       contentHash: req.template.contentHash,
       source: { kind: req.templateSource.kind, path: req.templateSource.path },
       trusted: req.templateTrusted,
+      base: digestBase(req.template),
     },
     host: { id: req.host.id, zone: req.host.zone },
     isolation: req.providerIsolation,

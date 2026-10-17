@@ -108,6 +108,13 @@ export interface TokenCreated {
   view: AgentTokenView | null;
 }
 
+/** A project folder as the main process resolved it, with the recent folders after remembering it. */
+export interface ProjectFolder {
+  /** Canonical path of the folder. */
+  dir: string;
+  recent: string[];
+}
+
 export interface SaveResult {
   saved: string | null;
   count?: number;
@@ -289,6 +296,8 @@ export interface Outputs {
   'templates:list': TemplateList;
   'templates:show': TemplateDetails;
   'templates:review': TemplateReview;
+  'projects:recent': string[];
+  'projects:remember': ProjectFolder;
   'files:list': DirEntry[];
   'files:copyIn': { copied: string | null };
   'files:copyOut': { copied: string | null };

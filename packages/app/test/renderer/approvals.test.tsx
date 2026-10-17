@@ -20,6 +20,10 @@ function approval(over: Partial<ApprovalView> = {}): ApprovalView {
     status: 'pending',
     reason: XSS,
     risks: ['Code runs with your user rights on the host.'],
+    items: [],
+    kinds: [],
+    reasons: [],
+    base: null,
     request: {
       kind: 'create',
       template: { name: 'host-shell', trusted: true, source: { kind: 'builtin', path: '/t.yaml' } },
@@ -346,6 +350,47 @@ describe('ApprovalDialog: request kinds', () => {
     );
     expect(screen.getByRole('heading', { name: 'Image from an unlisted registry' })).toBeTruthy();
     expect(screen.getByText(/outside the image registries of the profile/)).toBeTruthy();
+  });
+
+  it('says why approval is needed, from the reasons stored with the approval', async () => {
+    const reason = 'base image "ghcr.io/other/tools:1" of template "t" is outside the registries';
+    const a = approval({
+      kind: 'create',
+      request: TRUST_REQUEST,
+      kinds: ['image_registry'],
+      reasons: [reason],
+      items: [
+        { kind: 'image_registry', reason, risk: 'its publisher controls it', invariant: false },
+      ],
+      base: { os: 'ghcr.io/other/tools:1', registry: 'ghcr.io' },
+    });
+    installBridge(() => null);
+    const { unmount } = renderApp(
+      <ApprovalDialog
+        approval={a}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+      { locale: 'en' },
+    );
+    const list = screen.getByRole('list', { name: 'Why approval is needed' });
+    expect(within(list).getByText(reason)).toBeTruthy();
+    unmount();
+    // an approval stored before reasons were recorded shows no empty section
+    installBridge(() => null);
+    renderApp(
+      <ApprovalDialog
+        approval={approval({ reasons: [] })}
+        now={Date.now()}
+        onApproved={vi.fn()}
+        onDenied={vi.fn()}
+        onPermanent={vi.fn()}
+      />,
+      { locale: 'en' },
+    );
+    expect(screen.queryByRole('heading', { name: 'Why approval is needed' })).toBeNull();
   });
 
   it('a Dockerfile base is flagged as unchecked', async () => {

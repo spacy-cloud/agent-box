@@ -18,6 +18,7 @@ import {
 } from '@abox/core';
 import type { Abox, AboxPaths, Caller } from '@abox/core';
 import { BASE_IMAGES } from '../shared/base-images';
+import { projectOption } from './projects';
 import type {
   Outputs,
   OsFamily,
@@ -46,7 +47,10 @@ export type TemplateChannel =
 
 type TemplateHandlers = {
   'templates:catalog': () => Promise<Outputs['templates:catalog']>;
-  'templates:source': (i: { name: string }) => Promise<Outputs['templates:source']>;
+  'templates:source': (i: {
+    name: string;
+    projectDir?: string | undefined;
+  }) => Promise<Outputs['templates:source']>;
   'templates:validate': (i: { yaml: string }) => Promise<Outputs['templates:validate']>;
   'templates:save': (i: { yaml: string; overwrite?: boolean }) => Promise<TemplateSaved>;
   'templates:build': (
@@ -103,7 +107,7 @@ export function createTemplateHandlers(rt: TemplateRuntime): TemplateHandlers & 
     },
 
     async 'templates:source'(i) {
-      const { templates } = await abox.listTemplates(HUMAN);
+      const { templates } = await abox.listTemplates(HUMAN, await projectOption(i.projectDir));
       const entry = templates.find((t) => t.name === i.name);
       if (!entry) throw new AboxError('not_found', `template "${i.name}" not found`);
       const st = await stat(entry.source.path);

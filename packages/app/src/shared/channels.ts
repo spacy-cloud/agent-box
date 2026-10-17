@@ -15,6 +15,8 @@ export const IPC_CHANNEL_NAMES = [
   'templates:list',
   'templates:show',
   'templates:review',
+  'projects:recent',
+  'projects:remember',
   'files:list',
   'files:copyIn',
   'files:copyOut',

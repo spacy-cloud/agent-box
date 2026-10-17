@@ -294,7 +294,61 @@ describe('review handlers read the approval, the renderer names no path', () => 
     }
   });
 
-  it('approvals:image describes the base of the requested template against the profile registries', async () => {
+  describe('with the base recorded on the approval', () => {
+    const withBase = (base: unknown, req: Record<string, unknown> = {}) => ({
+      ...approvalOf('create', request({ extra: { backend: 'docker' }, ...req })),
+      base,
+    });
+
+    it('reads image, registry and verdict from the approval and resolves nothing', async () => {
+      const { handlers, calls } = build({
+        approval: withBase({ os: 'ghcr.io/other/tools:1', registry: 'ghcr.io' }),
+        showError: true, // looking the template up again would fail: it is not needed
+      });
+      await expect(handlers['approvals:image']({ id: 'a1' }, {})).resolves.toEqual({
+        ref: 'ghcr.io/other/tools:1',
+        source: 'image',
+        registry: 'ghcr.io',
+        repository: 'other/tools',
+        registries: ['docker.io/library'],
+        outside: true,
+      });
+      expect(calls.some((c) => c.fn === 'showTemplate')).toBe(false);
+    });
+
+    it('does not depend on the file: a changed template does not hide the recorded base', async () => {
+      const { handlers } = build({
+        approval: withBase({ os: 'ubuntu:24.04', registry: 'docker.io' }),
+        contentHash: 'e'.repeat(64),
+      });
+      await expect(handlers['approvals:image']({ id: 'a1' }, {})).resolves.toMatchObject({
+        ref: 'ubuntu:24.04',
+        registry: 'docker.io',
+        outside: false,
+      });
+    });
+
+    it('a Dockerfile base is unchecked; a vm base is no image; an unknown profile keeps the registry only', async () => {
+      const dockerfile = build({ approval: withBase({ dockerfile: './Dockerfile' }) });
+      await expect(dockerfile.handlers['approvals:image']({ id: 'a1' }, {})).resolves.toMatchObject(
+        { source: 'dockerfile', ref: './Dockerfile', outside: true },
+      );
+      const vm = build({
+        approval: withBase({ os: 'debian-12' }, { extra: { backend: 'vm' } }),
+      });
+      await expect(vm.handlers['approvals:image']({ id: 'a1' }, {})).resolves.toBeNull();
+      const unknown = build({
+        approval: withBase({ os: 'ghcr.io/x/y:1', registry: 'ghcr.io' }, { profile: 'gone' }),
+      });
+      await expect(unknown.handlers['approvals:image']({ id: 'a1' }, {})).resolves.toMatchObject({
+        registry: 'ghcr.io',
+        registries: null,
+        outside: null,
+      });
+    });
+  });
+
+  it('approvals:image, for an old approval without a recorded base, looks the template up and describes it against the profile registries', async () => {
     const { handlers } = build({ approval: approvalOf('create', request()) });
     await expect(handlers['approvals:image']({ id: 'a1' }, {})).resolves.toEqual({
       ref: 'ghcr.io/other/tools:1',
@@ -331,6 +385,9 @@ describe('review handlers read the approval, the renderer names no path', () => 
   });
 
   it('templateTarget reads only well-formed requests', () => {
+    expect(templateTarget(request({ extra: { backend: 'docker', name: null } }))).toMatchObject({
+      backend: 'docker',
+    });
     expect(templateTarget(request())).toEqual({
       name: 'proj-tpl',
       contentHash: HASH,

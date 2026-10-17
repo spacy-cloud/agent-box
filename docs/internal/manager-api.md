@@ -70,11 +70,11 @@ Anything else is `not_found` (never `policy_denied`), identical to a missing id.
 
 Operations that may need a human return a status union instead of throwing:
 
-| status                                                                      | meaning                                                                                                           | what the surface does                                                       |
-| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `created` / `completed` / `applied` / `started`                             | done                                                                                                              | show the result                                                             |
-| `pending_approval` `{approvalId, kind, reasons, risks, expiresAt, message}` | queued; waited up to `waitForApprovalMs` (default `config.limits.approvalWaitMs` = 30 s; `0` for access requests) | tell the agent/user; repeat the identical call later, or poll `getApproval` |
-| `confirmation_required` `{reasons, risks, items}`                           | **human callers only**; nothing queued                                                                            | ask the user, repeat with `humanConfirmed: true`                            |
+| status                                                                             | meaning                                                                                                           | what the surface does                                                       |
+| ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `created` / `completed` / `applied` / `started`                                    | done                                                                                                              | show the result                                                             |
+| `pending_approval` `{approvalId, kind, kinds, reasons, risks, expiresAt, message}` | queued; waited up to `waitForApprovalMs` (default `config.limits.approvalWaitMs` = 30 s; `0` for access requests) | tell the agent/user; repeat the identical call later, or poll `getApproval` |
+| `confirmation_required` `{reasons, risks, items}`                                  | **human callers only**; nothing queued                                                                            | ask the user, repeat with `humanConfirmed: true`                            |
 
 Everything else throws `AboxError` (`code`, `message`, `hint`, `issues`, `details`; `exitCode` 0-5 as in
 `errors.ts`): `invalid_input` (zod, with field paths), `not_found`, `policy_denied` (`details.reasons[]` +
@@ -90,6 +90,12 @@ sandbox), `conflict`, `backend_error`, `backend_unavailable`, `host_unreachable`
    template/contents hash, overrides, paths, network, secrets, resources, command, or of `policy.yaml`
    needs a new approval. Approvals are one-time and valid for `config.limits.approvalTtlMs` after the
    decision. The agent's `reason` text is stored as untrusted (`ApprovalView.reason`; `risks` are abox's own).
+   The request digest of a create includes the resolved template base (`template.base`: `os` image reference
+   and/or `dockerfile` marker, plus the `registry` an image reference maps to), so an approval for one base
+   cannot be used for another. The approval also stores the policy items behind it (`items`: kind, reason,
+   risk, invariant); `ApprovalView` exposes them as `items`, `kinds` and `reasons`, and the recorded base
+   as `base` (`{os?, dockerfile?, registry?}` or `null`). Rows from before migration 5 have no items and
+   no base in the digest; surfaces fall back to resolving the template again for those.
 3. The same pending request is reused (no duplicate entries). Repeating an identical request that was
    **denied** within 10 min -> `approval_denied` at once; one that **expired** undecided within the last
    2 min -> `approval_expired` once. Afterwards a new request is queued.
@@ -338,7 +344,8 @@ unknown/revoked tokens or contexts no longer in the policy), `revokeAgentToken(c
 
 - SQLite (`state.db`): sandboxes, approvals, audit (hash chain), template_trust, policy_revisions, processes,
   host_cache, agent_tokens, **template_pins** (migration 2), **snapshots** and the per-sandbox egress cursor
-  (`net_cursor_ts`, `net_cursor_seen` on `sandboxes`; migration 3). A sandbox row is claimed (`preparing`) _before_ anything
+  (`net_cursor_ts`, `net_cursor_seen` on `sandboxes`; migration 3), the approved snapshot of a trusted
+  template (migration 4) and the policy items of an approval (`approvals.items`, migration 5). A sandbox row is claimed (`preparing`) _before_ anything
   is created; `effective.creator` (pid/host) lets other processes recognise a dead creator.
 - Registry rows never contain secret values: only refs (`effective.keyringRefs`), injection kinds, hosts.
 - `<dataDir>/sandboxes/<short>/` workspace staging per sandbox; `<dataDir>/exports/`; `<logsDir>/<short>/exec-*.log`.

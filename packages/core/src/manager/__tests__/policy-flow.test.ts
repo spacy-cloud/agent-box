@@ -1,6 +1,7 @@
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resolvePaths } from '../../config/paths.js';
 import { AboxError } from '../../errors.js';
 import type { Abox } from '../abox.js';
 import {
@@ -678,5 +679,98 @@ describe('template tools', () => {
 
     const good = await abox.validateTemplate(A, 'fake-box');
     expect(good.ok).toBe(true);
+  });
+});
+
+describe('the approval records why it is needed and which base it covers', () => {
+  const userTemplate = (): string => join(resolvePaths(env.env).templatesDir, 'fake-box.yaml');
+  const setBase = (base: string): void => {
+    const file = userTemplate();
+    writeFileSync(
+      file,
+      readFileSync(file, 'utf8').replace(/base: \{ os: [^}]+ \}/, `base: { os: ${base} }`),
+    );
+  };
+  const req = { template: 'fake-box', workspace: EMPTY_WS };
+
+  it('keeps the policy items (kinds, reasons) and the base on the approval', async () => {
+    setBase('ghcr.io/acme/tools:1');
+    const r = await abox.createSandbox(A, req, { waitForApprovalMs: 0 });
+    expect(r.status).toBe('pending_approval');
+    if (r.status !== 'pending_approval') return;
+    expect(r.kind).toBe('create');
+    expect(r.kinds).toEqual(['image_registry']);
+
+    const a = await abox.getApproval(HUMAN, r.approvalId);
+    expect(a.kinds).toEqual(['image_registry']);
+    expect(a.reasons).toEqual(r.reasons);
+    expect(a.reasons[0]).toContain('ghcr.io/acme/tools:1');
+    expect(a.items).toEqual([
+      expect.objectContaining({
+        kind: 'image_registry',
+        invariant: false,
+        risk: expect.any(String),
+      }),
+    ]);
+    expect(a.base).toEqual({ os: 'ghcr.io/acme/tools:1', registry: 'ghcr.io' });
+    expect(a.request).toMatchObject({
+      template: { base: { os: 'ghcr.io/acme/tools:1', registry: 'ghcr.io' } },
+    });
+    // listings carry it as well
+    expect((await abox.listApprovals(HUMAN, { status: 'pending' }))[0]).toMatchObject({
+      kinds: ['image_registry'],
+      base: { os: 'ghcr.io/acme/tools:1' },
+    });
+  });
+
+  it('a trust approval carries the base too, next to its other kinds', async () => {
+    writeProjectTemplate(env, 'proj-tpl');
+    const file = join(env.project, '.sandbox', 'proj-tpl.yaml');
+    writeFileSync(file, readFileSync(file, 'utf8').replace('ubuntu:24.04', 'quay.io/acme/ci:7'));
+    const r = await abox.createSandbox(
+      A,
+      { template: 'proj-tpl', workspace: EMPTY_WS },
+      { waitForApprovalMs: 0 },
+    );
+    if (r.status !== 'pending_approval') throw new Error(`unexpected ${r.status}`);
+    expect(r.kind).toBe('template_trust');
+    expect(r.kinds).toEqual(expect.arrayContaining(['template_trust', 'image_registry']));
+    const a = await abox.getApproval(HUMAN, r.approvalId);
+    expect(a.kinds).toEqual(r.kinds);
+    expect(a.base).toEqual({ os: 'quay.io/acme/ci:7', registry: 'quay.io' });
+  });
+
+  it('an approval for one base cannot be used after the template got another base', async () => {
+    setBase('ghcr.io/acme/tools:1');
+    const first = await abox.createSandbox(A, req, { waitForApprovalMs: 0 });
+    if (first.status !== 'pending_approval') throw new Error(`unexpected ${first.status}`);
+    await abox.approve(HUMAN, first.approvalId);
+
+    setBase('ghcr.io/evil/tools:1');
+    const other = await abox.createSandbox(A, req, { waitForApprovalMs: 0 });
+    expect(other.status).toBe('pending_approval');
+    if (other.status === 'pending_approval') {
+      expect(other.approvalId).not.toBe(first.approvalId);
+      expect((await abox.getApproval(HUMAN, other.approvalId)).base?.os).toBe(
+        'ghcr.io/evil/tools:1',
+      );
+    }
+    expect(fake().specs).toHaveLength(0);
+
+    // the original base still has its approval
+    setBase('ghcr.io/acme/tools:1');
+    created(await abox.createSandbox(A, req, { waitForApprovalMs: 0 }));
+  });
+
+  it('every create approval records its base, whatever the reason for the approval is', async () => {
+    const r = await abox.createSandbox(
+      A,
+      { ...req, overrides: { network: { mode: 'allowlist', allow: ['one.example.org'] } } },
+      { waitForApprovalMs: 0 },
+    );
+    if (r.status !== 'pending_approval') throw new Error(`unexpected ${r.status}`);
+    const a = await abox.getApproval(HUMAN, r.approvalId);
+    expect(a.kinds).toEqual(['network_domains']);
+    expect(a.base).toEqual({ os: 'ubuntu:24.04', registry: 'docker.io' });
   });
 });

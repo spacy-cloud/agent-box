@@ -241,6 +241,19 @@ export function ApprovalDialog(props: {
 
       <AgentText text={a.reason} label={t('approvals.agentReason')} />
 
+      {a.reasons.length > 0 ? (
+        <>
+          <h3>{t('approvals.why')}</h3>
+          <ul className="reason-list" aria-label={t('approvals.why')}>
+            {a.reasons.map((r, i) => (
+              <li key={i} className="plain">
+                {r}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+
       <h3>{t('approvals.risks')}</h3>
       {hints.length === 0 && a.risks.length === 0 ? (
         <p className="muted">{t('approvals.noRisks')}</p>

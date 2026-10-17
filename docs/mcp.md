@@ -150,6 +150,7 @@ object:
      "status": "pending_approval",
      "approval_id": "<id>",
      "kind": "create",
+     "kinds": ["strict_mode"],
      "reasons": [
        "profile \"careful\" uses approval mode strict: every sandbox creation needs approval"
      ],

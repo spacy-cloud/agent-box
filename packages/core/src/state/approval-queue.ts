@@ -12,6 +12,15 @@ export type ApprovalKind =
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired';
 export const FINAL_STATUSES: readonly ApprovalStatus[] = ['approved', 'denied', 'expired'];
 
+/** One policy finding that made an approval necessary (what the policy engine reported as an approval item). */
+export interface ApprovalItemRecord {
+  /** Policy item kind, e.g. `image_registry`, `template_trust`, `mount`. */
+  kind: string;
+  reason: string;
+  risk: string;
+  invariant: boolean;
+}
+
 export interface Approval {
   id: string;
   requester: string;
@@ -30,6 +39,11 @@ export interface Approval {
   reasonUntrusted: true;
   /** Risks computed by abox (trusted). */
   risks: string[];
+  /**
+   * Why approval was needed, as the policy engine reported it (trusted). Empty for approvals stored
+   * before items were recorded, and for kinds the policy did not raise.
+   */
+  items: ApprovalItemRecord[];
   status: ApprovalStatus;
   ttlMs: number;
   createdAt: number;
@@ -52,6 +66,7 @@ export interface CreateApprovalInput {
   request: unknown;
   reason?: string;
   risks?: string[];
+  items?: ApprovalItemRecord[];
   ttlMs: number;
 }
 
@@ -84,6 +99,7 @@ function toApproval(r: Row): Approval {
     reason: r['reason'] as string,
     reasonUntrusted: true,
     risks: fromJson<string[]>(r['risks'], []),
+    items: storedItems(r['items']),
     status: r['status'] as ApprovalStatus,
     ttlMs: num(r['ttl_ms']),
     createdAt: num(r['created_at']),
@@ -93,6 +109,25 @@ function toApproval(r: Row): Approval {
     decisionNote: strOrNull(r['decision_note']),
     usedAt: numOrNull(r['used_at']),
   };
+}
+
+/** Items column -> records; NULL (old rows) and anything malformed give an empty list. */
+function storedItems(text: unknown): ApprovalItemRecord[] {
+  const raw = fromJson<unknown>(text, []);
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((x): ApprovalItemRecord[] => {
+    const i = x as Partial<ApprovalItemRecord> | null;
+    return i && typeof i.kind === 'string' && typeof i.reason === 'string'
+      ? [
+          {
+            kind: i.kind,
+            reason: i.reason,
+            risk: typeof i.risk === 'string' ? i.risk : '',
+            invariant: i.invariant === true,
+          },
+        ]
+      : [];
+  });
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -129,8 +164,8 @@ export class ApprovalQueue {
     this.ctx.db
       .prepare(
         `INSERT INTO approvals (id, requester, kind, sandbox_id, request, request_hash, reason, risks,
-                                status, ttl_ms, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+                                items, status, ttl_ms, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
       )
       .run(
         id,
@@ -141,6 +176,14 @@ export class ApprovalQueue {
         hashRequest(input.request),
         input.reason ?? '',
         JSON.stringify(input.risks ?? []),
+        JSON.stringify(
+          (input.items ?? []).map((i) => ({
+            kind: i.kind,
+            reason: i.reason,
+            risk: i.risk,
+            invariant: i.invariant,
+          })),
+        ),
         Math.trunc(input.ttlMs),
         now,
         now + Math.trunc(input.ttlMs),

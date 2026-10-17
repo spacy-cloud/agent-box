@@ -470,6 +470,7 @@ export async function createSandbox(
       request,
       reasons: ev.reasons,
       risks: ev.risks,
+      items: ev.items,
       waitMs,
       signal: opts.signal,
       action: 'sandbox.create',

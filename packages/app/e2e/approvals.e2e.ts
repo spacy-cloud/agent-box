@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   axeViolations,
   launchGui,
@@ -176,4 +177,62 @@ test.describe('template trust: the approval shows what the project template does
       await app.close();
     }
   });
+});
+
+test('the base image comes from the approval itself: shown even when the template file is gone', async () => {
+  h.cleanup();
+  h = makeHome({ templates: ['proj-img'] });
+  writeFileSync(
+    join(h.home, 'config', 'hosts.yaml'),
+    'hosts:\n  local:\n    backends: [docker, process]\n',
+  );
+  const dir = join(h.project, '.sandbox');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'proj-img.yaml');
+  writeFileSync(
+    file,
+    'apiVersion: 1\nname: proj-img\ndescription: Project template with an image from another registry.\nbackend: docker\nbase: { os: ghcr.io/acme/tools:1 }\n',
+  );
+  const { app, page, errors } = await launchGui(h);
+  const agent = await openAgent(h);
+  try {
+    const first = await agent.abox.createSandbox(
+      agent.caller,
+      {
+        template: 'proj-img',
+        name: 'img-box',
+        workspace: { mode: 'empty' },
+        projectDir: h.project,
+      },
+      { waitForApprovalMs: 0 },
+    );
+    expect(first.status).toBe('pending_approval');
+    if (first.status !== 'pending_approval') return;
+    expect(first.kinds).toEqual(expect.arrayContaining(['template_trust', 'image_registry']));
+    // the template file is gone: only the approval knows the base
+    rmSync(file);
+
+    await page.getByRole('button', { name: /Freigaben/ }).click();
+    const dialog = page.getByRole('dialog', { name: 'Template vertrauen' });
+    const image = dialog.getByTestId('image-use');
+    await expect(image).toContainText('ghcr.io/acme/tools:1');
+    await expect(image).toContainText('ghcr.io');
+    await expect(image).toContainText('docker.io/library');
+    await expect(image).toContainText('außerhalb');
+    // why approval is needed, as stored with the approval
+    const why = dialog.getByRole('list', { name: 'Warum eine Freigabe nötig ist' });
+    await expect(why).toContainText('ghcr.io/acme/tools:1');
+    await expect(why.getByRole('listitem')).toHaveCount(2);
+    // the review needs the file and says so; deciding stays possible
+    await expect(dialog.getByTestId('template-review')).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Einmal erlauben' })).toBeVisible();
+    for (const scheme of ['light', 'dark'] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      expect(await axeViolations(page), scheme).toEqual([]);
+    }
+    expect(errors).toEqual([]);
+  } finally {
+    await agent.close();
+    await app.close();
+  }
 });

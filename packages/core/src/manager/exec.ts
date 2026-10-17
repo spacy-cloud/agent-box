@@ -111,6 +111,7 @@ async function authorizeCommand(
     request: { ...ev.requestDigest, policy: I.policy.contentHash, extra },
     reasons: ev.reasons,
     risks: ev.risks,
+    items: ev.items,
     waitMs: Math.max(0, o.waitForApprovalMs ?? I.config.limits.approvalWaitMs),
     signal: o.signal,
     action,

@@ -6,7 +6,11 @@ import type { Locale } from '../shared/ipc';
 interface StoredSettings {
   locale?: Locale;
   closeToTray?: boolean;
+  /** Project folders used for templates, most recent first. */
+  recentProjects?: string[];
 }
+
+const MAX_RECENT_PROJECTS = 8;
 
 /** Small per-user GUI preferences (language, close to tray). The manager's own config lives elsewhere. */
 export class GuiSettings {
@@ -19,11 +23,19 @@ export class GuiSettings {
       const raw = JSON.parse(readFileSync(this.file, 'utf8')) as {
         locale?: unknown;
         closeToTray?: unknown;
+        recentProjects?: unknown;
       };
       if (typeof raw.locale === 'string' && (LOCALES as readonly string[]).includes(raw.locale)) {
         this.data.locale = raw.locale as Locale;
       }
       if (typeof raw.closeToTray === 'boolean') this.data.closeToTray = raw.closeToTray;
+      if (Array.isArray(raw.recentProjects)) {
+        this.data.recentProjects = raw.recentProjects
+          .filter(
+            (p): p is string => typeof p === 'string' && p.startsWith('/') && p.length <= 4096,
+          )
+          .slice(0, MAX_RECENT_PROJECTS);
+      }
     } catch {
       /* first start or unreadable: defaults */
     }
@@ -36,6 +48,19 @@ export class GuiSettings {
   /** Default: closing the window quits the app. */
   get closeToTray(): boolean {
     return this.data.closeToTray === true;
+  }
+
+  /** Project folders used for templates, most recent first. */
+  get recentProjects(): string[] {
+    return [...(this.data.recentProjects ?? [])];
+  }
+
+  addRecentProject(dir: string): void {
+    this.data.recentProjects = [
+      dir,
+      ...(this.data.recentProjects ?? []).filter((p) => p !== dir),
+    ].slice(0, MAX_RECENT_PROJECTS);
+    this.save();
   }
 
   setLocale(l: Locale): void {

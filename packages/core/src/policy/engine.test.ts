@@ -489,6 +489,34 @@ describe('base image registries', () => {
       ).decision,
     ).toBe('allow');
   });
+  it('the request digest records the base and its registry, so an approval is bound to it', () => {
+    const digest = (t: ReturnType<typeof tpl>): Record<string, unknown> =>
+      (
+        run({ images: { registries: ['*'] } }, { template: t }).requestDigest['template'] as {
+          base: unknown;
+        }
+      ).base as Record<string, unknown>;
+    expect(digest(tpl('ghcr.io/acme/tools:1'))).toEqual({
+      os: 'ghcr.io/acme/tools:1',
+      registry: 'ghcr.io',
+    });
+    expect(digest(tpl('ubuntu:24.04'))).toEqual({ os: 'ubuntu:24.04', registry: 'docker.io' });
+    expect(
+      digest(tpl(undefined, { base: { dockerfile: './Dockerfile', osFamily: 'unknown' } })),
+    ).toEqual({ dockerfile: './Dockerfile' });
+    // a distro name of a vm base is not an image: no registry
+    expect(digest(tpl('ubuntu-24.04', { backend: 'vm' }))).toEqual({ os: 'ubuntu-24.04' });
+
+    // same template name, hash and content hash, other base: another digest, so another approval
+    const hash = (t: ReturnType<typeof tpl>): string =>
+      hashRequestDigest(run({ images: { registries: ['*'] } }, { template: t }).requestDigest);
+    expect(hash(tpl('ghcr.io/acme/tools:1'))).toBe(hash(tpl('ghcr.io/acme/tools:1')));
+    expect(hash(tpl('ghcr.io/acme/tools:1'))).not.toBe(hash(tpl('ghcr.io/acme/tools:2')));
+    expect(hash(tpl('ghcr.io/acme/tools:1'))).not.toBe(hash(tpl('docker.io/acme/tools:1')));
+    expect(hash(tpl('ghcr.io/acme/tools:1'))).not.toBe(
+      hash(tpl(undefined, { base: { dockerfile: './Dockerfile', osFamily: 'unknown' } })),
+    );
+  });
   it('a malformed image name is never allowed by a prefix', () => {
     expect(approvalKinds(withImage('docker.io/library/../evil'))).toEqual(['image_registry']);
   });

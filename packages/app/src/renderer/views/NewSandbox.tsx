@@ -5,6 +5,7 @@ import { useApp } from '../context';
 import { useQuery } from '../hooks';
 import { Banner, Dialog, ErrorBox, Field, IsolationBadge, Loading, Badge } from '../components/ui';
 import { ImageUseBlock, TemplateReviewPanel } from '../components/review';
+import { ProjectFolderPicker } from '../components/ProjectFolder';
 import { NETWORK_MODES, WORKSPACE_MODES } from '../../shared/constants';
 import { describeBase } from '../../shared/image-ref';
 import type { IpcInput } from '../../shared/ipc';
@@ -18,6 +19,8 @@ interface Form {
   name: string;
   /** Host profile id; empty = this computer. */
   host?: string;
+  /** Folder whose `.sandbox/*.yaml` project templates are offered; empty = none. */
+  projectDir?: string;
   workspaceMode: string;
   workspacePath: string;
   cpus: string;
@@ -32,6 +35,7 @@ const EMPTY_FORM: Form = {
   template: '',
   name: '',
   host: '',
+  projectDir: '',
   workspaceMode: '',
   workspacePath: '',
   cpus: '',
@@ -68,6 +72,7 @@ export function buildCreateInput(f: Form): IpcInput<'sandboxes:create'> {
     template: f.template,
     ...(f.name.trim() ? { name: f.name.trim() } : {}),
     ...(f.host && f.host !== 'local' ? { host: f.host } : {}),
+    ...(f.projectDir ? { projectDir: f.projectDir } : {}),
     ...(Object.keys(workspace).length > 0 ? { workspace } : {}),
     ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
   };
@@ -75,11 +80,14 @@ export function buildCreateInput(f: Form): IpcInput<'sandboxes:create'> {
 
 export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string): void }) {
   const { t, notify } = useApp();
-  const templates = useQuery('templates:list', undefined, { live: false });
-  const policy = useQuery('policy:get', undefined, { live: false });
-  const hosts = useQuery('hosts:list', undefined, { live: false });
   const [step, setStep] = useState<Step>('template');
   const [form, setForm] = useState<Form>(EMPTY_FORM);
+  const projectDir = form.projectDir ?? '';
+  const templates = useQuery('templates:list', projectDir ? { projectDir } : undefined, {
+    live: false,
+  });
+  const policy = useQuery('policy:get', undefined, { live: false });
+  const hosts = useQuery('hosts:list', undefined, { live: false });
   const [progress, setProgress] = useState<string[]>([]);
   const [confirmation, setConfirmation] = useState<{
     reasons: string[];
@@ -96,7 +104,7 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
   );
   const details = useQuery(
     'templates:show',
-    { name: form.template },
+    { name: form.template, ...(projectDir ? { projectDir } : {}) },
     { enabled: form.template !== '' && step !== 'template', live: false },
   );
 
@@ -106,7 +114,11 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
     form.workspacePath.trim() && form.workspaceMode !== 'empty' ? form.workspacePath.trim() : '';
   const review = useQuery(
     'templates:review',
-    { name: form.template, ...(workspacePath ? { workspacePath } : {}) },
+    {
+      name: form.template,
+      ...(workspacePath ? { workspacePath } : {}),
+      ...(projectDir ? { projectDir } : {}),
+    },
     { enabled: needsReview, live: false },
   );
   const baseImage =
@@ -241,8 +253,17 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
 
       {step === 'template' ? (
         <>
+          <ProjectFolderPicker
+            value={projectDir}
+            onChange={(dir) => setForm((f) => ({ ...f, projectDir: dir, template: '' }))}
+          />
           {templates.loading && !templates.data ? <Loading /> : null}
           {templates.error ? <ErrorBox error={templates.error} /> : null}
+          {projectDir &&
+          templates.data &&
+          !templates.data.templates.some((x) => x.source.kind === 'project') ? (
+            <p className="muted">{t('project.noTemplates')}</p>
+          ) : null}
           {templates.data && templates.data.templates.length === 0 ? (
             <p>{t('new.noTemplates')}</p>
           ) : null}
@@ -272,6 +293,9 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
                         {t('network.label')}: {t(`network.${tpl.networkMode}`)}
                       </Badge>
                       <Badge tone="neutral">{t(`source.${tpl.source.kind}`)}</Badge>
+                      {tpl.source.kind === 'project' && tpl.trusted ? (
+                        <Badge tone="ok">{t('tpl.trusted')}</Badge>
+                      ) : null}
                       {!tpl.trusted ? <Badge tone="warn">{t('new.untrusted')}</Badge> : null}
                       {!tpl.allowed ? <Badge tone="danger">{t('new.notAllowed')}</Badge> : null}
                       {!tpl.backendAvailable ? (

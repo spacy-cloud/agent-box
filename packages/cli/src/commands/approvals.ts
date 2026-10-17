@@ -29,6 +29,16 @@ function requestSummary(a: ApprovalView): string {
   return parts.join(', ');
 }
 
+/** The template base of a create / trust request, in one line: image and registry, or the Dockerfile (sanitised when printed). */
+function baseLine(base: NonNullable<ApprovalView['base']>): string {
+  const parts: string[] = [];
+  if (base.os !== undefined)
+    parts.push(`image ${base.os}${base.registry ? ` (registry ${base.registry})` : ''}`);
+  if (base.dockerfile !== undefined)
+    parts.push(`Dockerfile ${base.dockerfile} (the images it builds on cannot be checked)`);
+  return parts.join('; ');
+}
+
 /** Template named by a `template_trust` approval: name, approved content hash, project directory. */
 function trustedTemplateOf(
   a: ApprovalView,
@@ -125,6 +135,7 @@ export function registerApprovals(program: Command, cli: Cli): void {
             ['kind', x.kind],
             ['requested by', x.requester],
             ['sandbox', x.sandboxId ?? undefined],
+            ['template base', x.base ? baseLine(x.base) : undefined],
             ['status', x.status],
             ['created', formatTime(x.createdAt)],
             ['expires', `${formatTime(x.expiresAt)} (${formatRelative(x.expiresAt, Date.now())})`],
@@ -147,6 +158,13 @@ export function registerApprovals(program: Command, cli: Cli): void {
             .map((l) => `    ${l}`)
             .join('\n'),
           '',
+          ...(x.items.length
+            ? [
+                cli.style('bold', 'Why approval is needed (computed by abox):'),
+                ...x.items.map((i) => `  - [${safe(i.kind)}] ${safe(i.reason)}`),
+                '',
+              ]
+            : []),
           cli.style('bold', 'Risks (computed by abox):'),
           ...(x.risks.length ? x.risks.map((r) => `  ! ${safe(r)}`) : ['  (none listed)']),
         ];

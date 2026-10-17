@@ -7,10 +7,27 @@ import {
   DEFAULT_IMAGE_REGISTRIES,
   KNOWN_BASE_IMAGES,
   imageAllowedByRegistries,
+  imageRegistry,
   imageRepository,
   isKnownBaseImage,
   normalizeRegistryPattern,
 } from './images.js';
+
+describe('imageRegistry', () => {
+  it.each([
+    ['ubuntu:24.04', 'docker.io'],
+    ['myorg/app', 'docker.io'],
+    ['index.docker.io/library/ubuntu', 'docker.io'],
+    ['GHCR.io/my-org/app:v1', 'ghcr.io'],
+    ['localhost:5000/app', 'localhost:5000'],
+  ])('%s -> %s', (ref, expected) => {
+    expect(imageRegistry(ref)).toBe(expected);
+  });
+  it('is undefined for malformed names', () => {
+    expect(imageRegistry('docker.io/library/../evil')).toBeUndefined();
+    expect(imageRegistry('')).toBeUndefined();
+  });
+});
 
 describe('imageRepository', () => {
   it.each([
