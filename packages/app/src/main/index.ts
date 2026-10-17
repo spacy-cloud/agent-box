@@ -214,7 +214,7 @@ async function boot(): Promise<void> {
       tray?.setLocale(l);
     },
     poke: () => monitor?.poke('local'),
-    progress: (key, line) => send('evt:progress', { key, line }),
+    progress: (key, line, info) => send('evt:progress', { key, line, ...info }),
   });
 
   if (runtime) {

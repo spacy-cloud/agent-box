@@ -43,6 +43,9 @@ export interface SnapshotOptions {
   withSha256?: boolean;
   /** Entries already present in the object database: identical files are not written again. */
   known?: ReadonlyMap<string, TreeEntry>;
+  /** Called after every file with the bytes read so far. */
+  onBytes?: (done: number) => void;
+  signal?: AbortSignal;
 }
 
 /**
@@ -56,10 +59,12 @@ export async function snapshotTree(
   opts: SnapshotOptions = {},
 ): Promise<SnapshotResult> {
   const entries = new Map<string, SnapshotEntry>();
+  let doneBytes = 0;
   const walk = await walkTree(
     root,
     {
       async file(rel, fh, info) {
+        throwIfAborted(opts.signal);
         const hashed = await hashFileBlob(fh, info.size, fmt, opts.withSha256);
         const mode: EntryMode = info.executable ? '100755' : '100644';
         const known = opts.known?.get(rel);
@@ -74,6 +79,8 @@ export async function snapshotTree(
           perm: info.mode,
           ...(hashed.sha256 ? { sha256: hashed.sha256 } : {}),
         });
+        doneBytes += info.size;
+        opts.onBytes?.(doneBytes);
       },
       async symlink(rel, target) {
         const oid = await writeBufferBlob(gitDir, fmt, target);
@@ -93,6 +100,10 @@ export async function snapshotTree(
     },
   );
   return { entries, walk };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new AboxError('internal', 'create cancelled');
 }
 
 /** True when a symlink at `rel` with `target` points outside the tree (absolute or escaping with `..`). */
@@ -184,8 +195,17 @@ export interface CopyTreeResult {
 export async function copyTreeSafely(
   src: string,
   dest: string,
-  opts: { exclude?: ExcludeMatcher; limits?: WalkLimits; gitMode?: 'skip' | 'visit' } = {},
+  opts: {
+    exclude?: ExcludeMatcher;
+    limits?: WalkLimits;
+    gitMode?: 'skip' | 'visit';
+    /** Called as bytes are copied, with the total so far. */
+    onBytes?: (done: number) => void;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<CopyTreeResult> {
+  const { onBytes, signal, ...walkOpts } = opts;
+  let doneBytes = 0;
   await mkdir(dest, { recursive: true, mode: 0o700 });
   const escaping: string[] = [];
   const dirModes: Array<[string, number]> = [];
@@ -204,11 +224,20 @@ export async function copyTreeSafely(
         dirModes.push([t, mode]);
       },
       async file(rel, fh: FileHandle, info) {
+        throwIfAborted(signal);
         const t = target(rel);
         await mkdir(dirname(t), { recursive: true });
         const ws = createWriteStream(t, { flags: 'wx', mode: info.mode & 0o777 });
         if (info.size > 0) {
-          await pipeline(Readable.from(readChunks(fh, info.size)), ws);
+          await pipeline(
+            Readable.from(
+              readChunks(fh, info.size, signal, (n) => {
+                doneBytes += n;
+                onBytes?.(doneBytes);
+              }),
+            ),
+            ws,
+          );
         } else {
           ws.end();
           await new Promise<void>((res, rej) => ws.on('close', res).on('error', rej));
@@ -223,21 +252,28 @@ export async function copyTreeSafely(
         if (symlinkEscapes(rel, linkTarget.toString('utf8'))) escaping.push(rel);
       },
     },
-    { ...opts, gitMode: opts.gitMode ?? 'visit' },
+    { ...walkOpts, gitMode: walkOpts.gitMode ?? 'visit' },
   );
   // restore directory modes bottom-up (children first), keeping owner rwx so abox can clean up
   for (const [p, mode] of dirModes.reverse()) await chmod(p, (mode & 0o777) | 0o700);
   return { walk, escapingSymlinks: escaping };
 }
 
-async function* readChunks(fh: FileHandle, size: number): AsyncGenerator<Buffer> {
+async function* readChunks(
+  fh: FileHandle,
+  size: number,
+  signal?: AbortSignal,
+  onChunk?: (bytes: number) => void,
+): AsyncGenerator<Buffer> {
   let pos = 0;
   while (pos < size) {
+    throwIfAborted(signal);
     const want = Math.min(1024 * 1024, size - pos);
     const buf = Buffer.allocUnsafe(want);
     const { bytesRead } = await fh.read(buf, 0, want, pos);
     if (bytesRead === 0) break;
     pos += bytesRead;
+    onChunk?.(bytesRead);
     yield bytesRead === want ? buf : buf.subarray(0, bytesRead);
   }
 }

@@ -74,6 +74,10 @@ export interface ChangedEvent {
 export interface ProgressEvent {
   key: string;
   line: string;
+  /** Workspace scan / copy lines: which step, and the bytes behind the line (a bar when `total` is known). */
+  phase?: 'scan' | 'copy' | 'baseline' | 'deliver';
+  done?: number;
+  total?: number;
 }
 export interface NavigateEvent {
   view: ViewName;

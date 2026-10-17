@@ -16,6 +16,8 @@ export {
   DEFAULT_POLICY_YAML,
   BUILTIN_AGENT_CONTEXTS,
   DEFAULT_WORKSPACE_ROOTS,
+  DEFAULT_MAX_COPY_BYTES,
+  DEFAULT_MAX_COPY_ENTRIES,
 } from './load.js';
 export * from './context.js';
 export * from './paths.js';

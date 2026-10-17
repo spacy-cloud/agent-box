@@ -5,7 +5,14 @@
  */
 import { readFile } from 'node:fs/promises';
 import { AboxError, DEFAULT_POLICY_YAML } from '@abox/core';
-import type { Abox, AboxPaths, AuditFilter, Caller, CreateSandboxRequest } from '@abox/core';
+import type {
+  Abox,
+  AboxPaths,
+  AuditFilter,
+  Caller,
+  CreateSandboxRequest,
+  ProgressInfo,
+} from '@abox/core';
 import type { z } from 'zod';
 import type { IPC, IpcChannel } from '../shared/ipc';
 import type { McpConfig, McpContextStatus, McpStatus, Outputs } from '../shared/types';
@@ -22,7 +29,7 @@ export interface ServiceRuntime {
 type Input<C extends IpcChannel> = z.output<(typeof IPC)[C]>;
 
 export interface ServiceContext {
-  onProgress?: (key: string, line: string) => void;
+  onProgress?: (key: string, line: string, info?: ProgressInfo) => void;
 }
 
 export type ManagerHandlers = {
@@ -39,6 +46,8 @@ export type ManagerChannel =
   | 'sandboxes:remove'
   | 'sandboxes:extend'
   | 'sandboxes:create'
+  | 'workspace:estimate'
+  | 'jobs:cancel'
   | 'templates:list'
   | 'templates:show'
   | 'templates:review'
@@ -82,6 +91,24 @@ function clean<T extends object>(o: T): T {
 export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
   const { abox } = rt;
 
+  /** Running cancellable calls (`sandboxes:create`, `workspace:estimate`) by the key the renderer chose. */
+  const jobs = new Map<string, AbortController>();
+  async function cancellable<T>(
+    key: string | undefined,
+    run: (signal: AbortSignal | undefined) => Promise<T>,
+  ): Promise<T> {
+    if (!key) return run(undefined);
+    // a repeated key replaces (and cancels) the older call: the renderer only wants the latest answer
+    jobs.get(key)?.abort();
+    const ctl = new AbortController();
+    jobs.set(key, ctl);
+    try {
+      return await run(ctl.signal);
+    } finally {
+      if (jobs.get(key) === ctl) jobs.delete(key);
+    }
+  }
+
   async function policyText(): Promise<{
     text: string;
     source: 'default' | 'file';
@@ -123,11 +150,30 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
             })
           : undefined,
       });
-      return abox.createSandbox(confirmedHuman(confirmed), request, {
-        onProgress: (line) => {
-          if (progressKey) ctx.onProgress?.(progressKey, line);
-        },
-      });
+      return cancellable(progressKey, (signal) =>
+        abox.createSandbox(confirmedHuman(confirmed), request, {
+          ...(signal ? { signal } : {}),
+          onProgress: (line, info) => {
+            if (progressKey) ctx.onProgress?.(progressKey, line, info);
+          },
+        }),
+      );
+    },
+    'workspace:estimate': (i, ctx) => {
+      const { progressKey, ...req } = i;
+      return cancellable(progressKey, (signal) =>
+        abox.estimateWorkspace(HUMAN, clean(req), {
+          ...(signal ? { signal } : {}),
+          onProgress: (line, info) => {
+            if (progressKey) ctx.onProgress?.(progressKey, line, info);
+          },
+        }),
+      );
+    },
+    'jobs:cancel': async (i) => {
+      const ctl = jobs.get(i.key);
+      ctl?.abort();
+      return { cancelled: ctl !== undefined };
     },
     'templates:list': async (i) => abox.listTemplates(HUMAN, await projectOption(i?.projectDir)),
     'templates:show': async (i) =>

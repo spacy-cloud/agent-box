@@ -20,3 +20,13 @@ export {
   type WalkLimits,
 } from './safefs.js';
 export { copyTreeSafely, symlinkEscapes } from './snapshot.js';
+export {
+  scanTree,
+  copyLimitError,
+  describeScan,
+  formatCount,
+  WORKSPACE_COPY_LIMITS,
+  type ScanOptions,
+  type ScanProgress,
+  type ScanResult,
+} from './scan.js';

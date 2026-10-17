@@ -70,6 +70,10 @@ export function registerSandbox(program: Command, cli: Cli): void {
       ).choices([...WORKSPACE_MODES]),
     )
     .option('--ref <ref>', 'git ref for clone/worktree workspaces (needs --workspace)')
+    .option(
+      '--exclude <patterns>',
+      'leave these out of a copy/sync workspace, comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)',
+    )
     .addOption(new Option('--net <mode>', 'network mode').choices([...NETWORK_MODES]))
     .option(
       '--allow <domains>',
@@ -88,6 +92,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
           workspace?: string;
           mode?: WorkspaceMode;
           ref?: string;
+          exclude?: string;
           net?: (typeof NETWORK_MODES)[number];
           allow?: string;
           ttl?: string;
@@ -123,15 +128,17 @@ export function registerSandbox(program: Command, cli: Cli): void {
           workspace.path = cli.resolvePath(o.workspace);
           if (o.mode) workspace.mode = o.mode;
         } else {
-          if ((o.mode && o.mode !== 'empty') || o.ref) {
+          if ((o.mode && o.mode !== 'empty') || o.ref || o.exclude) {
             throw invalid(
-              `${o.ref ? '--ref' : `--mode ${o.mode}`} needs a project directory`,
+              `${o.ref ? '--ref' : o.exclude ? '--exclude' : `--mode ${o.mode}`} needs a project directory`,
               'Add --workspace <path> (for example "-w ."), or leave both out for an empty workspace.',
             );
           }
           workspace.mode = 'empty';
         }
         if (o.ref) workspace.ref = o.ref;
+        const exclude = commaList(o.exclude);
+        if (exclude.length > 0) workspace.exclude = exclude;
         const req: CreateSandboxRequest = {
           template,
           ...(o.name ? { name: o.name } : {}),

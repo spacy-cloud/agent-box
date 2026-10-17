@@ -74,6 +74,8 @@ export const createRequestSchema = z
         path: absPath.optional(),
         ref: shortText.optional(),
         access: z.enum(['ro', 'rw']).optional(),
+        /** Exclude patterns of a copy / sync workspace (gitignore-like, see the templates doc). */
+        exclude: z.array(z.string().min(1).max(512)).max(256).optional(),
       })
       .strict()
       .optional(),
@@ -232,6 +234,20 @@ export const IPC = {
   'sandboxes:remove': z.object({ id }).strict(),
   'sandboxes:extend': z.object({ id, ttl: duration, confirmed: z.boolean().optional() }).strict(),
   'sandboxes:create': createRequestSchema,
+  /**
+   * Fast read-only size check of a workspace folder (what a copy would move); `progressKey` correlates the
+   * `evt:progress` lines and `jobs:cancel` with the call.
+   */
+  'workspace:estimate': z
+    .object({
+      path: projectDir,
+      mode: z.enum(WORKSPACE_MODES).optional(),
+      exclude: z.array(z.string().min(1).max(512)).max(256).optional(),
+      progressKey: progressKey.optional(),
+    })
+    .strict(),
+  /** Cancels a running `sandboxes:create` or `workspace:estimate` call by its `progressKey`. */
+  'jobs:cancel': z.object({ key: progressKey }).strict(),
   /** `projectDir`: also list the project templates of that folder (`.sandbox/*.yaml`); builtin and user ones always. */
   'templates:list': z.object({ projectDir: projectDir.optional() }).strict().optional(),
   'templates:show': z.object({ name: shortText, projectDir: projectDir.optional() }).strict(),

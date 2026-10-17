@@ -13,8 +13,21 @@ import {
   type RepoLocation,
 } from './git.js';
 import { initBareRepo, type ObjectFormat } from './objstore.js';
+import {
+  copyLimitError,
+  describeScan,
+  scanTree,
+  WORKSPACE_COPY_LIMITS,
+  type ScanResult,
+} from './scan.js';
 import { copyTreeSafely, createBaselineFromTree, writeManifest } from './snapshot.js';
-import type { PrepareWorkspaceInput, PrepareWorkspaceResult, WorkspaceRecord } from './types.js';
+import type {
+  PrepareWorkspaceInput,
+  PrepareWorkspaceResult,
+  ProgressInfo,
+  WorkspaceRecord,
+} from './types.js';
+import { formatBytesHuman } from '../policy/units.js';
 
 /**
  * Host-side workspace preparation. See the per-mode notes below; the security model is:
@@ -48,10 +61,61 @@ import type { PrepareWorkspaceInput, PrepareWorkspaceResult, WorkspaceRecord } f
  */
 
 const DEFAULT_LIMITS = {
-  maxEntries: 2_000_000,
-  maxFileBytes: 4 * 1024 * 1024 * 1024,
-  maxTotalBytes: 64 * 1024 * 1024 * 1024,
+  maxEntries: WORKSPACE_COPY_LIMITS.maxEntries,
+  maxFileBytes: WORKSPACE_COPY_LIMITS.maxFileBytes,
+  maxTotalBytes: WORKSPACE_COPY_LIMITS.maxTotalBytes,
 };
+
+/** At most one progress line per second per phase (plus the final one), so a terminal log stays readable. */
+const PROGRESS_INTERVAL_MS = 1000;
+
+function phaseReporter(
+  input: Pick<PrepareWorkspaceInput, 'onProgress'>,
+  phase: 'copy' | 'baseline',
+  verb: string,
+  total: number | undefined,
+): (done: number) => void {
+  let last = 0;
+  return (done) => {
+    if (!input.onProgress) return;
+    const now = Date.now();
+    if (now - last < PROGRESS_INTERVAL_MS) return;
+    last = now;
+    const info: ProgressInfo = { phase, done, ...(total !== undefined ? { total } : {}) };
+    input.onProgress(
+      `${verb} workspace … ${formatBytesHuman(done)}${total !== undefined ? ` of ${formatBytesHuman(total)}` : ''}`,
+      info,
+    );
+  };
+}
+
+/**
+ * The fast read-only pre-scan of a workspace folder (no file contents are read, links are not
+ * followed): fails within seconds when the folder is beyond the hard limits, and yields the totals
+ * for the progress of the copy. A `known` scan taken moments ago by the caller is reused.
+ */
+export async function scanForCopy(
+  source: string,
+  input: Pick<PrepareWorkspaceInput, 'exclude' | 'onProgress' | 'signal' | 'scan'>,
+  opts: { purpose?: 'copy' | 'baseline'; gitMode?: 'skip' | 'visit' } = {},
+): Promise<ScanResult> {
+  let scan = input.scan;
+  if (!scan) {
+    scan = await scanTree(source, {
+      exclude: compileExcludes(input.exclude),
+      gitMode: opts.gitMode ?? 'visit',
+      ...(input.signal ? { signal: input.signal } : {}),
+      onProgress: (p) =>
+        input.onProgress?.(`scanning workspace … ${describeScan(p)}`, {
+          phase: 'scan',
+          done: p.bytes,
+        }),
+    });
+    input.onProgress?.(`workspace: ${describeScan(scan)}`, { phase: 'scan', done: scan.bytes });
+  }
+  if (scan.stoppedBy) throw copyLimitError(source, scan, opts.purpose ?? 'copy');
+  return scan;
+}
 
 function sanitizeShort(raw: string): string {
   const s = raw
@@ -209,10 +273,17 @@ async function prepareMount(
     // Non-git directory: take a snapshot now so that an export has something to compare with.
     const baselineDir = join(input.sandboxDir, 'baseline.git');
     rollback.push(() => rm(baselineDir, { recursive: true, force: true }));
+    const scan = await scanForCopy(
+      source,
+      { onProgress: input.onProgress, signal: input.signal },
+      { purpose: 'baseline', gitMode: 'skip' },
+    );
     const created = await createBaselineFromTree(source, baselineDir, scratch, {
       withSha256: true,
       limits: DEFAULT_LIMITS,
       message: 'abox baseline (mount)',
+      ...(input.signal ? { signal: input.signal } : {}),
+      onBytes: phaseReporter(input, 'baseline', 'recording baseline of', scan.bytes),
     });
     const manifest = await writeManifest(
       join(input.sandboxDir, 'baseline-manifest.json'),
@@ -483,10 +554,18 @@ async function prepareCopy(
   });
 
   const exclude = compileExcludes(input.exclude);
+  const scan = await scanForCopy(source, input);
   const copied = await copyTreeSafely(source, staging, {
     exclude,
     limits: DEFAULT_LIMITS,
     gitMode: 'visit',
+    ...(input.signal ? { signal: input.signal } : {}),
+    onBytes: phaseReporter(input, 'copy', 'copying', scan.bytes),
+  });
+  input.onProgress?.(`copied workspace: ${describeScan(scan)}`, {
+    phase: 'copy',
+    done: scan.bytes,
+    total: scan.bytes,
   });
 
   // optional link to the user's repository (target of branch exports)
@@ -513,6 +592,8 @@ async function prepareCopy(
     withSha256: true,
     limits: DEFAULT_LIMITS,
     message: `abox baseline (${base.mode})`,
+    ...(input.signal ? { signal: input.signal } : {}),
+    onBytes: phaseReporter(input, 'baseline', 'recording baseline of', scan.bytes),
   });
   const manifest = await writeManifest(
     join(input.sandboxDir, 'baseline-manifest.json'),

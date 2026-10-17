@@ -221,6 +221,42 @@ describe('schema errors', () => {
   });
 });
 
+describe('workspace copy limits', () => {
+  it('defaults to 1g / 50000 entries and accepts values per profile', () => {
+    const p = parsePolicy(
+      'profiles:\n  a: { workspace: { modes: [copy] } }\n  b: { extends: a, workspace: { max_copy_bytes: 8g, max_copy_entries: 1000 } }\n',
+      { kind: 'file', path: '/p.yaml' },
+    );
+    expect(p.profiles.a!.workspace).toMatchObject({
+      max_copy_bytes: '1g',
+      maxCopyBytes: 1024 ** 3,
+      max_copy_entries: 50_000,
+    });
+    expect(p.profiles.b!.workspace).toMatchObject({
+      modes: ['copy'],
+      max_copy_bytes: '8g',
+      maxCopyBytes: 8 * 1024 ** 3,
+      max_copy_entries: 1000,
+    });
+    expect(p.profiles.human!.workspace.maxCopyBytes).toBe(1024 ** 3);
+  });
+
+  it('rejects an invalid size or count with the field path', () => {
+    expect(() =>
+      parsePolicy('profiles:\n  a: { workspace: { max_copy_bytes: lots } }\n', {
+        kind: 'file',
+        path: '/p.yaml',
+      }),
+    ).toThrow(/max_copy_bytes/);
+    expect(() =>
+      parsePolicy('profiles:\n  a: { workspace: { max_copy_entries: 0 } }\n', {
+        kind: 'file',
+        path: '/p.yaml',
+      }),
+    ).toThrow(/max_copy_entries/);
+  });
+});
+
 describe('profile resolution', () => {
   const policy = `
 profiles:
@@ -276,7 +312,13 @@ contexts:
     const q = parse('profiles:\n  bare: {}\n');
     const b = q.profiles.bare!;
     expect(b.templates).toEqual([]);
-    expect(b.workspace).toEqual({ roots: [], modes: ['empty'] });
+    expect(b.workspace).toMatchObject({
+      roots: [],
+      modes: ['empty'],
+      max_copy_bytes: '1g',
+      maxCopyBytes: 1024 ** 3,
+      max_copy_entries: 50_000,
+    });
     expect(b.network).toEqual({ modes: ['none'], allow_presets: [], allow: [] });
     expect(b.mounts).toBeNull();
     expect(b.secrets).toEqual({ allowed: [], inject: ['proxy'] });

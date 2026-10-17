@@ -106,6 +106,19 @@ is an untrusted project template (it is shown before anything is created, togeth
 image when that lies outside the allowed registries), and as **Review …** in the Templates view for
 a project template. Looking at a review never trusts anything.
 
+## New sandbox: big folders
+
+For a `copy`/`sync` workspace the **Options** step measures the folder as soon as you have chosen
+or typed it (a fast read-only scan, no file content is read; it is cancelled and restarted when you
+change the folder). Under the field it shows "≈ 3.2 GiB, 41 000 files", a warning for a folder
+above the policy's soft limit (default 1 GiB or 50 000 entries; creating it asks for your
+confirmation) and an error that blocks **Next** for a folder above the hard copy limit (64 GiB or
+2 000 000 entries). Both come with buttons to switch to `mount` or `clone` and with the advice to
+choose the project folder itself or fill **Exclude** (patterns like `node_modules *.log`; `.gitignore`
+is not read). While the sandbox is created the dialog shows the lines of the scan, the copy
+(`copying workspace … X of Y`, with a progress bar) and the image build, and **Cancel** stops the
+create at the next file and removes what was made.
+
 ## Allow permanently
 
 "Allow permanently" in an approval opens the dialog **Allow permanently: change policy**. It shows

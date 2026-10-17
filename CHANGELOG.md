@@ -127,6 +127,26 @@ release. Nothing has been released yet.
   indented notes and a new `--verbose` for the full details. The GUI shows OK/Info/Warning/Error
   badges, a one-line summary per backend with a keyboard operable "Notes (n)" disclosure and a neutral
   "not installed (optional)" instead of the red "unavailable".
+
+- **A copied workspace folder is measured before anything is copied, and a big one is not copied
+  silently.** `copy`/`sync` run a fast read-only pre-scan first (directory listing and `lstat`
+  only, links not followed, the same excludes as the copy). New soft limit in the profile,
+  `workspace.max_copy_bytes` (default `1g`) and `workspace.max_copy_entries` (default `50000`): above
+  it a human gets a confirmation (`confirmation_required`, approval kind `workspace_size`; the CLI
+  needs `--yes` without a terminal), an agent gets `policy_denied` naming the alternatives its
+  profile allows. The hard limit (64 GiB, 2 000 000 entries) stays. `abox create --exclude <patterns>`
+  and an "Exclude" field in the GUI expose the existing exclude patterns; `.gitignore` is still not
+  read (now documented in quickstart, templates and cli docs).
+- **Progress while creating a sandbox with a copied workspace:** `scanning workspace … N files, X`,
+  `copying workspace … X of Y`, `recording baseline of workspace … X of Y` and `delivering workspace
+into the sandbox …` lines through `onProgress` (stderr of `abox create`; the GUI dialog shows them
+  with a progress bar). `CreateOptions.onProgress` gets a second argument with the numbers.
+- GUI New sandbox: the folder is measured when it is picked (new `workspace:estimate` channel,
+  `Abox.estimateWorkspace`, human only): "≈ 3.2 GiB, 41 000 files", a warning for a large folder
+  and an error that blocks Create beyond the copy limit, each with buttons for `mount`/`clone`.
+  **Cancel** during creation now works (new `jobs:cancel` channel; the abort reaches the scan, the
+  copy and the image build, and what was made is removed).
+
 - Host limits `cpus`, `memory` and `sandboxes` are budgets of the whole host: a create or a resource
   `access_request` is refused when the sandboxes that can still run there (running and stopped)
   would together exceed them; the check is repeated inside the registry claim transaction.
@@ -241,6 +261,14 @@ release. Nothing has been released yet.
   limited).
 
 ### Fixed
+
+- **Copying a huge folder no longer fails minutes later with the wrong message.** The create used to
+  walk and pack the tree until the 64 GiB cap was hit (about 2.5 minutes with an empty progress bar)
+  and then reported the export-direction text "the sandbox produced an unusually large tree".
+  It now fails within seconds with `workspace folder <path> is larger than the copy limit (<size>
+found so far, limit 64 GiB)` and a hint to choose the project folder itself, use `mount`/`clone`
+  or exclude large directories (a non-git `mount` that needs a baseline snapshot gets the same fast
+  check with its own hint).
 
 - A `mount` workspace directory is claimed atomically: of several parallel creates for one
   directory, exactly one succeeds.
