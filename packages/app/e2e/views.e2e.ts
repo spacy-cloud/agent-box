@@ -270,6 +270,18 @@ test('settings: backend status, doctor, MCP configuration and status, token crea
       backends.locator('tr').filter({ has: page.getByRole('cell', { name, exact: true }) });
     await expect(backendRow('process')).toContainText('verfügbar');
     await expect(backendRow('docker')).toContainText('nicht verfügbar');
+    // advisory notes of a working backend: a short row, the notes behind a keyboard operable disclosure
+    const notes = backendRow('process').locator('summary');
+    await expect(notes).toHaveText(/^Hinweise \(\d+\)$/);
+    await expect(backendRow('process').getByText('verfügbar', { exact: true })).toBeVisible();
+    const noneNote = backendRow('process').getByText('isolation level "none"');
+    await expect(noneNote).toBeHidden();
+    await notes.focus();
+    await page.keyboard.press('Enter');
+    await expect(backendRow('process').locator('details')).toHaveAttribute('open', '');
+    await expect(noneNote).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect(backendRow('process').locator('details')).not.toHaveAttribute('open', '');
     await expect(page.getByText('Prüfungen')).toBeVisible();
 
     // MCP: the command to copy, for the agent contexts of the policy
@@ -379,6 +391,12 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect(page.getByRole('table', { name: 'Backends' })).toBeVisible();
       await check('settings');
       await shot(page, `settings-${scheme}`);
+      // the diagnostics disclosures expanded (notes and details)
+      await page.locator('details.disclosure > summary').evaluateAll((els) => {
+        for (const el of els) (el.parentElement as HTMLDetailsElement).open = true;
+      });
+      expect(await page.locator('details.disclosure[open]').count()).toBeGreaterThan(0);
+      await check('settings, disclosures open');
       await page.getByRole('button', { name: /Hosts und SSH/ }).click();
       await expect(page.getByRole('table', { name: 'Hostprofile' })).toBeVisible();
       await expect(page.getByTestId('util-local')).toContainText('Sandbox');

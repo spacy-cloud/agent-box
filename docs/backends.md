@@ -83,7 +83,7 @@ not attempted and writable binds may be read-only for the sandbox user; use `cop
 **Hardened runtime.** Set `backends.docker.runtime` (or `backends.podman.runtime`) in `config.yaml`
 to the name of an OCI runtime installed in the engine, for example `runsc` (gVisor) or `kata`. If
 the engine lists that runtime, the backend reports isolation `hardened`; otherwise it stays at
-`container`, templates that require `hardened` are refused, and `abox doctor` warns (checked: with
+`container`, templates that require `hardened` are refused, and `abox doctor` warns (a real `warning`; checked: with
 `runtime: runsc` on an engine without it, doctor warns that the runtime is not installed). The
 Python backend uses the Docker setting. **Not verified**: no stronger runtime has been installed
 and tested with abox, so the `hardened` level itself is untested.
@@ -91,7 +91,7 @@ and tested with abox, so the `hardened` level itself is untested.
 **Quirks.**
 
 - `docker` group membership and a rootful daemon are root-equivalent on the host. `abox doctor`
-  warns about it. Prefer a rootless engine.
+  notes it (info). Prefer a rootless engine.
 - Disk limits need xfs with project quotas, btrfs or zfs. On `overlayfs` a template with
   `resources.disk` is rejected as `unsupported`.
 - Snapshots commit the container layer to an image `abox-snap/<id>:<name>`; volumes, tmpfs and
@@ -141,7 +141,7 @@ the code or the engine is known to differ, the table says so.
 | Disk limits (`resources.disk`)                                                                                                                               | Not offered: the quota detection looks for Docker's `overlay2` driver on xfs, so a template with `resources.disk` is rejected as `unsupported` (derived from the code)                       |
 | Hardened runtimes (`runsc`, `kata`)                                                                                                                          | Unverified on every engine                                                                                                                                                                   |
 | Remote engines over an SSH tunnel to a Podman socket (`docs/hosts-ssh.md`)                                                                                   | Unverified                                                                                                                                                                                   |
-| `abox doctor` rootful warning                                                                                                                                | Expected to work if Podman's `/info` lists `name=rootless` in `SecurityOptions` (unverified)                                                                                                 |
+| `abox doctor` rootful note                                                                                                                                   | Expected to work if Podman's `/info` lists `name=rootless` in `SecurityOptions` (unverified)                                                                                                 |
 
 Run the suite against a Podman socket to turn "expected" into "verified" (switches in
 [CONTRIBUTING](../CONTRIBUTING.md#opt-in-test-switches)):

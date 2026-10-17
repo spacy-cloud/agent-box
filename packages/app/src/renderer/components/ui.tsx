@@ -20,6 +20,16 @@ export function Badge(props: {
   );
 }
 
+/** A native disclosure (`<details>`): keyboard operable (Enter/Space on the summary) without extra script. */
+export function Disclosure(props: { label: string; children: ReactNode; className?: string }) {
+  return (
+    <details className={`disclosure${props.className ? ` ${props.className}` : ''}`}>
+      <summary>{props.label}</summary>
+      {props.children}
+    </details>
+  );
+}
+
 const ISOLATION_TONE: Record<IsolationLevel, 'strong-danger' | 'info' | 'ok'> = {
   none: 'strong-danger',
   container: 'info',

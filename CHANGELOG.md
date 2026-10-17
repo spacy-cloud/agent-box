@@ -113,6 +113,21 @@ release. Nothing has been released yet.
 
 ### Changed
 
+- `abox doctor` and the GUI diagnostics tell apart four severities: `ok`, `info`, `warning` and
+  failed. A backend that works is `ok` even with advisory notes (rootful engine, no disk quota,
+  `process`/venv mode without isolation, VM `open` network mode), which are listed as `info` notes
+  instead of turning the whole backend into a warning. An optional backend that is not installed or
+  not running (no template of yours or sandbox uses it) appears once, as `info` with a hint how to
+  start it (for Podman: `systemctl --user start podman.socket`); the duplicate "could not list
+  podman" warning is gone (it stays a warning for a backend something uses). The exit code is
+  unchanged (only failed checks give 1). `--json` only gained fields: `severity`, `details` and
+  `notes` per check, `summary` for the report and `advisories` in a backend's `status`; `level`
+  stays, with `info` reported as `ok`, so an optional backend that is not running is now
+  `level: "ok"` instead of `"warn"`. Text output has a mark per line (`✓` `i` `!` `✗`), wrapped
+  indented notes and a new `--verbose` for the full details. The GUI shows OK/Info/Warning/Error
+  badges, a one-line summary per backend with a keyboard operable "Notes (n)" disclosure and a neutral
+  "not installed (optional)" instead of the red "unavailable".
+
 - **A copied workspace folder is measured before anything is copied, and a big one is not copied
   silently.** `copy`/`sync` run a fast read-only pre-scan first (directory listing and `lstat`
   only, links not followed, the same excludes as the copy). New soft limit in the profile,

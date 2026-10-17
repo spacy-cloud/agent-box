@@ -674,11 +674,30 @@ export interface AgentTokenView {
 
 // -- maintenance --------------------------------------------------------------------
 
+/** How much a doctor check matters. `info` is an advisory note about something that works. */
+export type DoctorSeverity = 'ok' | 'info' | 'warning' | 'error';
+
+/** One advisory or warning attached to a check (for a backend: one line of `BackendStatus.warnings`). */
+export interface DoctorNote {
+  severity: 'info' | 'warning';
+  message: string;
+}
+
 export interface DoctorCheck {
   id: string;
+  /**
+   * Coarse legacy level, kept for older readers: `ok` also covers `info`, `warn` is `warning`.
+   * `severity` is authoritative.
+   */
   level: 'ok' | 'warn' | 'error';
+  severity: DoctorSeverity;
   title: string;
+  /** Everything about the check in one string (the `details` joined with `; `). */
   detail?: string;
+  /** The same, as separate short lines. */
+  details?: string[];
+  /** Advisories and warnings of an otherwise working component. */
+  notes?: DoctorNote[];
   hint?: string;
 }
 
@@ -726,7 +745,10 @@ export interface ReconcileOptions {
 }
 
 export interface DoctorReport {
+  /** False when any check has severity `error`. Warnings and info never change it. */
   ok: boolean;
+  /** Number of checks per severity. */
+  summary: Record<DoctorSeverity, number>;
   checks: DoctorCheck[];
   backends: BackendReport[];
   state: { path: string; ok: boolean; message?: string };

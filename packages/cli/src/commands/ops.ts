@@ -6,7 +6,9 @@ import type {
   GcOrphansReport,
   OrphanInstanceGroup,
 } from '@abox/core';
+import { summarizeDoctorChecks } from '@abox/core';
 import type { Cli } from '../cli.js';
+import { renderDoctorChecks, severityOf, summaryText } from '../doctor-format.js';
 import { CliError } from '../errors.js';
 import {
   formatBytes,
@@ -188,13 +190,26 @@ export function registerOps(program: Command, cli: Cli): void {
   program
     .command('doctor')
     .description(
-      'Check backends, permissions, the audit chain and leftovers (exit 1 when any check fails; warnings do not change the exit code)',
+      'Check backends, permissions, the audit chain and leftovers (exit 1 when any check fails; notes and warnings do not change the exit code)',
     )
-    .action(async () => {
+    .option('-v, --verbose', 'also print the full details of every check')
+    .addHelpText(
+      'after',
+      `
+Every check has a severity:
+  ✓ ok        works
+  i info      an advisory note, or an optional component that is not installed or not running
+  ! warning   something is degraded and you should probably act on it
+  ✗ failed    a check failed (the only severity that makes the exit code 1)
+--verbose also prints the detail lines of checks that are ok or info.
+With --json each check also has "severity", "details" and "notes", and the report a "summary"
+(counts per severity); "level" (ok/warn/error) is kept for scripts.`,
+    )
+    .action(async (o: { verbose?: boolean }) => {
       const rt = await cli.rt();
       const full = await rt.abox.doctor(cli.caller());
       const host = cli.globals.host;
-      const report: DoctorReport = host
+      const filtered: DoctorReport = host
         ? {
             ...full,
             backends: full.backends.filter((b) => b.host === host),
@@ -205,26 +220,21 @@ export function registerOps(program: Command, cli: Cli): void {
             ),
           }
         : full;
+      const report: DoctorReport = { ...filtered, summary: summarizeDoctorChecks(filtered.checks) };
       const rec = report.reconcile;
       const inconsistencies = rec.orphans.length + rec.ghosts.length + rec.interrupted.length;
-      const errors = report.checks.filter((c) => c.level === 'error');
+      const errors = report.checks.filter((c) => severityOf(c) === 'error');
       const problems = errors.length + (inconsistencies > 0 ? 1 : 0);
       if (!cli.json) {
-        const mark = (l: string): string =>
-          l === 'ok'
-            ? cli.style('green', 'ok  ')
-            : l === 'warn'
-              ? cli.style('yellow', 'warn')
-              : cli.style('red', 'FAIL');
-        for (const c of report.checks) {
-          cli.out(
-            `[${mark(c.level)}] ${safe(c.title)}${c.detail ? ` - ${oneLine(c.detail)}` : ''}\n`,
-          );
-          if (c.hint && c.level !== 'ok')
-            cli.out(`       ${cli.style('dim', 'hint:')} ${safe(c.hint)}\n`);
-        }
         cli.out(
-          `\n${problems === 0 ? 'no problems found' : `${problems} problem(s) found`}${report.checks.some((c) => c.level === 'warn') ? ' (see warnings above)' : ''}\n`,
+          renderDoctorChecks(report.checks, {
+            verbose: o.verbose === true,
+            width: cli.io.stdout.columns ?? 100,
+            style: (k, t) => cli.style(k, t),
+          }),
+        );
+        cli.out(
+          `\n${problems === 0 ? 'no problems found' : `${problems} problem(s) found`} (${summaryText(report.summary)})\n`,
         );
       }
       if (problems > 0) {

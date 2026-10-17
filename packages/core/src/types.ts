@@ -469,7 +469,17 @@ export interface BackendStatus {
   /** e.g. daemon runs rootless. */
   rootless?: boolean;
   details: string[];
+  /**
+   * Everything worth knowing that is not a plain detail. Includes the `advisories`, which stay in
+   * this list for older readers.
+   */
   warnings: string[];
+  /**
+   * The subset of `warnings` that are advisory notes about a working component (rootful engine, no
+   * disk quota, a mode without isolation, ...): nothing is broken and the user need not act. Doctor
+   * reports them as `info`; every other warning counts as a real `warning`.
+   */
+  advisories?: string[];
 }
 
 /** How a host is reached; passed to provider factories. */

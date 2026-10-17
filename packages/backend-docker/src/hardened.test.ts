@@ -52,6 +52,18 @@ describe('hardened runtime detection (fake engine)', () => {
     );
   });
 
+  it('splits advisory notes (no disk quota) from real warnings (configured runtime missing)', async () => {
+    const p = make(['runc'], 'runsc');
+    await p.init();
+    const st = await p.status();
+    const quota = st.warnings.find((w) => w.includes('no disk quota'));
+    expect(quota).toContain('overlay2 on extfs');
+    expect(st.advisories).toContain(quota);
+    const missing = st.warnings.find((w) => w.includes('Configured hardened runtime'));
+    expect(missing).toBeDefined();
+    expect(st.advisories).not.toContain(missing);
+  });
+
   it('stays at container when nothing is configured, even if the engine has runsc', async () => {
     const p = make(['runc', 'runsc']);
     await p.init();

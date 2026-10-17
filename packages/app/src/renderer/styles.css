@@ -854,6 +854,26 @@ dialog.modal h2 {
 .checks li {
   margin: 0.4rem 0;
 }
+.disclosure {
+  margin: 0.2rem 0;
+}
+.disclosure > summary {
+  cursor: pointer;
+  width: fit-content;
+  padding: 0.05rem 0.2rem;
+  border-radius: 4px;
+  color: var(--accent);
+  text-decoration: underline;
+}
+.notes {
+  margin: 0.2rem 0 0.2rem 0.4rem;
+}
+.notes li {
+  display: grid;
+  grid-template-columns: 1.1rem 1fr;
+  gap: 0.2rem;
+  margin: 0.15rem 0;
+}
 .crumbs {
   margin: 0.3rem 0 0.6rem;
 }

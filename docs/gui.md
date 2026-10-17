@@ -39,7 +39,7 @@ it).
 | **Approvals**      | the queue of requests from agents, see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **Audit**          | the audit log with filters (time, actor, sandbox, action, decision), verification of the hash chain and export as JSON Lines.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **Policy**         | the profiles and agent contexts in force as cards (isolation `none` in red), an editor with a **form** for profiles and limits next to the **YAML** text, live validation by the manager, a diff and a confirmation before saving, and the revision history. See [The Policy view](#the-policy-view).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| **Settings**       | language, closing the window to the tray (optional), diagnostics (the `abox doctor` checks), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **Settings**       | language, closing the window to the tray (optional), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## Approvals
 
@@ -201,6 +201,29 @@ below).
   (docker, podman) and a checkbox **Allow rootful engine**. A rootful engine gives root-equivalent
   rights on the host to everything that breaks out of a container, so the form explains this in a
   warning banner and the host shows a "rootful allowed" badge; leave it off unless you need it.
+
+## Diagnostics
+
+Settings shows the same report as `abox doctor` (see [troubleshooting](troubleshooting.md#abox-doctor)),
+run when the page opens and again on "Run diagnostics". Each check has one of four badges, always
+with a word and not by colour alone: **OK** (green), **Info** (neutral; "Hinweis" in German),
+**Warning** (amber) and **Error** (red). The banner above the report says whether anything failed,
+how many warnings there are, or how many notes there are on an otherwise healthy system.
+
+- **Backends** has one row per backend and host with a short one-line summary (version, rootless,
+  isolation level). A backend that works is **available**; with real warnings it is
+  **available (warning)** in amber. A backend that is not installed or not running and that nothing
+  uses (Podman on a Docker machine) is a neutral **not installed (optional)** with a hint how to
+  start it, not a red "unavailable"; **unavailable** in red is for a backend that something needs
+  (or the only container engine). The advisory notes (rootful daemon, no disk quota, no isolation,
+  the VM `open` network mode) are behind a **Notes (n)** disclosure in the row, and for a backend
+  that does not work the detail lines are behind **Details (n)**.
+- **Checks** lists everything else (state database, policy file, audit chain, leftovers) with its
+  badge. Details of a warning or an error are shown directly; for other checks they are behind a
+  disclosure. Backends are not repeated here because the table shows them.
+
+The disclosures are native `<details>` elements: focus the summary with Tab and open or close it
+with Enter or Space.
 
 ## MCP status
 
