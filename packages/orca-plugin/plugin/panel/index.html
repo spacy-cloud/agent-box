@@ -1,0 +1,649 @@
+<body>
+  <!--
+  Orca runs this document in a sandboxed iframe (opaque origin) behind this CSP:
+    default-src 'none'; connect-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+    img-src data:; font-src data:; base-uri 'none'; form-action 'none'
+  and the bridge lets it call exactly three host actions: workspace.readContext, terminal.sendText and
+  notifications.show. It has no network and no channel to the plugin worker, so it CANNOT list live
+  sandboxes. It is a launcher: it builds abox commands for the focused worktree and types them into a
+  terminal you pick, always WITHOUT pressing Enter. All dynamic text is set with textContent.
+-->
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 12px;
+      font:
+        13px/1.45 system-ui,
+        -apple-system,
+        'Segoe UI',
+        sans-serif;
+      background: var(--background, Canvas);
+      color: var(--foreground, CanvasText);
+    }
+    h1 {
+      font-size: 14px;
+      margin: 0 0 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h2 {
+      font-size: 12px;
+      margin: 0 0 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted-foreground, GrayText);
+    }
+    section {
+      border: 1px solid var(--border, #8886);
+      border-radius: var(--radius, 6px);
+      padding: 10px;
+      margin: 0 0 10px;
+      background: var(--card, transparent);
+    }
+    label {
+      display: block;
+      margin: 6px 0 2px;
+      color: var(--muted-foreground, GrayText);
+      font-size: 12px;
+    }
+    input,
+    select {
+      width: 100%;
+      padding: 5px 7px;
+      font: inherit;
+      color: inherit;
+      background: var(--input, transparent);
+      border: 1px solid var(--border, #8886);
+      border-radius: var(--radius, 6px);
+    }
+    button {
+      font: inherit;
+      padding: 4px 9px;
+      margin: 4px 4px 0 0;
+      cursor: pointer;
+      color: var(--secondary-foreground, inherit);
+      background: var(--secondary, #8883);
+      border: 1px solid var(--border, #8886);
+      border-radius: var(--radius, 6px);
+    }
+    button.primary {
+      background: var(--primary, #36f);
+      color: var(--primary-foreground, #fff);
+      border-color: transparent;
+    }
+    button.danger {
+      color: var(--destructive, #d33);
+      border-color: var(--destructive, #d33);
+      background: transparent;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    code,
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+    }
+    pre {
+      margin: 6px 0 0;
+      padding: 6px 8px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      border-radius: var(--radius, 6px);
+      background: var(--muted, #8882);
+    }
+    .muted {
+      color: var(--muted-foreground, GrayText);
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .status {
+      margin-top: 6px;
+      min-height: 1.4em;
+    }
+    .status.err {
+      color: var(--destructive, #d33);
+    }
+    .note {
+      font-size: 12px;
+    }
+    details summary {
+      cursor: pointer;
+    }
+  </style>
+
+  <h1>
+    <span data-i18n="title">Sandboxes</span>
+    <span class="row" style="margin-left: auto"
+      ><button id="lang" type="button" title="DE / EN">DE</button></span
+    >
+  </h1>
+
+  <section id="ctx">
+    <h2 data-i18n="ctx.heading">Focused worktree</h2>
+    <div id="wt" class="muted" data-i18n="ctx.none">No worktree focused.</div>
+    <label for="terminal" data-i18n="ctx.terminal">Terminal that receives the command</label>
+    <select id="terminal"></select>
+    <div class="note muted" data-i18n="ctx.terminalNote">
+      Pick a plain shell, not an agent prompt. Commands are typed but never executed; press Enter
+      yourself.
+    </div>
+    <button id="refresh" type="button" data-i18n="ctx.refresh">Refresh</button>
+  </section>
+
+  <section>
+    <h2 data-i18n="create.heading">Sandbox for this worktree</h2>
+    <label for="template" data-i18n="create.template">Template (see abox template ls)</label>
+    <input id="template" autocomplete="off" spellcheck="false" placeholder="node" />
+    <button id="create" type="button" class="primary" data-i18n="create.button">
+      Create (worktree mode)
+    </button>
+    <div class="note muted" data-i18n="create.note">
+      Uses the worktree root of the terminal's current repository. Existing sandboxes are not
+      touched.
+    </div>
+  </section>
+
+  <section>
+    <h2 data-i18n="manage.heading">Sandboxes</h2>
+    <button id="ls" type="button" data-i18n="manage.list">List all (state, lifetime)</button>
+    <label for="sid" data-i18n="manage.id">Sandbox id or name</label>
+    <input id="sid" autocomplete="off" spellcheck="false" placeholder="local/ab12cd34" />
+    <div>
+      <button data-cmd="inspect" type="button" data-i18n="manage.inspect">Inspect</button>
+      <button data-cmd="start" type="button" data-i18n="manage.start">Start</button>
+      <button data-cmd="stop" type="button" data-i18n="manage.stop">Stop</button>
+      <button data-cmd="shell" type="button" data-i18n="manage.shell">Shell</button>
+      <button data-cmd="export" type="button" data-i18n="manage.export">Export diff</button>
+      <button data-cmd="rm" type="button" class="danger" data-i18n="manage.remove">Remove</button>
+    </div>
+    <div class="note muted" data-i18n="manage.note">
+      Export the diff before removing: removal deletes the sandbox workspace.
+    </div>
+  </section>
+
+  <section>
+    <h2 data-i18n="appr.heading">Pending approvals</h2>
+    <button id="approvals" type="button" data-i18n="appr.list">List approvals</button>
+    <div class="note" data-i18n="appr.note">
+      Decide in the abox app or in a terminal (abox approvals approve|deny). This panel deliberately
+      has no approve button: an Orca panel is not a trustworthy channel for a human decision, and
+      agents in Orca can reach the same UI surfaces.
+    </div>
+  </section>
+
+  <section>
+    <h2 data-i18n="mcp.heading">MCP for Orca agents</h2>
+    <label for="mcpurl" data-i18n="mcp.url">abox MCP URL (127.0.0.1 only)</label>
+    <input
+      id="mcpurl"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="http://127.0.0.1:8765/mcp"
+    />
+    <label for="mcpenv" data-i18n="mcp.env">Environment variable that holds the token</label>
+    <input id="mcpenv" autocomplete="off" spellcheck="false" value="ABOX_MCP_TOKEN" />
+    <div class="note muted" data-i18n="mcp.note">
+      Put the snippet into the project's .mcp.json (Claude Code, Cursor). The token stays in the
+      environment, never in the file.
+    </div>
+    <h2 style="margin-top: 8px" data-i18n="mcp.http">HTTP (token)</h2>
+    <pre id="mcphttp"></pre>
+    <h2 style="margin-top: 8px" data-i18n="mcp.stdio">stdio (no token, one process per agent)</h2>
+    <pre id="mcpstdio"></pre>
+  </section>
+
+  <section>
+    <h2 data-i18n="cmd.heading">Command</h2>
+    <pre id="preview" class="muted">-</pre>
+    <div id="status" class="status" role="status"></div>
+  </section>
+
+  <details>
+    <summary data-i18n="limits.heading">Why is there no live list?</summary>
+    <p class="note" data-i18n="limits.body">
+      Orca panels run in a sandbox without network access and without a channel to the plugin's
+      background worker, so they cannot ask abox for data. Use the command palette entries (they
+      report with notifications) or the abox app for live state.
+    </p>
+  </details>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var STR = {
+        en: {
+          title: 'Sandboxes',
+          'ctx.heading': 'Focused worktree',
+          'ctx.none': 'No worktree focused.',
+          'ctx.terminal': 'Terminal that receives the command',
+          'ctx.terminalNote':
+            'Pick a plain shell, not an agent prompt. Commands are typed but never executed; press Enter yourself.',
+          'ctx.refresh': 'Refresh',
+          'ctx.choose': '- choose a terminal -',
+          'ctx.noTerminal': '(no terminal in this worktree)',
+          'ctx.terminalN': 'Terminal {n} ({id})',
+          'create.heading': 'Sandbox for this worktree',
+          'create.template': 'Template (see abox template ls)',
+          'create.button': 'Create (worktree mode)',
+          'create.note':
+            "Uses the worktree root of the terminal's current repository. Existing sandboxes are not touched.",
+          'manage.heading': 'Sandboxes',
+          'manage.list': 'List all (state, lifetime)',
+          'manage.id': 'Sandbox id or name',
+          'manage.inspect': 'Inspect',
+          'manage.start': 'Start',
+          'manage.stop': 'Stop',
+          'manage.shell': 'Shell',
+          'manage.export': 'Export diff',
+          'manage.remove': 'Remove',
+          'manage.note': 'Export the diff before removing: removal deletes the sandbox workspace.',
+          'appr.heading': 'Pending approvals',
+          'appr.list': 'List approvals',
+          'appr.note':
+            'Decide in the abox app or in a terminal (abox approvals approve|deny). This panel deliberately has no approve button: an Orca panel is not a trustworthy channel for a human decision, and agents in Orca can reach the same UI surfaces.',
+          'mcp.heading': 'MCP for Orca agents',
+          'mcp.url': 'abox MCP URL (127.0.0.1 only)',
+          'mcp.env': 'Environment variable that holds the token',
+          'mcp.note':
+            "Put the snippet into the project's .mcp.json (Claude Code, Cursor). The token stays in the environment, never in the file.",
+          'mcp.http': 'HTTP (token)',
+          'mcp.stdio': 'stdio (no token, one process per agent)',
+          'mcp.badUrl': 'The URL must be http://127.0.0.1:PORT/mcp (or localhost / [::1]).',
+          'mcp.badEnv': 'Invalid variable name.',
+          'cmd.heading': 'Command',
+          'limits.heading': 'Why is there no live list?',
+          'limits.body':
+            "Orca panels run in a sandbox without network access and without a channel to the plugin's background worker, so they cannot ask abox for data. Use the command palette entries (they report with notifications) or the abox app for live state.",
+          'st.typed': 'Typed into the terminal. Press Enter there to run it.',
+          'st.noTerminal': 'Pick a terminal first. The command is shown above so you can copy it.',
+          'st.invalid': 'Invalid value: {what}.',
+          'st.noWorktree': 'No worktree focused.',
+          'st.failed': 'Could not type: {error}',
+          'st.rejected': 'Orca did not accept the input.',
+          'st.timeout': 'Orca did not answer.',
+          'what.template': 'template',
+          'what.id': 'sandbox id or name',
+        },
+        de: {
+          title: 'Sandboxes',
+          'ctx.heading': 'Fokussierter Worktree',
+          'ctx.none': 'Kein Worktree im Fokus.',
+          'ctx.terminal': 'Terminal, das den Befehl erhält',
+          'ctx.terminalNote':
+            'Wähle eine normale Shell, keinen Agenten-Prompt. Befehle werden eingetippt, aber nie ausgeführt; drücke selbst Enter.',
+          'ctx.refresh': 'Aktualisieren',
+          'ctx.choose': '- Terminal wählen -',
+          'ctx.noTerminal': '(kein Terminal in diesem Worktree)',
+          'ctx.terminalN': 'Terminal {n} ({id})',
+          'create.heading': 'Sandbox für diesen Worktree',
+          'create.template': 'Template (siehe abox template ls)',
+          'create.button': 'Erstellen (Worktree-Modus)',
+          'create.note':
+            'Nutzt die Worktree-Wurzel des Repositorys, in dem das Terminal gerade steht. Bestehende Sandboxes bleiben unberührt.',
+          'manage.heading': 'Sandboxes',
+          'manage.list': 'Alle auflisten (Zustand, Laufzeit)',
+          'manage.id': 'Sandbox-ID oder -Name',
+          'manage.inspect': 'Ansehen',
+          'manage.start': 'Starten',
+          'manage.stop': 'Stoppen',
+          'manage.shell': 'Shell',
+          'manage.export': 'Diff exportieren',
+          'manage.remove': 'Entfernen',
+          'manage.note':
+            'Exportiere vor dem Entfernen den Diff: Entfernen löscht den Sandbox-Workspace.',
+          'appr.heading': 'Offene Freigaben',
+          'appr.list': 'Freigaben auflisten',
+          'appr.note':
+            'Entscheide in der abox-App oder im Terminal (abox approvals approve|deny). Dieses Panel hat absichtlich keinen Freigabe-Knopf: Ein Orca-Panel ist kein vertrauenswürdiger Kanal für eine menschliche Entscheidung, und Agenten in Orca erreichen dieselben Oberflächen.',
+          'mcp.heading': 'MCP für Orca-Agenten',
+          'mcp.url': 'abox-MCP-URL (nur 127.0.0.1)',
+          'mcp.env': 'Umgebungsvariable mit dem Token',
+          'mcp.note':
+            'Trage das Snippet in die .mcp.json des Projekts ein (Claude Code, Cursor). Das Token bleibt in der Umgebung, nie in der Datei.',
+          'mcp.http': 'HTTP (Token)',
+          'mcp.stdio': 'stdio (kein Token, ein Prozess pro Agent)',
+          'mcp.badUrl': 'Die URL muss http://127.0.0.1:PORT/mcp sein (oder localhost / [::1]).',
+          'mcp.badEnv': 'Ungültiger Variablenname.',
+          'cmd.heading': 'Befehl',
+          'limits.heading': 'Warum gibt es keine Live-Liste?',
+          'limits.body':
+            'Orca-Panels laufen in einer Sandbox ohne Netzwerk und ohne Verbindung zum Hintergrundprozess des Plugins, sie können abox also nicht nach Daten fragen. Nutze die Einträge der Befehlspalette (sie melden sich per Benachrichtigung) oder die abox-App für den Live-Zustand.',
+          'st.typed': 'Ins Terminal geschrieben. Drücke dort Enter, um den Befehl auszuführen.',
+          'st.noTerminal':
+            'Wähle zuerst ein Terminal. Der Befehl steht oben und kann kopiert werden.',
+          'st.invalid': 'Ungültiger Wert: {what}.',
+          'st.noWorktree': 'Kein Worktree im Fokus.',
+          'st.failed': 'Konnte nicht eintippen: {error}',
+          'st.rejected': 'Orca hat die Eingabe nicht angenommen.',
+          'st.timeout': 'Orca hat nicht geantwortet.',
+          'what.template': 'Template',
+          'what.id': 'Sandbox-ID oder -Name',
+        },
+      };
+
+      var $ = function (id) {
+        return document.getElementById(id);
+      };
+      var lang =
+        String(navigator.language || 'en')
+          .toLowerCase()
+          .indexOf('de') === 0
+          ? 'de'
+          : 'en';
+      var ctx = null; // {branch, displayName, terminals: [id]}
+      var idTouched = false;
+
+      function t(key, params) {
+        var s = (STR[lang] && STR[lang][key]) || STR.en[key] || key;
+        return s.replace(/\{(\w+)\}/g, function (m, n) {
+          return params && n in params ? String(params[n]) : m;
+        });
+      }
+
+      // -- the same rules as plugin/lib/format.mjs and plugin/lib/worktree.mjs ------------------------
+      var REF_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/@+-]{0,127}$/;
+      var SAFE_WORD_RE = /^[A-Za-z0-9_@%+=:,.\/-]+$/;
+      var LOOPBACK_RE =
+        /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{1,5}\/[A-Za-z0-9._~\/-]*$/;
+      var ENV_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+
+      function slugify(value, max) {
+        var s = String(value)
+          .toLowerCase()
+          .normalize('NFKD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, max || 32)
+          .replace(/-+$/g, '');
+        return s || 'worktree';
+      }
+      function sandboxName(branchOrName) {
+        return 'wt-' + slugify(branchOrName);
+      }
+      function validRef(v) {
+        return typeof v === 'string' && REF_RE.test(v) && v.indexOf('..') === -1;
+      }
+      function quote(word) {
+        if (/[\u0000\r\n]/.test(word)) throw new Error('control characters');
+        if (word.length > 0 && SAFE_WORD_RE.test(word)) return word;
+        return "'" + word.replace(/'/g, "'\\''") + "'";
+      }
+      function isTypable(text) {
+        return (
+          text.length > 0 &&
+          text.length <= 4096 &&
+          !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(text)
+        );
+      }
+      function line(words) {
+        return words
+          .map(function (w) {
+            return typeof w === 'string' ? quote(w) : w.raw;
+          })
+          .join(' ');
+      }
+
+      // -- host bridge: window.parent.postMessage <-> orca-panel-action(-result) ---------------------------
+      var seq = 0;
+      var pending = {};
+      function call(action, params) {
+        return new Promise(function (resolve, reject) {
+          var requestId = 'p' + ++seq;
+          var timer = setTimeout(function () {
+            delete pending[requestId];
+            reject(new Error(t('st.timeout')));
+          }, 15000);
+          pending[requestId] = { resolve: resolve, reject: reject, timer: timer };
+          window.parent.postMessage(
+            { type: 'orca-panel-action', requestId: requestId, action: action, params: params },
+            '*',
+          );
+        });
+      }
+      window.addEventListener('message', function (event) {
+        var d = event.data;
+        if (!d || d.type !== 'orca-panel-action-result' || typeof d.requestId !== 'string') return;
+        var p = pending[d.requestId];
+        if (!p) return;
+        delete pending[d.requestId];
+        clearTimeout(p.timer);
+        if (d.ok) p.resolve(d.value);
+        else p.reject(new Error(String(d.error || d.errorCode || 'error')));
+      });
+
+      // -- rendering ---------------------------------------------------------------------------------
+      function applyI18n() {
+        document.documentElement.lang = lang;
+        Array.prototype.forEach.call(document.querySelectorAll('[data-i18n]'), function (el) {
+          el.textContent = t(el.getAttribute('data-i18n'));
+        });
+        $('lang').textContent = lang === 'de' ? 'EN' : 'DE';
+        renderContext();
+        renderMcp();
+      }
+
+      function setStatus(text, isError) {
+        var el = $('status');
+        el.textContent = text;
+        el.className = 'status' + (isError ? ' err' : '');
+      }
+
+      function renderContext() {
+        var wt = $('wt');
+        var sel = $('terminal');
+        var previous = sel.value;
+        sel.textContent = '';
+        if (!ctx) {
+          wt.textContent = t('ctx.none');
+          wt.className = 'muted';
+          var none = document.createElement('option');
+          none.value = '';
+          none.textContent = t('ctx.noTerminal');
+          sel.appendChild(none);
+          return;
+        }
+        wt.textContent =
+          ctx.displayName +
+          (ctx.branch && ctx.branch !== ctx.displayName ? ' (' + ctx.branch + ')' : '');
+        wt.className = '';
+        if (ctx.terminals.length === 0) {
+          var empty = document.createElement('option');
+          empty.value = '';
+          empty.textContent = t('ctx.noTerminal');
+          sel.appendChild(empty);
+          return;
+        }
+        if (ctx.terminals.length > 1) {
+          var choose = document.createElement('option');
+          choose.value = '';
+          choose.textContent = t('ctx.choose');
+          sel.appendChild(choose);
+        }
+        ctx.terminals.forEach(function (id, i) {
+          var o = document.createElement('option');
+          o.value = id;
+          o.textContent = t('ctx.terminalN', { n: i + 1, id: id.slice(-8) });
+          sel.appendChild(o);
+        });
+        if (previous && ctx.terminals.indexOf(previous) !== -1) sel.value = previous;
+        if (!idTouched) $('sid').value = sandboxName(ctx.branch || ctx.displayName);
+      }
+
+      function renderMcp() {
+        var url = $('mcpurl').value.trim();
+        var envName = $('mcpenv').value.trim() || 'ABOX_MCP_TOKEN';
+        var http = $('mcphttp');
+        if (!url) {
+          http.textContent = t('mcp.badUrl');
+        } else if (!LOOPBACK_RE.test(url)) {
+          http.textContent = t('mcp.badUrl');
+        } else if (!ENV_RE.test(envName)) {
+          http.textContent = t('mcp.badEnv');
+        } else {
+          http.textContent = JSON.stringify(
+            {
+              mcpServers: {
+                abox: {
+                  type: 'http',
+                  url: url,
+                  headers: { Authorization: 'Bearer ${' + envName + '}' },
+                },
+              },
+            },
+            null,
+            2,
+          );
+        }
+        $('mcpstdio').textContent = JSON.stringify(
+          {
+            mcpServers: {
+              abox: { command: 'abox', args: ['mcp', 'serve', '--agent', '<context>'] },
+            },
+          },
+          null,
+          2,
+        );
+      }
+
+      async function refreshContext(silent) {
+        try {
+          var v = await call('workspace.readContext');
+          ctx =
+            v && typeof v === 'object'
+              ? {
+                  branch: String(v.branch || ''),
+                  displayName: String(v.displayName || ''),
+                  terminals: Array.isArray(v.terminals)
+                    ? v.terminals
+                        .map(function (x) {
+                          return x && x.id;
+                        })
+                        .filter(function (x) {
+                          return typeof x === 'string';
+                        })
+                    : [],
+                }
+              : null;
+        } catch (e) {
+          ctx = null;
+          if (silent !== true) setStatus(t('st.failed', { error: e.message }), true);
+        }
+        renderContext();
+      }
+
+      // -- commands ----------------------------------------------------------------------------------
+      function build(kind) {
+        var id;
+        switch (kind) {
+          case 'ls':
+            return line(['abox', 'ls']);
+          case 'approvals':
+            return line(['abox', 'approvals', 'ls']);
+          case 'create': {
+            var tpl = $('template').value.trim();
+            if (!validRef(tpl)) return { invalid: 'what.template' };
+            if (!ctx) return { invalid: null, noWorktree: true };
+            return line([
+              'abox',
+              'create',
+              tpl,
+              '--mode',
+              'worktree',
+              '--workspace',
+              { raw: '"$(git rev-parse --show-toplevel)"' },
+              '--name',
+              sandboxName(ctx.branch || ctx.displayName),
+            ]);
+          }
+          default:
+            id = $('sid').value.trim();
+            if (!validRef(id)) return { invalid: 'what.id' };
+            if (kind === 'export') return line(['abox', 'export', id, '--format', 'diff']);
+            return line(['abox', kind, id]); // inspect | start | stop | shell | rm
+        }
+      }
+
+      async function run(kind) {
+        var cmd = build(kind);
+        if (typeof cmd !== 'string') {
+          $('preview').textContent = '-';
+          setStatus(
+            cmd.noWorktree ? t('st.noWorktree') : t('st.invalid', { what: t(cmd.invalid) }),
+            true,
+          );
+          return;
+        }
+        $('preview').textContent = cmd;
+        $('preview').className = '';
+        var terminalId = $('terminal').value;
+        if (!terminalId || !isTypable(cmd)) {
+          setStatus(t('st.noTerminal'), true);
+          return;
+        }
+        try {
+          var r = await call('terminal.sendText', {
+            terminalId: terminalId,
+            text: cmd,
+            enter: false,
+          });
+          if (r && r.accepted) setStatus(t('st.typed'), false);
+          else setStatus(t('st.rejected'), true);
+        } catch (e) {
+          setStatus(t('st.failed', { error: e.message }), true);
+        }
+      }
+
+      $('lang').addEventListener('click', function () {
+        lang = lang === 'de' ? 'en' : 'de';
+        applyI18n();
+      });
+      $('refresh').addEventListener('click', function () {
+        refreshContext(false);
+      });
+      $('create').addEventListener('click', function () {
+        run('create');
+      });
+      $('ls').addEventListener('click', function () {
+        run('ls');
+      });
+      $('approvals').addEventListener('click', function () {
+        run('approvals');
+      });
+      Array.prototype.forEach.call(document.querySelectorAll('[data-cmd]'), function (b) {
+        b.addEventListener('click', function () {
+          run(b.getAttribute('data-cmd'));
+        });
+      });
+      $('sid').addEventListener('input', function () {
+        idTouched = true;
+      });
+      $('mcpurl').addEventListener('input', renderMcp);
+      $('mcpenv').addEventListener('input', renderMcp);
+      window.addEventListener('focus', function () {
+        refreshContext(true);
+      });
+
+      applyI18n();
+      refreshContext(true);
+      setInterval(function () {
+        if (!document.hidden) refreshContext(true);
+      }, 8000);
+    })();
+  </script>
+</body>

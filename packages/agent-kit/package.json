@@ -1,0 +1,21 @@
+{
+  "name": "@abox/agent-kit",
+  "version": "0.1.0",
+  "description": "abox Claude Code plugin: skills, slash commands, subagent and MCP wiring for agent sandboxes",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "files": [
+    ".claude-plugin",
+    ".mcp.json",
+    "skills",
+    "agents",
+    "hooks",
+    "templates",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "vitest run --root ../.. packages/agent-kit",
+    "validate": "claude plugin validate ."
+  }
+}

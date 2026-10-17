@@ -1,0 +1,32 @@
+{
+  "name": "@abox/runtime",
+  "version": "0.1.0",
+  "description": "abox runtime wiring: opens the Abox manager with all installed backends, host resolver and secret store",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@abox/core": "workspace:*",
+    "@abox/backend-docker": "workspace:*",
+    "@abox/backend-process": "workspace:*",
+    "@abox/backend-vm": "workspace:*",
+    "@abox/backend-python": "workspace:*"
+  }
+}

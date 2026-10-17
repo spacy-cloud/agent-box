@@ -1,0 +1,65 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. **Security problems must not be reported here.** Please use
+        [private vulnerability reporting](https://github.com/spacy-cloud/agent-box/security/advisories/new).
+        Remove secrets, tokens, hostnames and personal paths from anything you paste.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands, template (redacted) and policy settings that trigger the problem.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - core
+        - backend-docker / podman
+        - backend-process
+        - backend-python
+        - backend-vm
+        - proxy
+        - CLI
+        - MCP server
+        - GUI
+        - agent-kit (Claude Code plugin)
+        - Orca plugin
+        - docs
+        - not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: abox version or commit
+      placeholder: 'git commit hash, since there are no releases yet'
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node.js version, container engine and version (Docker or Podman, rootless or not).
+      placeholder: 'Linux x86_64, Node 24.x, Podman 5.x rootless'
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output of `abox doctor` and relevant logs
+      render: text

@@ -14,7 +14,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "runtime"
   ],
   "engines": {
     "node": ">=24"
@@ -22,5 +23,7 @@
   "scripts": {
     "build": "tsc -b"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@abox/core": "workspace:*"
+  }
 }

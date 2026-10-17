@@ -41,7 +41,12 @@ export class AboxError extends Error {
   constructor(
     code: ErrorCode,
     message: string,
-    opts: { hint?: string; issues?: ErrorIssue[]; details?: Record<string, unknown>; cause?: unknown } = {},
+    opts: {
+      hint?: string;
+      issues?: ErrorIssue[];
+      details?: Record<string, unknown>;
+      cause?: unknown;
+    } = {},
   ) {
     super(message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
     this.name = 'AboxError';

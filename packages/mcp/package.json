@@ -24,6 +24,11 @@
   },
   "dependencies": {
     "@abox/core": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.32.1"
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@abox/backend-docker": "workspace:*",
+    "@abox/backend-process": "workspace:*"
   }
 }

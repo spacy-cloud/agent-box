@@ -1,0 +1,30 @@
+apiVersion: 1
+name: py-offline
+description: >-
+  Python 3.13 with numpy and pandas and NO network access. Use it to run evaluation scripts
+  and data processing on files in the workspace; nothing can be downloaded at run time.
+backend: docker
+isolation: container
+
+base:
+  os: python:3.13-slim-bookworm
+
+packages:
+  pip: [numpy, pandas]
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 2
+  memory: 2g
+  pids: 256
+  ttl: 1h
+
+network:
+  mode: none
+
+labels:
+  use-for: Evaluation scripts and data processing in Python without network access

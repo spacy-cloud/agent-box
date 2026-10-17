@@ -1,0 +1,18 @@
+{
+  "name": "agent-box",
+  "description": "Plugins for abox (Agent Sandbox Manager)",
+  "owner": {
+    "name": "SPACY.CLOUD",
+    "url": "https://github.com/spacy-cloud"
+  },
+  "plugins": [
+    {
+      "name": "abox",
+      "source": "./packages/agent-kit",
+      "description": "Run untrusted code in local abox sandboxes from Claude Code: MCP server, decision skill, slash commands, sandbox-runner subagent.",
+      "version": "0.1.0",
+      "category": "security",
+      "keywords": ["sandbox", "security", "mcp"]
+    }
+  ]
+}

@@ -150,10 +150,48 @@ export interface ResolvedTemplate {
   python?: { version: string; project?: string };
   vm?: { image: string; cloudInit?: string; diskSize?: string };
   source: { kind: TemplateSourceKind; path?: string };
-  /** sha256 hex over the build-relevant fields (base, build steps, user). */
+  /**
+   * Templates with `base.dockerfile`: the Dockerfile and the build context it can `COPY`, as
+   * hashed. Read when the template is loaded from a catalog.
+   */
+  buildContext?: BuildContextInfo;
+  /**
+   * sha256 hex over the build-relevant fields (base, build steps, user) and, for a Dockerfile
+   * base, the digest of its build context. Also the image cache key.
+   */
   hash: string;
-  /** sha256 hex over the full original file content (used for project-template trust). */
+  /**
+   * sha256 hex over the full original file content (used for project-template trust). It also
+   * covers what the file pulls in: project templates it `extends` and the build context of its
+   * Dockerfile, so a change there needs a new approval.
+   */
   contentHash: string;
+}
+
+/** The build context of a Dockerfile base: everything the container engine receives. */
+export interface BuildContextInfo {
+  /** Directory that is sent to the engine (the directory of the Dockerfile). */
+  dir: string;
+  /** Name of the Dockerfile inside it. */
+  dockerfile: string;
+  /** sha256 hex over names, types, modes, link targets and content of everything in the context. */
+  digest: string;
+  /** Content of the Dockerfile (what a reviewer reads). */
+  dockerfileText: string;
+  /** Files of the context (sorted, at most the first 500) with size and content hash. */
+  files: Array<{
+    path: string;
+    type: 'file' | 'symlink';
+    size: number;
+    sha256: string;
+    /** Symlinks: where they point. */
+    target?: string;
+  }>;
+  /** Number of files and symlinks in the whole context and their total size. */
+  fileCount: number;
+  totalBytes: number;
+  /** `files` is cut off (the digest still covers all of them). */
+  filesTruncated: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +213,8 @@ export interface PreparedImage {
 export interface PrepareOptions {
   /** Ignore the cache and re-resolve the base (e.g. `--update`). */
   update?: boolean;
+  /** Base reference pinned by an earlier build (e.g. `ubuntu@sha256:…`); used unless `update`. */
+  pinnedBase?: string;
   /** Progress callback for build output lines. */
   onProgress?: (line: string) => void;
   signal?: AbortSignal;
@@ -188,7 +228,13 @@ export interface PrepareOptions {
  */
 export type WorkspaceDelivery =
   | { kind: 'none'; sandboxPath: string }
-  | { kind: 'bind'; hostPath: string; sandboxPath: string; access: AccessMode; readonlySubpaths?: string[] }
+  | {
+      kind: 'bind';
+      hostPath: string;
+      sandboxPath: string;
+      access: AccessMode;
+      readonlySubpaths?: string[];
+    }
   | { kind: 'copy'; hostPath: string; sandboxPath: string; exclude?: string[] };
 
 /** A secret injected by the egress proxy. The value never enters the sandbox. */
@@ -261,6 +307,39 @@ export interface SandboxFilter {
   template?: string;
 }
 
+export const FOREIGN_RESOURCE_KINDS = ['container', 'network', 'volume'] as const;
+export type ForeignResourceKind = (typeof FOREIGN_RESOURCE_KINDS)[number];
+
+/**
+ * A backend object that carries abox labels but belongs to another abox installation (or to none:
+ * the `abox.instance` label is empty or missing). `SandboxProvider.listForeign` reports them,
+ * `removeForeign` deletes one. Used by `abox gc --orphans` after the data directory of an
+ * installation was deleted.
+ */
+export interface ForeignResource {
+  kind: ForeignResourceKind;
+  /** Backend reference (engine id), passed back to `removeForeign`. */
+  ref: string;
+  /** Name of the object on the engine. */
+  name: string;
+  /** Value of the `abox.instance` label; empty when the label is missing or empty. */
+  instance: string;
+  /** The `abox.name` label (name the owner gave the sandbox), if any. */
+  aboxName?: string;
+  /** The `abox.id` label (sandbox id) if any. */
+  sandboxId?: string;
+  /** `sandbox` | `proxy` | `network` ... (the `abox.role` label), if any. */
+  role?: string;
+  /** Container state (`running`, `exited`, ...); absent for networks and volumes. */
+  state?: string;
+  /** Creation time in ms since the epoch, when the engine reports it. */
+  createdAt?: number;
+  /** Last start time of a container in ms since the epoch; absent when it never ran or is unknown. */
+  startedAt?: number;
+  /** Which engine holds it (`docker` | `podman`); the same engine can be reached through several backends. */
+  engine: string;
+}
+
 export interface ExecRequest {
   /** argv form (preferred). Either `argv` or `command` must be set. */
   argv?: string[];
@@ -309,6 +388,23 @@ export interface TtySession {
   close(): Promise<void>;
 }
 
+/**
+ * Live resource usage of a running sandbox, as one sample (`SandboxProvider.stats`). Used by the GUI
+ * for the CPU / memory columns; the configured limits live in `SandboxView.resources`.
+ */
+export interface ResourceUsage {
+  /** When the sample was taken (epoch ms). */
+  ts: number;
+  /** CPU use as a percentage of one core (100 = one core fully busy, 250 = two and a half cores). */
+  cpuPercent: number;
+  /** Memory in use in bytes (without reclaimable page cache). */
+  memoryBytes: number;
+  /** Memory limit in bytes the sandbox runs under; null when unlimited or unknown. */
+  memoryLimitBytes: number | null;
+  /** Number of processes / threads in the sandbox; null when the backend does not report it. */
+  pids: number | null;
+}
+
 export interface DirEntry {
   name: string;
   type: 'file' | 'dir' | 'symlink' | 'other';
@@ -340,6 +436,22 @@ export interface ProviderCapabilities {
   mounts: boolean;
   snapshots: boolean;
   tty: boolean;
+  /**
+   * `extendExpiry` can move the deadline of a live sandbox (`abox extend`, `access_request`
+   * kind=ttl). Absent / false: the deadline is fixed at creation and extending is `unsupported`.
+   */
+  extendExpiry?: boolean;
+  /**
+   * `updateResources` can change the cpu and memory limits of an existing sandbox, running or not
+   * (`access_request` kind=resources). Absent / false: the limits are fixed at creation and
+   * changing them is `unsupported`.
+   */
+  updateResources?: boolean;
+  /**
+   * `stats` returns live cpu / memory / pids usage of a running sandbox (see `ResourceUsage`).
+   * Absent / false: the GUI shows the configured values only.
+   */
+  stats?: boolean;
   /** Which resource limits are actually enforced. */
   limits: { cpus: boolean; memory: boolean; pids: boolean; disk: boolean };
   /** Can run as a non-root user inside the sandbox. */
@@ -368,4 +480,9 @@ export interface HostConnection {
   engineSocket?: string;
   /** Working directory root on that host for backend data (process/vm backends). */
   dataDir?: string;
+  /**
+   * Stronger OCI runtime of the engine on THIS host (`runsc`, `kata`), per engine, from the host
+   * profile. The container backends report `hardened` only when the engine really lists it.
+   */
+  runtimes?: { docker?: string; podman?: string };
 }

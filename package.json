@@ -10,11 +10,11 @@
   },
   "packageManager": "pnpm@10.34.7",
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node scripts/postbuild.mjs",
     "clean": "tsc -b --clean",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "test:docker": "ABOX_TEST_DOCKER=1 vitest run",
+    "test:docker": "ABOX_TEST_DOCKER=1 vitest run --no-file-parallelism",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

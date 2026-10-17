@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "lib": ["ES2023", "DOM"],
+    "rootDir": "."
+  },
+  "include": ["src", "test", "plugin/**/*.mjs", "scripts"]
+}

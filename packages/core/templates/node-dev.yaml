@@ -1,0 +1,36 @@
+apiVersion: 1
+name: node-dev
+description: >-
+  Node.js 24 with pnpm 10, git and C build tools on Ubuntu 24.04. Network is limited to the
+  npm registry and GitHub. Use it for JavaScript/TypeScript development, tests and builds.
+backend: docker
+isolation: container
+
+base:
+  os: ubuntu:24.04
+
+packages:
+  apt: [build-essential]
+
+tools:
+  - node@24
+  - pnpm@10
+  - git
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 2
+  memory: 4g
+  pids: 512
+  ttl: 2h
+
+network:
+  mode: allowlist
+  presets: [npm, github]
+
+labels:
+  use-for: JavaScript and TypeScript projects (Node.js 24, pnpm, npm registry and GitHub reachable)

@@ -1,0 +1,32 @@
+pkgbase = abox-git
+	pkgdesc = Agent Sandbox Manager: local, policy-controlled sandboxes for AI agents (CLI and MCP server)
+	pkgver = 0.1.0.r0.g0000000
+	pkgrel = 1
+	url = https://github.com/spacy-cloud/agent-box
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = git
+	makedepends = pnpm
+	makedepends = python
+	makedepends = make
+	makedepends = gcc
+	depends = nodejs>=24
+	optdepends = docker: container backend (default for most templates)
+	optdepends = podman: container backend (not verified against a real Podman)
+	optdepends = qemu-system-x86: VM backend (needs /dev/kvm, x86_64 only)
+	optdepends = dosfstools: build images for the VM backend
+	optdepends = mtools: build images for the VM backend
+	optdepends = socat: faster allowlist relay for the VM backend
+	optdepends = libsecret: secret-tool, for secrets in the desktop keyring
+	optdepends = openssh: remote hosts over SSH
+	optdepends = git: workspace modes clone/worktree and export to a branch
+	optdepends = uv: Python backend in venv mode
+	provides = abox
+	conflicts = abox
+	options = !strip
+	options = !debug
+	source = abox-git::git+https://github.com/spacy-cloud/agent-box.git
+	sha256sums = SKIP
+
+pkgname = abox-git
