@@ -30,7 +30,11 @@ abox.close();
 `providers` is the only place a backend is wired in (core never imports a backend package). Open loads
 `config.yaml`, `policy.yaml` (built-in default policy without a file), the SQLite state (WAL, shared with
 other processes) and runs the light reconcile. `policy.yaml` is re-read when it changes on disk
-(checked at most every 500 ms); a broken edit keeps the last good policy and writes `policy.reload_failed`.
+(checked at most every 500 ms); a broken edit keeps the last good policy and writes `policy.reload_failed`. A valid
+edit made outside abox (by hand, or while no manager ran: detected when the file is opened) is stored as a revision with
+actor `external-edit` and audited as `policy.external_edit` (`oldRevision`, `oldHash`, `revision`, `newHash`, `bytes`,
+`detected` = `reload` | `startup`; never the content), so every policy change is in the hash chain. Changes through
+`setPolicy` are audited as `policy.set`.
 
 ## Configuration (`config.yaml`)
 

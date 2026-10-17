@@ -51,7 +51,7 @@ hosts:
 | `backends`                          | engines available on the host (`docker`, `podman`, and also `process`, `python`, `vm` in the schema)                   |
 | `engine_socket`                     | absolute path of the **rootless** engine socket on the host                                                            |
 | `data_dir`                          | working directory root on the host (process/vm backends)                                                               |
-| `limits`                            | `cpus`, `memory`, `sandboxes` caps for everything on this host                                                         |
+| `limits`                            | `cpus`, `memory`, `sandboxes` caps for everything on this host (`abox host add --cpus/--memory/--max-sandboxes`)       |
 | `tags`, `favorite`, `port_forwards` | organisation and saved forwards (loopback only)                                                                        |
 
 Manage profiles with the CLI (agents cannot):
@@ -63,6 +63,15 @@ abox host ls
 abox host test lab1
 abox host trust lab1
 abox host rm lab1        # its sandboxes are not touched
+```
+
+The host limits are set when adding the host: `--max-sandboxes <n>` (0 to 10000), `--cpus <n>`
+(more than 0, up to 1024) and `--memory <size>` (for example `16g`). They cap all sandboxes on that
+host together, on top of the profile limits of the agent. For example:
+
+```sh
+abox host add lab1 --hostname lab1.example.org --user abox-sandbox --zone lab \
+  --backend podman --max-sandboxes 4 --cpus 8 --memory 16g
 ```
 
 Only the engine backends make sense on a remote host in practice: of all backends, only

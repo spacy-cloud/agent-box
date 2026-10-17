@@ -550,6 +550,7 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
           extraForbidden: req.paths.extraForbidden ?? [],
           scanSockets: ws.mode === 'mount',
           denyHiddenHomeDirs: ctx.kind === 'agent',
+          strictlyBelowRoots: ctx.kind === 'agent',
         });
         if (!res.ok) f.deny(res.reason, res.hint);
       }
@@ -914,7 +915,7 @@ export function evaluateAccessRequest(
       } else if (mode === 'none' && (d.domains?.length ?? 0) > 0) {
         f.deny(
           'network destinations require network mode allowlist',
-          'Request mode allowlist together with the destinations.',
+          'Destinations belong to network mode allowlist. A running sandbox keeps the network mode it was created with: create a new sandbox with overrides.network (allow / presets).',
         );
       }
       if ((d.privateExceptions?.length ?? 0) > 0) {

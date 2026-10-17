@@ -292,6 +292,8 @@ export interface SingleFile {
   type: 'file' | 'symlink' | 'directory' | 'other';
   size: number;
   mode: number;
+  /** Owner of the entry as recorded in the archive. */
+  uid: number;
   linkname?: string;
   /** First `maxBytes` of the content (files only). */
   data: Buffer;
@@ -330,11 +332,18 @@ export async function readFirstEntry(
         type: 'file',
         size,
         mode: h.mode ?? 0,
+        uid: h.uid ?? 0,
         data: Buffer.concat(chunks),
         truncated: size > got,
       };
     }
-    const base = { size: h.size ?? 0, mode: h.mode ?? 0, data: Buffer.alloc(0), truncated: false };
+    const base = {
+      size: h.size ?? 0,
+      mode: h.mode ?? 0,
+      uid: h.uid ?? 0,
+      data: Buffer.alloc(0),
+      truncated: false,
+    };
     await drain(entry);
     if (h.type === 'symlink') return { type: 'symlink', linkname: h.linkname ?? '', ...base };
     if (h.type === 'directory') return { type: 'directory', ...base };

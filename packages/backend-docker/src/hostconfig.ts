@@ -139,18 +139,34 @@ export function buildHostConfig(i: HostConfigInput): Docker.HostConfig {
  * `extendExpiry` writes. The file is re-read every time the sleep ends, so a deadline moved while
  * the container runs is honoured without polling. A half-written file (the archive extraction
  * truncates before it writes) is given one second and a second read.
+ *
+ * The file only counts while it is owned by `trustedUid` (`$3`, root in production) and writable by
+ * no one else, so a file the sandbox user managed to put there (through a symlink in the workspace
+ * and a file API, say) cannot move the deadline. Anything else, and a value that is not a plausible
+ * epoch time, is ignored. A process with root inside the container can still write the file: the
+ * host-side sweep of the manager is the authority, this is the fallback that ends the container
+ * when no abox process is running at all.
  */
-export function ttlEntrypoint(expiresAtMs: number, expiryFile: string): string[] {
+export function ttlEntrypoint(expiresAtMs: number, expiryFile: string, trustedUid = 0): string[] {
   return [
     '/bin/sh',
     '-c',
     [
-      'd=$1',
+      'd=$1; f=$2; u=$3',
       'while :; do',
-      '  if [ -e "$2" ]; then',
-      '    v=; read -r v < "$2" || :',
-      '    case $v in \'\'|*[!0-9]*) sleep 1; v=; read -r v < "$2" || :;; esac',
-      '    case $v in \'\'|*[!0-9]*) ;; *) [ "$v" -gt "$d" ] && d=$v;; esac',
+      '  if [ -e "$f" ]; then',
+      '    v=; read -r v < "$f" || :',
+      '    case $v in \'\'|*[!0-9]*) sleep 1; v=; read -r v < "$f" || :;; esac',
+      '    case $v in',
+      "      ''|*[!0-9]*) ;;",
+      '      *)',
+      '        s=$(stat -c \'%u %a\' -- "$f" 2>/dev/null) || s=',
+      '        case $s in',
+      '          "$u "[0-7]*)',
+      '            m=${s#* }',
+      '            if [ "$(( 0$m & 18 ))" -eq 0 ] && [ "${#v}" -le 10 ] && [ "$v" -gt "$d" ]; then d=$v; fi;;',
+      '        esac;;',
+      '    esac',
       '  fi',
       '  rem=$(( d - $(date +%s) ))',
       '  if [ "$rem" -le 0 ]; then exit 0; fi',
@@ -160,5 +176,6 @@ export function ttlEntrypoint(expiresAtMs: number, expiryFile: string): string[]
     'abox-main',
     String(Math.ceil(expiresAtMs / 1000)),
     expiryFile,
+    String(trustedUid),
   ];
 }

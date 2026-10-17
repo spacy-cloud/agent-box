@@ -33,6 +33,7 @@ need the `.js` suffix, for example `import { x } from './types.js'`. See the
 | Contract           | `pnpm test` (process backend), `pnpm test:docker` | The shared suite in `packages/contract-tests`; every backend must pass it                      |
 | Docker integration | `pnpm test:docker` (sets `ABOX_TEST_DOCKER=1`)    | Real containers, networks and the proxy sidecar against a running Docker/Podman engine         |
 | Security suite     | part of the levels above                          | Executable versions of the hardening claims in [docs/security.md](docs/security.md)            |
+| GUI unit           | `pnpm --filter @abox/app test` (plus `typecheck`) | The Electron app's main-process and renderer logic (Vitest, jsdom); not part of `pnpm test`    |
 | GUI end-to-end     | `pnpm --filter @abox/app test:e2e` (virtual X11)  | The Electron app driven by Playwright; the Docker-guarded specs only with `ABOX_TEST_DOCKER=1` |
 
 Rules:
@@ -58,7 +59,7 @@ These environment variables turn on tests that are skipped by default. CI sets o
 | `ABOX_TEST_DOCKER=1`      | Tests that need a Docker/Podman engine (also the Docker-guarded GUI specs: terminal, template build, ssh against a throwaway sshd)     |
 | `ABOX_TEST_DOCKER_FULL=1` | With `ABOX_TEST_DOCKER`: the full preset matrix of `packages/core/src/template/build.docker.test.ts` (long, downloads toolchains)      |
 | `ABOX_TEST_KEYRING=1`     | The `LibsecretStore (real keyring)` test in `packages/core/src/secrets/__tests__/secrets.test.ts` (see the warning below)              |
-| `ABOX_TEST_VM=1`          | Tests that boot real QEMU/KVM VMs (needs `/dev/kvm`; `ABOX_TEST_VM_IMAGES=ubuntu-24.04,debian-13` adds distributions, 300-700 MB each) |
+| `ABOX_TEST_VM=1`          | Tests that boot real QEMU/KVM VMs (needs `/dev/kvm`; `ABOX_TEST_VM_IMAGES=ubuntu-24.04,debian-12` adds distributions, 300-700 MB each) |
 
 **`ABOX_TEST_KEYRING=1` writes to your live keyring.** The test stores and deletes a secret in the
 real Secret Service of your desktop session (GNOME Keyring, KWallet) through `secret-tool`. It uses
@@ -114,6 +115,7 @@ you agree that it is licensed under the project's [MIT license](LICENSE).
 3. Update docs and `CHANGELOG.md` (the `Unreleased` section) for user-visible changes.
 4. Open a pull request and fill in the template. Small, reviewable PRs are merged faster.
 
-CI runs lint (ESLint and the Prettier check), build, tests, the Docker integration tests and the GUI
-end-to-end tests (the Electron app under a virtual display, without the Docker-guarded specs) on every
-pull request. Not run in CI: the VM tests, the real-keyring test and the Docker-guarded GUI specs.
+CI runs lint (ESLint and the Prettier check), build, tests (including the GUI typecheck and unit
+tests), the Docker integration tests and the GUI end-to-end tests (the Electron app under a virtual
+display, without the Docker-guarded specs) on every pull request. Not run in CI: the VM tests, the
+real-keyring test and the Docker-guarded GUI specs.

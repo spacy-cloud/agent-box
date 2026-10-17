@@ -7,6 +7,7 @@ import {
   canonicalizePath,
   checkHostPath,
   checkMountTarget,
+  RESERVED_SANDBOX_TREES,
   foldPath,
   isWithin,
   isWithinFolded,
@@ -383,6 +384,31 @@ describe('checkHostPath: roots', () => {
   });
 });
 
+describe('checkHostPath: strictlyBelowRoots (agents)', () => {
+  const strict = (p: string, roots: string[]) =>
+    check(p, { roots, kind: 'workspace', strictlyBelowRoots: true });
+
+  it('refuses the root itself with a hint, allows anything below it', () => {
+    const r = strict(env.projects, [env.projects]);
+    expect(r).toMatchObject({ ok: false, code: 'outside_roots' });
+    if (!r.ok) {
+      expect(r.reason).toContain('root itself');
+      expect(r.hint).toContain('inside the root');
+    }
+    expect(strict(env.app, [env.projects])).toEqual({ ok: true });
+    expect(strict(join(env.projects, 'new', 'deep'), [env.projects])).toEqual({ ok: true });
+  });
+  it('a path that is below one root is fine even when it is another root', () => {
+    expect(strict(env.app, [env.projects, env.app])).toEqual({ ok: true });
+    expect(strict(env.projects, [env.projects, env.app])).toMatchObject({ ok: false });
+  });
+  it('humans (option off) may use the root itself', () => {
+    expect(check(env.projects, { roots: [env.projects], kind: 'workspace' })).toEqual({
+      ok: true,
+    });
+  });
+});
+
 describe('checkHostPath: hidden home directories (agents)', () => {
   const agent = (p: string, extra: Partial<Parameters<typeof checkHostPath>[1]> = {}) =>
     check(p, { roots: [env.home], kind: 'workspace', denyHiddenHomeDirs: true, ...extra });
@@ -496,6 +522,14 @@ describe('checkMountTarget', () => {
   it('accepts normal targets', () => {
     expect(checkMountTarget('/data')).toEqual({ ok: true });
     expect(checkMountTarget('/home/user/datasets')).toEqual({ ok: true });
+    expect(checkMountTarget('/opt/data')).toEqual({ ok: true });
+    expect(checkMountTarget('/usrdata')).toEqual({ ok: true });
+  });
+  it('rejects exactly what template validation rejects (one list)', () => {
+    for (const t of RESERVED_SANDBOX_TREES) {
+      expect(checkMountTarget(t)).toMatchObject({ ok: false });
+      expect(checkMountTarget(`${t}/x`)).toMatchObject({ ok: false });
+    }
   });
   it.each([
     'relative',
@@ -507,6 +541,14 @@ describe('checkMountTarget', () => {
     '/dev/shm',
     '/run/secrets',
     '/var/run',
+    '/usr',
+    '/usr/local/bin',
+    '/bin',
+    '/sbin/x',
+    '/lib',
+    '/lib64/ld',
+    '/boot',
+    '/USR/share',
     '/a/../etc',
     '/a//b',
     '/ETC',

@@ -42,8 +42,8 @@ export function tryParseSize(input: string | number): number | undefined {
   return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
 }
 
-/** Parses `4h`, `30m`, `1h30m`, `2d`. Returns milliseconds or undefined when invalid. */
-export function tryParseDuration(input: string): number | undefined {
+/** The (unrounded) millisecond total of a well-formed duration string, undefined when malformed. */
+function durationTotal(input: string): number | undefined {
   const s = input.trim().toLowerCase();
   if (s === '') return undefined;
   const re = /(\d+(?:\.\d+)?)(ms|s|m|h|d|w)/y;
@@ -56,6 +56,13 @@ export function tryParseDuration(input: string): number | undefined {
     total += Number(m[1]) * (DURATION_FACTORS[m[2] as string] as number);
     pos = re.lastIndex;
   }
+  return total;
+}
+
+/** Parses `4h`, `30m`, `1h30m`, `2d`. Returns milliseconds or undefined when invalid. */
+export function tryParseDuration(input: string): number | undefined {
+  const total = durationTotal(input);
+  if (total === undefined) return undefined;
   const ms = Math.floor(total);
   return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
 }
@@ -69,8 +76,13 @@ export function parseSize(input: string | number): number {
 
 export function parseDuration(input: string): number {
   const v = tryParseDuration(input);
-  if (v === undefined)
+  if (v === undefined) {
+    // Well-formed but beyond the safe integer range: say so instead of "invalid".
+    const total = durationTotal(input);
+    if (total !== undefined && !(total <= Number.MAX_SAFE_INTEGER))
+      throw new RangeError(`invalid duration "${input}": too large`);
     throw new RangeError(`invalid duration "${input}" (expected e.g. 30m, 4h, 2d)`);
+  }
   return v;
 }
 

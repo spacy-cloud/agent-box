@@ -25,7 +25,7 @@ export function registerTemplate(program: Command, cli: Cli): void {
             x.networkMode,
             x.source.kind,
             x.trusted ? 'yes' : 'NO',
-            x.backendAvailable ? 'yes' : 'no',
+            x.ready ? 'yes' : 'no',
             x.description,
           ]);
           let text = renderTable(
@@ -43,6 +43,12 @@ export function registerTemplate(program: Command, cli: Cli): void {
             cli.width,
           );
           if (list.templates.length === 0) text = 'no templates found';
+          // READY=no: say why (backend missing, or a validation problem a create would run into).
+          const notReady = list.templates.filter((x) => !x.ready);
+          if (notReady.length > 0)
+            text += `\n\nnot ready:\n${notReady
+              .map((x) => `  ${safe(x.name)}: ${oneLine(x.notReadyReason ?? 'unknown reason')}`)
+              .join('\n')}`;
           for (const p of list.problems) {
             cli.err(`${cli.style('yellow', 'problem:')} ${safe(p.path)}: ${oneLine(p.message)}\n`);
             for (const i of p.issues) cli.err(`  ${formatIssue(i, p.path)}\n`);
@@ -78,6 +84,12 @@ export function registerTemplate(program: Command, cli: Cli): void {
             ],
             ['allowed', d.allowed ? 'yes' : 'no (policy profile)'],
             ['base', x.base.os ?? x.base.dockerfile ?? '-'],
+            [
+              'build context',
+              x.buildContext
+                ? `${safe(x.buildContext.dir)} (${x.buildContext.fileCount} file${x.buildContext.fileCount === 1 ? '' : 's'}, ${x.buildContext.totalBytes} bytes)`
+                : undefined,
+            ],
             ['user', `${x.user.name} (uid ${x.user.uid})${x.user.sudo ? ' sudo' : ''}`],
             ['workspace', `${x.workspace.mode} -> ${x.workspace.path} (${x.workspace.access})`],
             [

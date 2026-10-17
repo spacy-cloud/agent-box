@@ -48,6 +48,16 @@ or in full when there is nothing to compare with) and the risky points in plain 
 <name>` shows it on demand, and `abox approvals show <id>` shows it for an agent's `template_trust`
 request.
 
+`abox approvals approve <id>` prints the same summary as `abox approvals show` (the exact request,
+why approval is needed, the risks and, for a project template that is not trusted yet, its review)
+and then asks `Approve <id>? [y/N]` on a terminal. Without a terminal, or with `--json`, it does
+nothing and exits with code 3 unless you pass `--yes`. `abox approvals deny` stays a single step.
+
+For a template with its own Dockerfile the review also lists the build context (the directory of
+the Dockerfile) with file sizes and shows the Dockerfile; against a trusted version the diff covers
+the Dockerfile and the file list too. Changing the Dockerfile or any file in its directory makes
+the template untrusted again.
+
 `abox approvals show <id>` also prints, from the approval itself, the base of the template a
 create or trust request is about (the image with the registry it comes from, or the Dockerfile) and
 the findings that made approval necessary (`Why approval is needed`, one line per policy item with
@@ -108,7 +118,7 @@ epoch):
 | `approvals ls`      | `{approvals: [...]}`                                                                                                                                                                                                                                          |
 | `audit`             | `{entries: [{seq, ts, actor, action, sandboxId, decision, details, prevHash, hash}]}` (with `--jsonl`: one entry per line instead)                                                                                                                            |
 | `template ls`       | `{templates: [...], problems: [...]}`                                                                                                                                                                                                                         |
-| `template review`   | `{template, source, contentHash, trusted, against: {kind, label, template?}, diff, risks, changedSinceRequest?}`                                                                                                                                              |
+| `template review`   | `{template, source, contentHash, trusted, against: {kind, label, template?}, diff, risks, buildContext?, changedSinceRequest?}`                                                                                                                               |
 | `template validate` | `{ok, issues, warnings, name, source, policy: {decision, reasons}}`                                                                                                                                                                                           |
 | `policy show`       | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}`                                                                                                                                                                                 |
 | `token ls`          | `{tokens: [{id, contextId, label, createdAt, lastUsedAt, revokedAt}]}`                                                                                                                                                                                        |
@@ -214,6 +224,11 @@ List, inspect, validate and build templates
 `abox template ls|list [options]`
 
 List available templates (builtin, user, project)
+
+`READY` is `yes` only when a create from the template can work here: the backend is usable and
+the template passes the same validation as `abox template validate` (security rules such as
+forbidden mounts, backend capabilities, proxy secret hosts). Otherwise the reason is printed below
+the table (`not ready:`); `--json` has `ready` and `notReadyReason`.
 
 #### `abox template show`
 
@@ -558,15 +573,16 @@ Show everything about one approval before you decide
 
 `abox approvals approve [options] <id>`
 
-Approve a request (one-time, bound to the exact request)
+Approve a request (one-time, bound to the exact request); shows it first and asks
 
 | Argument | Meaning     |
 | -------- | ----------- |
 | `id`     | approval id |
 
-| Option          | Meaning                       |
-| --------------- | ----------------------------- |
-| `--note <text>` | note stored with the decision |
+| Option          | Meaning                                                              |
+| --------------- | -------------------------------------------------------------------- |
+| `--note <text>` | note stored with the decision                                        |
+| `-y, --yes`     | approve without asking (required without a terminal and with --json) |
 
 #### `abox approvals deny`
 
@@ -718,10 +734,10 @@ Model Context Protocol server for agents
 
 Run the MCP server: stdio (the agent starts it) or --http on loopback
 
-| Option               | Meaning                                                                            |
-| -------------------- | ---------------------------------------------------------------------------------- |
-| `--http <host:port>` | serve Streamable HTTP on a loopback address, e.g. 127.0.0.1:8765 (token required)  |
-| `--agent <context>`  | agent context from policy.yaml for stdio (default: "default") (default: "default") |
+| Option               | Meaning                                                                           |
+| -------------------- | --------------------------------------------------------------------------------- |
+| `--http <host:port>` | serve Streamable HTTP on a loopback address, e.g. 127.0.0.1:8765 (token required) |
+| `--agent <context>`  | agent context from policy.yaml for stdio (default: "default")                     |
 
 ### `abox init`
 
@@ -770,6 +786,9 @@ Add an SSH host profile (metadata only; keys stay with ssh-agent / your key file
 | `--min-isolation <level>` | minimum isolation required on this host (choices: "none", "container", "hardened", "vm")                 |
 | `--data-dir <path>`       | working directory root on the host (process/vm backends)                                                 |
 | `--tag <tag>`             | tag (repeatable)                                                                                         |
+| `--max-sandboxes <n>`     | limit: sandboxes on this host in total (0..10000)                                                        |
+| `--cpus <n>`              | limit: CPUs for all sandboxes on this host together (up to 1024)                                         |
+| `--memory <size>`         | limit: memory for all sandboxes on this host together, e.g. 16g                                          |
 
 #### `abox host rm`
 

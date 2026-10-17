@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import Docker from 'dockerode';
-import { AboxError } from '@abox/core';
+import { AboxError, collectBuildContext } from '@abox/core';
 import type { ExecEvent, PreparedImage, ResolvedTemplate, SandboxSpec } from '@abox/core';
 import { defineProviderContract, makeTestTemplate } from '@abox/contract-tests';
 import { createDockerProvider, type DockerProvider } from './index.js';
@@ -184,6 +184,35 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect((await raw.getImage(b.ref).inspect()).Config.Labels['abox.template-hash']).toBe(
         t.hash,
       );
+    }, 120_000);
+
+    it('refuses to build a context that changed since it was approved', async () => {
+      const dir = await fs.mkdtemp(path.join(tmp, 'approved-'));
+      const dockerfile = path.join(dir, 'Dockerfile');
+      await fs.writeFile(dockerfile, 'FROM alpine:3.22\nCOPY extra.txt /etc/extra.txt\n');
+      await fs.writeFile(path.join(dir, 'extra.txt'), 'reviewed');
+      const approved = await collectBuildContext(dockerfile);
+      const t = makeTemplate({
+        name: 'abox-test-approved-ctx',
+        base: { dockerfile: './Dockerfile', osFamily: 'alpine' },
+        source: { kind: 'project', path: path.join(dir, 'template.yaml') },
+        buildContext: approved,
+      });
+      // a file swapped after the review: nothing is built
+      await fs.writeFile(path.join(dir, 'extra.txt'), 'swapped after review');
+      const err = await provider.prepare(t).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AboxError);
+      expect((err as AboxError).code).toBe('conflict');
+      expect((err as AboxError).message).toContain('changed since it was approved');
+      const images = await raw.listImages({ filters: { label: ['abox.managed=1'] } });
+      expect(images.flatMap((i) => i.RepoTags ?? []).some((x) => x.includes('approved-ctx'))).toBe(
+        false,
+      );
+      // the reviewed content builds
+      await fs.writeFile(path.join(dir, 'extra.txt'), 'reviewed');
+      const img = await provider.prepare(t);
+      const s = await sb({ template: t, image: img }, true);
+      expect((await run(s, 'cat /etc/extra.txt')).stdout).toBe('reviewed');
     }, 120_000);
 
     it('gcImages removes unreferenced template images only', async () => {
@@ -1444,6 +1473,38 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       await expect(provider.start(s.id)).rejects.toMatchObject({ code: 'conflict' });
     });
 
+    describe('updateResources', () => {
+      it('updates the live container: cpu, memory and swap together, kept across a restart', async () => {
+        const s = await sb();
+        const before = (await inspectRaw(s)).HostConfig;
+        await provider.updateResources!(s.id, { cpus: 0.5, memoryBytes: 300 * MiB });
+        const hc = (await inspectRaw(s)).HostConfig;
+        expect(hc.NanoCpus).toBe(500_000_000);
+        expect(hc.Memory).toBe(300 * MiB);
+        expect(hc.MemorySwap).toBe(300 * MiB); // still no swap
+        expect(hc.PidsLimit).toBe(before.PidsLimit); // untouched
+        const info = await provider.inspect(s.id);
+        expect(info.effective).toMatchObject({ cpus: 0.5, memoryBytes: 300 * MiB });
+        // the cgroup the sandbox sees moved too
+        const mem = await run(
+          s,
+          'cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes',
+        );
+        expect(Number(mem.stdout.trim())).toBe(300 * MiB);
+        // raising it above the old limit works (swap moves together with memory)
+        await provider.updateResources!(s.id, { memoryBytes: 600 * MiB });
+        expect((await inspectRaw(s)).HostConfig.Memory).toBe(600 * MiB);
+        expect((await inspectRaw(s)).HostConfig.MemorySwap).toBe(600 * MiB);
+        await provider.stop(s.id);
+        await provider.updateResources!(s.id, { cpus: 1.5 }); // a stopped sandbox too
+        await provider.start(s.id);
+        const again = (await inspectRaw(s)).HostConfig;
+        expect(again.NanoCpus).toBe(1_500_000_000);
+        expect(again.Memory).toBe(600 * MiB);
+        expect((await run(s, 'echo ok')).stdout).toBe('ok\n');
+      }, 60_000);
+    });
+
     describe('extendExpiry', () => {
       const EXPIRY_PATH = '/usr/local/share/abox/expires';
       const roTemplate = (): ResolvedTemplate =>
@@ -1491,6 +1552,63 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
           await provider.extendExpiry!(s.id, info.expiresAt);
         }, 60_000);
       }
+
+      it('the sandbox file APIs never write abox-internal paths', async () => {
+        const now = Date.now();
+        const s = await sb({ createdAt: now, expiresAt: now + 60_000 }, true);
+        const forged = Buffer.from(`${Math.ceil(now / 1000) + 99_999}\n`);
+        const denied = { code: 'policy_denied' };
+        await expect(provider.writeFile(s.id, EXPIRY_PATH, forged)).rejects.toMatchObject(denied);
+        await expect(
+          provider.writeFile(s.id, '/usr/local/share/../share/abox/./expires', forged),
+        ).rejects.toMatchObject(denied);
+        await expect(
+          provider.writeFile(s.id, '/usr/local/share/abox/ca.crt', forged),
+        ).rejects.toMatchObject(denied);
+        await expect(
+          provider.writeFile(s.id, '/usr/local/share/abox/new/dir/x', forged),
+        ).rejects.toMatchObject(denied);
+        const src = path.join(tmp, 'internal-src');
+        await fs.mkdir(path.join(src, 'abox'), { recursive: true });
+        await fs.writeFile(path.join(src, 'abox', 'expires'), forged);
+        await fs.writeFile(path.join(src, 'expires'), forged);
+        for (const dest of [
+          EXPIRY_PATH,
+          '/usr/local/share/abox',
+          '/usr/local/share/abox/sub',
+          '/usr/local/share',
+          '/usr/local',
+        ]) {
+          await expect(provider.copyIn(s.id, src, dest)).rejects.toMatchObject(denied);
+        }
+        // nothing arrived, and nothing else is affected
+        expect((await run(s, `cat ${EXPIRY_PATH} 2>&1; echo rc=$?`)).stdout).toMatch(/rc=1/);
+        expect(await provider.extendExpiry!(s.id, now + 120_000)).toBeUndefined();
+        await provider.writeFile(s.id, '/workspace/ok.txt', Buffer.from('fine'));
+        await provider.copyIn(s.id, path.join(src, 'expires'), '/workspace/copied');
+        expect((await run(s, 'cat /workspace/ok.txt /workspace/copied')).stdout).toContain('fine');
+        expect((await provider.inspect(s.id)).expiresAt).toBeLessThan(now + 121_000);
+      }, 60_000);
+
+      it('a deadline file the sandbox smuggled in through a symlink is ignored', async () => {
+        const now = Date.now();
+        const s = await sb({ createdAt: now, expiresAt: now + 4000 }, true);
+        // The lexical check cannot see this; the file ends up owned by the sandbox user.
+        await run(s, 'ln -s /usr/local/share/abox /workspace/link');
+        const forged = Buffer.from(`${Math.ceil(now / 1000) + 99_999}\n`);
+        await provider.writeFile(s.id, '/workspace/link/expires', forged).catch(() => undefined);
+        const seen = await run(s, `stat -c '%u %a' ${EXPIRY_PATH} 2>&1 || true`);
+        // the engine follows the link (the file is there, owned by the sandbox user): the entrypoint and the backend ignore it
+        expect(seen.exitCode).toBe(0);
+        for (let i = 0; i < 30 && (await inspectRaw(s)).State.Running; i++)
+          await new Promise((r) => setTimeout(r, 500));
+        const after = await inspectRaw(s);
+        expect(after.State.Running).toBe(false);
+        expect(after.State.ExitCode).toBe(0);
+        expect(Date.parse(after.State.FinishedAt)).toBeLessThan(now + 12_000);
+        expect((await provider.inspect(s.id)).state).toBe('expired');
+        expect((await provider.inspect(s.id)).expiresAt).toBe(s.expiresAt);
+      }, 40_000);
 
       it('exits at the moved deadline and not at the original one', async () => {
         const now = Date.now();

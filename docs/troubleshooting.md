@@ -153,7 +153,7 @@ Containers carrying abox labels that the registry does not know, for example aft
 
 ### Exec output is cut
 
-Agents get about 64 KiB per stream. Redirect to a file and read it with `read_file`, or use a
+Agents get about 64 KiB per stream. Redirect to a file and read it with `sandbox_read_file`, or use a
 background process and `process logs --tail`/`--follow`. Humans can raise the limit per call.
 
 ## Network and proxy problems
@@ -183,7 +183,8 @@ egress proxy. Symptoms and causes:
   will fail there.
 - See what happened: `abox audit --action network.egress` lists allowed and denied connections
   (host, port, method, reason; never headers or bodies). They are collected when abox touches the
-  sandbox (exec, inspect, stop, remove), not continuously.
+  sandbox (exec, inspect, stop, remove, the TTL sweep) or when the audit log is queried, not
+  continuously, so a recent connection may show up only after the next of those.
 - Network `none` means none: not even DNS.
 
 ## Image build problems

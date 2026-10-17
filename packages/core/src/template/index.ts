@@ -67,3 +67,12 @@ export {
   unifiedDiff,
   type UnifiedDiffOptions,
 } from './review.js';
+export {
+  buildContextOf,
+  collectBuildContext,
+  dockerfilePathOf,
+  MAX_CONTEXT_BYTES,
+  MAX_CONTEXT_ENTRIES,
+  MAX_DOCKERFILE_BYTES,
+  MAX_LISTED_FILES,
+} from './context.js';

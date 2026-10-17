@@ -1,7 +1,9 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Abox } from '@abox/core';
 import { TOOL_NAMES } from '../src/index.js';
-import { connect, makeEnv, openAbox } from './support/harness.js';
+import { connect, makeEnv, openAbox, testPolicy } from './support/harness.js';
 import type { Connected, TestEnv } from './support/harness.js';
 
 let env: TestEnv;
@@ -85,6 +87,109 @@ describe('templates, create, list, inspect, delete', () => {
     const bad = await a.call('template_show', { name: 'nope' });
     expect(bad.isError).toBe(true);
     expect(bad.s['code']).toBe('not_found');
+  });
+
+  it('resources follow the same filter as template_list', async () => {
+    await setup({
+      policy: testPolicy(env).replace(
+        'templates: [host-shell, fake-box, fake-net, alpine-min]',
+        'templates: [fake-box]',
+      ),
+    });
+    const list = await a.call('template_list');
+    expect((list.s['templates'] as Array<{ name: string }>).map((t) => t.name)).toEqual([
+      'fake-box',
+    ]);
+    const all = await a.call('template_list', { all: true });
+    expect(
+      (all.s['templates'] as Array<{ name: string; allowed: boolean }>).find(
+        (t) => t.name === 'host-shell',
+      ),
+    ).toMatchObject({ allowed: false, usable: false });
+
+    const uris = (await a.client.listResources()).resources
+      .map((r) => r.uri)
+      .filter((u) => u.startsWith('template://'));
+    expect(uris).toEqual(['template://fake-box']);
+    expect((await a.client.readResource({ uri: 'template://fake-box' })).contents).toHaveLength(1);
+    await expect(a.client.readResource({ uri: 'template://host-shell' })).rejects.toThrow(
+      /not allowed/,
+    );
+    // the tool still explains why a template is not allowed
+    expect((await a.call('template_show', { name: 'host-shell' })).s['allowed']).toBe(false);
+  });
+
+  describe('project templates', () => {
+    const other = (): string => join(env.projects, 'other');
+    const projectYaml = `apiVersion: 1
+name: other-proj
+description: Template that lives in the repository of the other project, MCP tests.
+backend: docker
+base: { os: ubuntu:24.04 }
+resources: { cpus: 1, memory: 512m, ttl: 1h }
+`;
+    async function setupOther(): Promise<void> {
+      mkdirSync(join(other(), '.sandbox'), { recursive: true });
+      writeFileSync(join(other(), '.sandbox', 'other-proj.yaml'), projectYaml);
+      await setup({
+        policy: testPolicy(env).replace('alpine-min]', 'alpine-min, other-proj]'),
+      });
+    }
+
+    it('template_list / template_show take workspace_path and mark project templates with their trust state', async () => {
+      await setupOther();
+      const without = await a.call('template_list');
+      expect((without.s['templates'] as Array<{ name: string }>).map((t) => t.name)).not.toContain(
+        'other-proj',
+      );
+      expect((await a.call('template_show', { name: 'other-proj' })).s['code']).toBe('not_found');
+
+      const withPath = await a.call('template_list', { workspace_path: other() });
+      const entry = (withPath.s['templates'] as Array<Record<string, unknown>>).find(
+        (t) => t['name'] === 'other-proj',
+      );
+      expect(entry).toMatchObject({
+        source: 'project',
+        project: true,
+        trusted: false,
+        needs_approval: true,
+        usable: true,
+      });
+      expect(withPath.text).toContain('other-proj (project template)');
+      expect(withPath.text).toContain('needs human approval first');
+      const shown = await a.call('template_show', { name: 'other-proj', workspace_path: other() });
+      expect(shown.s).toMatchObject({ ok: true, trusted: false, allowed: true });
+      expect(shown.s['template']).toMatchObject({ source: { kind: 'project' } });
+
+      // after a human approved the content (through a create request) it is listed as trusted
+      const pending = await abox.createSandbox(
+        { contextId: 'agent-a' },
+        { template: 'other-proj', workspace: { mode: 'copy', path: other() } },
+        { waitForApprovalMs: 0 },
+      );
+      expect(pending.status).toBe('pending_approval');
+      if (pending.status !== 'pending_approval') return;
+      await abox.approve({ contextId: 'human' }, pending.approvalId);
+      const after = await a.call('template_list', { workspace_path: other() });
+      expect(
+        (after.s['templates'] as Array<Record<string, unknown>>).find(
+          (t) => t['name'] === 'other-proj',
+        ),
+      ).toMatchObject({ trusted: true, needs_approval: false });
+    });
+
+    it('workspace_path is checked like the one of sandbox_create', async () => {
+      await setupOther();
+      for (const [tool, args] of [
+        ['template_list', { workspace_path: env.datasets }],
+        ['template_show', { name: 'fake-box', workspace_path: env.datasets }],
+        ['template_list', { workspace_path: join(env.home, '.ssh') }],
+      ] as const) {
+        const r = await a.call(tool, args);
+        expect(r.isError, tool).toBe(true);
+        expect(r.s['code'], tool).toBe('policy_denied');
+      }
+    });
   });
 
   it('sandbox_create is idempotent by request_id; list/inspect/delete work', async () => {

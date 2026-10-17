@@ -74,7 +74,7 @@ notifications):
 | Open sandbox shell / Shell öffnen                                        | types `abox shell <id>` into the worktree's terminal; you press Enter                                                                              |
 | Export sandbox diff / Diff exportieren                                   | `abox export <id> --format diff`, saved to a private file, with a warning for paths that can execute code. **Nothing is applied to your project.** |
 | Clean up sandboxes / Aufräumen                                           | lists stopped/expired/failed sandboxes and types `abox rm ...`; you decide (removal deletes the workspace)                                         |
-| Start / Stop sandbox of this worktree                                    | `abox start                                                                                                                                        | stop <id>` |
+| Start / Stop sandbox of this worktree                                    | `abox start <id>` / `abox stop <id>`                                                                                                               |
 | Show sandboxes and lifetimes / Sandboxes und Laufzeiten anzeigen         | state and remaining TTL of all sandboxes, the focused worktree's one first, plus the number of pending approvals                                   |
 | Show pending sandbox approvals / Offene Sandbox-Freigaben anzeigen       | pending approvals as a hint (kind, requester, abox's own risk text)                                                                                |
 | Show MCP setup / MCP-Anbindung anzeigen                                  | URL and header of the HTTP server, stdio line                                                                                                      |
@@ -113,7 +113,7 @@ command. Invalid values are ignored with a notification.
 ```json
 {
   "aboxPath": "/home/me/.local/bin/abox",
-  "defaultTemplate": "node",
+  "defaultTemplate": "node-dev",
   "ttl": "4h",
   "timeoutMs": 25000,
   "language": "auto",

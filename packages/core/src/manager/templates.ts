@@ -195,38 +195,64 @@ function effectiveLimits(ctx: AgentContext, t: ResolvedTemplate): EffectiveLimit
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether sandboxes can be created from `t` here, and if not, why: the backend must be usable and
+ * the template must pass the same validation (security rules, backend capabilities) as a create.
+ */
+export async function templateReadiness(
+  I: Internals,
+  t: ResolvedTemplate,
+): Promise<{ ready: boolean; reason?: string }> {
+  if (!I.providerFactories[t.backend])
+    return { ready: false, reason: `backend ${t.backend} is not available in this abox instance` };
+  let provider: SandboxProvider | undefined;
+  let unusable: string | undefined;
+  try {
+    provider = I.providerFor(await I.resolveHost('local'), t.backend);
+  } catch (e) {
+    unusable = `backend ${t.backend} is not usable: ${errMessage(e)}`;
+  }
+  const issues = provider
+    ? checkTemplateForProvider(t, provider).issues
+    : validateResolvedTemplate(t, {}).issues;
+  if (issues.length > 0) {
+    const first = issues[0]!;
+    return {
+      ready: false,
+      reason: `${first.path ? `${first.path}: ` : ''}${first.message}${issues.length > 1 ? ` (+${issues.length - 1} more; abox template validate ${t.name})` : ''}`,
+    };
+  }
+  return unusable ? { ready: false, reason: unusable } : { ready: true };
+}
+
 export async function listTemplates(
   I: Internals,
   caller: Caller,
-  o: { projectDir?: string } = {},
+  o: { projectDir?: string; workspacePath?: string } = {},
 ): Promise<TemplateList> {
   const ctx = await I.context(caller);
   const dir =
-    usableProjectDir(I, ctx, o.projectDir, true) ?? usableProjectDir(I, ctx, I.projectDir, false);
+    usableProjectDir(I, ctx, o.projectDir, true) ??
+    usableProjectDir(I, ctx, o.workspacePath, true) ??
+    usableProjectDir(I, ctx, I.projectDir, false);
   const catalog = catalogFor(I, dir);
   const { templates, problems } = await catalog.listAll();
   const entries: TemplateListEntry[] = [];
   for (const s of templates) {
     let contentHash = '';
     let hash = '';
-    let trusted = true;
-    if (s.source.kind === 'project') {
-      try {
-        const t = await catalog.get(s.name);
-        contentHash = t.contentHash;
-        hash = t.hash;
-        trusted = I.state.templateTrust.isTrusted(t.contentHash);
-      } catch {
-        trusted = false;
-      }
-    } else {
-      try {
-        const t = await catalog.get(s.name);
-        contentHash = t.contentHash;
-        hash = t.hash;
-      } catch {
-        /* listed above, resolve error is reported as problem elsewhere */
-      }
+    let trusted = s.source.kind !== 'project';
+    let readiness: { ready: boolean; reason?: string };
+    try {
+      const t = await catalog.get(s.name);
+      contentHash = t.contentHash;
+      hash = t.hash;
+      if (s.source.kind === 'project') trusted = I.state.templateTrust.isTrusted(t.contentHash);
+      readiness = await templateReadiness(I, t);
+    } catch (e) {
+      // listed above, so only a file that changed meanwhile or a missing Dockerfile gets here
+      readiness = { ready: false, reason: errMessage(e) };
+      if (s.source.kind === 'project') trusted = false;
     }
     entries.push({
       name: s.name,
@@ -239,6 +265,8 @@ export async function listTemplates(
       trusted,
       allowed: templateAllowed(ctx, s.name),
       backendAvailable: I.providerFactories[s.backend] !== undefined,
+      ready: readiness.ready,
+      ...(readiness.reason ? { notReadyReason: readiness.reason } : {}),
       contentHash,
       hash,
     });
@@ -261,16 +289,18 @@ export async function showTemplate(
   I: Internals,
   caller: Caller,
   name: string,
-  o: { projectDir?: string } = {},
+  o: { projectDir?: string; workspacePath?: string } = {},
 ): Promise<TemplateDetails> {
   const ctx = await I.context(caller);
   if (typeof name !== 'string' || name.length === 0 || name.length > 64)
     throw new AboxError('invalid_input', 'template name required');
+  // A workspace path the caller names is checked like the one of a create (a denied path is an error here).
+  if (o.workspacePath !== undefined) usableProjectDir(I, ctx, o.workspacePath, true);
   const { template } = await loadTemplate(
     I,
     ctx,
     name,
-    projectDirCandidates(I, ctx, o.projectDir, undefined),
+    projectDirCandidates(I, ctx, o.projectDir, o.workspacePath),
   );
   let capabilities: ProviderCapabilities | undefined;
   const warnings: string[] = [];
@@ -377,6 +407,7 @@ export async function reviewTemplate(
     against,
     diff: unifiedDiff(baseline, text, { fromLabel, toLabel, context: 4 }),
     risks: templateRisks(template),
+    ...(template.buildContext ? { buildContext: template.buildContext } : {}),
     ...(o.expectedContentHash !== undefined && o.expectedContentHash !== template.contentHash
       ? { changedSinceRequest: true }
       : {}),

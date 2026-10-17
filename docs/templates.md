@@ -101,6 +101,24 @@ The natural isolation level is `container` for `docker`, `podman` and `python`, 
 must have neither. `vm` needs `base.os` or `vm.image`. For a template with its own Dockerfile the
 file content is part of the cache key; abox then layers user, packages, tools and setup on top.
 
+**What a Dockerfile pulls in is part of the template.** The container engine receives the whole
+directory of the Dockerfile (every file, symlinks as symlinks) and the Dockerfile can `COPY` or
+`ADD` any of it. abox therefore hashes the Dockerfile and that whole directory, and the hash goes
+into the template's content hash (project template trust), the approval request and the image
+cache key. Changing the Dockerfile or any file next to it makes a project template untrusted again
+and asks for a new approval; for an agent's `create` with a user template the approval request
+differs, so an earlier approval does not cover it. The review shows the Dockerfile (as a diff
+against the last trusted version) and lists the files of the context with their sizes. Rules:
+
+- Put the Dockerfile and what it needs into a **dedicated directory** (for example
+  `.sandbox/image/`), not directly into `.sandbox/`: everything in that directory counts, including
+  the other template files if the Dockerfile sits beside them.
+- A project template may only use a Dockerfile inside its own project; the context may have at
+  most 100,000 entries and 1 GiB, and the Dockerfile at most 256 KiB, otherwise the template is
+  refused (`template_invalid`).
+- The same holds for a project template that `extends` another project template: the parent's
+  content is part of the child's content hash.
+
 ### `packages`
 
 Keys: `apt`, `apk`, `dnf`, `pacman` (system packages) and `pip`, `npm` (installed globally).
@@ -423,9 +441,12 @@ $ abox template validate node-dev
 1. **Schema**: types, strict keys, value grammars. Errors carry `file:line:column` and the field
    path.
 2. **Resolution**: `extends`, defaults, tool presets for the OS family, package lists, network and
-   secret rules (for example "allowlist without destinations", "proxy secret without hosts").
+   secret rules (for example "allowlist without destinations", "proxy secret without hosts"), and
+   a Dockerfile base: the Dockerfile and its build context must exist and be readable.
 3. **Security rules**: root user, forbidden mounts and targets, credential-looking environment
-   variables, reserved names.
+   variables, reserved names, and the destination hosts of proxy secrets (exact host names, no
+   wildcard, port or path: the same check `create` applies). `abox template ls` runs these checks
+   too and shows `READY = no` with the reason.
 4. **Backend capabilities**: does the backend deliver the isolation, network mode, mounts, user
    switching, secret methods, OS family and limits the template needs? Missing features are
    reported as `unsupported` instead of being silently dropped.
@@ -472,7 +493,8 @@ A `.sandbox/*.yaml` from a repository is external input: it can run arbitrary se
 ask for mounts, network and secrets. So abox treats it like `direnv allow` does:
 
 - The first time a project template appears (and after **every** change of its content, because
-  trust is bound to the SHA-256 of the file), it is _untrusted_. `abox template ls` shows
+  trust is bound to the SHA-256 of the file, of the project templates it extends and of its
+  Dockerfile with the files next to it), it is _untrusted_. `abox template ls` shows
   `TRUSTED = NO`.
 - As a human, `abox create` shows the reasons and asks; a non-interactive call needs `--yes`
   (`abox template build` also needs `-y`). This confirmation applies to that single call and does
@@ -539,8 +561,9 @@ into the system Python is not possible.
 
 ### Offline Python for data work
 
-This is the built-in `py-offline`: numpy and pandas are installed at build time and the sandbox
-has no network at all.
+This is a shortened version of the built-in `py-offline` (the real file also sets resources and
+`labels.use-for`): numpy and pandas are installed at build time and the sandbox has no network at
+all.
 
 ```yaml
 apiVersion: 1
@@ -598,7 +621,8 @@ labels:
 
 `process` runs commands directly on the host as **your user**. There is no filesystem boundary
 for commands, no network restriction, no resource limits. It exists as a reference backend and
-for machines where nothing else is possible. The built-in `host-shell` is this template:
+for machines where nothing else is possible. The built-in `host-shell` is a longer version of this
+template (full description, workspace, process limits, `labels.use-for`):
 
 ```yaml
 apiVersion: 1

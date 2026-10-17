@@ -8,7 +8,7 @@ import {
   type AgentContext,
 } from '../policy/index.js';
 import { domainCovered } from '../policy/domains.js';
-import { tryParseSize } from '../policy/units.js';
+import { formatSize, tryParseSize } from '../policy/units.js';
 import { buildProxyInjections } from '../secrets/inject.js';
 import { expandNetworkPresets } from '../template/network-presets.js';
 import type { NetworkMode, NetworkSpec, ResolvedTemplate } from '../types.js';
@@ -29,7 +29,7 @@ type ApplySpec =
     }
   | { kind: 'ttl'; totalTtlMs: number }
   | { kind: 'mount' }
-  | { kind: 'resources' };
+  | { kind: 'resources'; cpus?: number; memoryBytes?: number };
 
 function liveOrThrow(I: Internals, rec: SandboxRecord): void {
   if (rec.state === 'removed' || rec.state === 'failed' || rec.state === 'preparing') {
@@ -137,7 +137,19 @@ export async function accessRequest(
           ...(memoryBytes !== undefined ? { memoryBytes } : {}),
         },
       };
-      apply = { kind: 'resources' };
+      apply = {
+        kind: 'resources',
+        ...(d.cpus !== undefined ? { cpus: d.cpus } : {}),
+        ...(memoryBytes !== undefined ? { memoryBytes } : {}),
+      };
+      const cur = eff.resources;
+      if (
+        cur &&
+        (d.cpus === undefined || d.cpus === cur.cpus) &&
+        (memoryBytes === undefined || memoryBytes === cur.memoryBytes)
+      ) {
+        noop = 'the sandbox already has these limits';
+      }
       break;
     }
     case 'ttl': {
@@ -238,14 +250,17 @@ async function assertApplicable(I: Internals, rec: SandboxRecord, apply: ApplySp
       throw new AboxError('unsupported', 'mounts cannot be added to an existing sandbox', {
         hint: 'Create a new sandbox with overrides.mounts (a human has to approve additional mounts).',
       });
-    case 'resources':
-      throw new AboxError(
-        'unsupported',
-        'resource limits of an existing sandbox cannot be changed',
-        {
-          hint: 'Create a new sandbox with overrides.cpus / overrides.memory.',
-        },
-      );
+    case 'resources': {
+      const provider = await I.providerForRecord(rec);
+      if (!provider.updateResources) {
+        throw new AboxError(
+          'unsupported',
+          `backend '${rec.backend}' cannot change the resource limits of an existing sandbox`,
+          { hint: 'Create a new sandbox with overrides.cpus / overrides.memory.' },
+        );
+      }
+      return;
+    }
     case 'network': {
       const provider = await I.providerForRecord(rec);
       const cur = eff.network?.mode ?? 'none';
@@ -259,11 +274,16 @@ async function assertApplicable(I: Internals, rec: SandboxRecord, apply: ApplySp
         );
       }
       if ((apply.mode && apply.mode !== cur) || cur !== 'allowlist') {
+        // The proxy settings (HTTP_PROXY, CA bundle) are part of the container's environment and its
+        // mode is fixed in its network wiring: only the destinations of an allowlist sandbox can move.
         throw new AboxError(
           'unsupported',
           `the network mode of an existing sandbox cannot change (current: ${cur}); only the allowlist of an allowlist sandbox can be extended`,
           {
-            hint: 'Create a new sandbox with the network mode you need.',
+            hint:
+              cur === 'allowlist'
+                ? 'Create a new sandbox with the network mode you need (overrides.network).'
+                : `Create a new sandbox with overrides.network (mode allowlist with allow / presets${cur === 'open' ? ', or mode none' : ''}); a sandbox created with network mode ${cur} cannot get a different mode later.`,
           },
         );
       }
@@ -343,6 +363,24 @@ async function applyAccess(
         network: { mode: 'allowlist', allow, privateExceptions },
       });
       message = `allowlist now has ${allow.length} destination(s)`;
+    } else if (apply.kind === 'resources') {
+      await assertApplicable(I, fresh, apply);
+      if (apply.cpus === undefined && apply.memoryBytes === undefined)
+        throw new AboxError('invalid_input', 'the request names neither cpus nor memory');
+      const provider = await I.providerForRecord(fresh);
+      // The backend first: if it refuses (a memory limit below what the sandbox uses now) the
+      // registry keeps the limits that are really in force.
+      await provider.updateResources!(fresh.id, {
+        ...(apply.cpus !== undefined ? { cpus: apply.cpus } : {}),
+        ...(apply.memoryBytes !== undefined ? { memoryBytes: apply.memoryBytes } : {}),
+      });
+      const resources = {
+        ...eff.resources,
+        ...(apply.cpus !== undefined ? { cpus: apply.cpus } : {}),
+        ...(apply.memoryBytes !== undefined ? { memoryBytes: apply.memoryBytes } : {}),
+      };
+      I.state.sandboxes.setEffective(fresh.id, { ...eff, resources });
+      message = `limits are now ${resources.cpus} cpu(s), ${formatSize(resources.memoryBytes)} memory`;
     } else {
       await assertApplicable(I, fresh, apply);
       message = '';

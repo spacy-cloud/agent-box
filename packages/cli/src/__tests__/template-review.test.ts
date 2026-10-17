@@ -181,6 +181,135 @@ contexts:
     const changed = await run(t, ['approvals', 'show', approvalId]);
     expect(changed.stdout).toContain('The file changed after the request was made');
   });
+
+  it('approve prints the same review before it asks, and the file changing is flagged there too', async () => {
+    writePolicy(
+      t,
+      `version: 1
+profiles:
+  agent:
+    approval: medium
+    templates: [proj-host]
+    limits: { sandboxes: 5, cpus: 4, memory: 8g, ttl: 4h }
+    workspace: { roots: ['${t.home}'], modes: [copy, empty] }
+    network: { modes: [none, allowlist, open], allow_presets: [], allow: [] }
+    mounts: deny
+    secrets: { allowed: [], inject: [proxy] }
+    isolation: { min: none, network_open: none, mounts: none, secrets_env: none }
+contexts:
+  tester: { profile: agent }
+`,
+    );
+    const file = writeProject('env: { FIRST: "1" }\n');
+    const rt = await openAbox({ env: t.env, contextId: 'tester' });
+    let id: string;
+    try {
+      const r = await rt.abox.createSandbox(
+        rt.caller,
+        { template: 'proj-host', workspace: { mode: 'empty' }, projectDir: t.project },
+        { waitForApprovalMs: 0 },
+      );
+      if (r.status !== 'pending_approval') throw new Error(`unexpected ${r.status}`);
+      id = r.approvalId;
+    } finally {
+      await rt.close();
+    }
+    writeFileSync(file, PROJ('env: { FIRST: "1", SECOND: "2" }\n'));
+    const no = await run(t, ['approvals', 'approve', id], { tty: true, stdin: 'n\n' });
+    expect(no.code).toBe(3);
+    expect(no.stderr).toContain('Review of "proj-host"');
+    expect(no.stderr).toContain('The file changed after the request was made');
+    expect(no.stderr).toContain('+  SECOND: "2"');
+    expect(no.stderr.indexOf('Review of')).toBeLessThan(no.stderr.indexOf('Approve'));
+    const still = await run(t, ['approvals', 'ls', '--json']);
+    expect(still.json.data.approvals.map((a: { id: string }) => a.id)).toContain(id);
+  });
+});
+
+describe('template with its own Dockerfile', () => {
+  function writeDockerfileProject(dockerfile = 'FROM ubuntu:24.04\nCOPY seed.sh /seed.sh\n'): void {
+    t.write('abox/config/hosts.yaml', 'hosts:\n  local:\n    backends: [docker, process]\n');
+    const dir = join(t.project, '.sandbox');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'proj-df.yaml'),
+      `apiVersion: 1\nname: proj-df\ndescription: Project template with its own Dockerfile, review tests.\nbackend: docker\nbase: { dockerfile: ./Dockerfile }\n`,
+    );
+    writeFileSync(join(dir, 'Dockerfile'), dockerfile);
+    writeFileSync(join(dir, 'seed.sh'), 'echo seed\n');
+  }
+
+  it('template review lists the Dockerfile content and the context files with sizes', async () => {
+    writeDockerfileProject();
+    const r = await run(t, ['template', 'review', 'proj-df']);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain('Build context');
+    expect(r.stdout).toMatch(/Dockerfile {2}\d+ bytes {2}\(Dockerfile\)/);
+    expect(r.stdout).toMatch(/seed\.sh {2}10 bytes/);
+    expect(r.stdout).toContain('+  COPY seed.sh /seed.sh');
+    const json = await run(t, ['template', 'review', 'proj-df', '--json']);
+    expect(json.json.data.buildContext).toMatchObject({
+      dockerfile: 'Dockerfile',
+      dockerfileText: 'FROM ubuntu:24.04\nCOPY seed.sh /seed.sh\n',
+    });
+    const show = await run(t, ['template', 'show', 'proj-df']);
+    expect(show.stdout).toMatch(/build context:\s+\S+\.sandbox \(3 files/);
+  });
+
+  it('a changed Dockerfile is untrusted again and the review shows the change', async () => {
+    writeDockerfileProject();
+    const before = (await run(t, ['template', 'review', 'proj-df', '--json'])).json.data;
+    writeFileSync(
+      join(t.project, '.sandbox', 'Dockerfile'),
+      'FROM ubuntu:24.04\nRUN echo EVIL2 > /etc/marker\n',
+    );
+    const after = (await run(t, ['template', 'review', 'proj-df', '--json'])).json.data;
+    expect(after.contentHash).not.toBe(before.contentHash);
+    expect(after.diff).toContain('+  RUN echo EVIL2 > /etc/marker');
+  });
+});
+
+describe('template ls: READY reflects validation', () => {
+  it('a template that fails validation (mount of ~/.ssh) is not ready, with the reason', async () => {
+    const dir = join(t.project, '.sandbox');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'bad-mount.yaml'),
+      `apiVersion: 1\nname: bad-mount\ndescription: Mounts the SSH keys of the user, must not be ready.\nbackend: process\nisolation: none\nmounts:\n  - { source: ~/.ssh, target: /keys, access: ro }\n`,
+    );
+    writeProject();
+    const ls = await run(t, ['template', 'ls']);
+    const row = (name: string): string =>
+      ls.stdout.split('\n').find((l) => l.startsWith(name)) ?? '';
+    expect(row('bad-mount')).toMatch(/\bno\b/);
+    expect(row('proj-host')).toMatch(/\byes\b/);
+    expect(ls.stdout).toContain('not ready:');
+    expect(ls.stdout).toMatch(/bad-mount: mounts\[0\]\.source: .*\.ssh/);
+    const js = await run(t, ['template', 'ls', '--json']);
+    const bad = js.json.data.templates.find((x: { name: string }) => x.name === 'bad-mount');
+    expect(bad).toMatchObject({ ready: false, backendAvailable: true });
+    expect(bad.notReadyReason).toContain('.ssh');
+  });
+});
+
+describe('template validate: secrets hosts', () => {
+  it('rejects the proxy secret hosts that a create would reject', async () => {
+    const dir = join(t.project, '.sandbox');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'secret-hosts.yaml');
+    writeFileSync(
+      file,
+      `apiVersion: 1\nname: secret-hosts\ndescription: Proxy secret with wildcard and port hosts.\nbackend: process\nisolation: none\nnetwork: { mode: allowlist, allow: ['*.github.com', 'api.example.org:8443'] }\nsecrets:\n  - { ref: github-token, inject: proxy, hosts: ['*.github.com', 'api.example.org:8443'] }\n`,
+    );
+    const r = await run(t, ['template', 'validate', file, '--json']);
+    expect(r.code).not.toBe(0);
+    const msgs = (r.json.issues as Array<{ message: string; path?: string }>).map(
+      (i) => `${i.path ?? ''} ${i.message}`,
+    );
+    expect(msgs.join('\n')).toContain('secrets[0].hosts[0]');
+    expect(msgs.join('\n')).toContain('secrets[0].hosts[1]');
+    expect(msgs.join('\n')).toContain('invalid secret destination host');
+  });
 });
 
 describe('approvals show: base image and why approval is needed', () => {

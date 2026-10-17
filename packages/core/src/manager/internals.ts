@@ -96,6 +96,11 @@ export class Internals {
   private readonly coalesced = new Map<string, number>();
   private lastTtlSweep = -Infinity;
   private sweeping = false;
+  /** Expired sandboxes whose backend object this process saw stopped (or gone): not asked again. */
+  private readonly expiredQuiet = new Set<SandboxId>();
+  /** Expired sandboxes that could not be stopped; the failure was audited once. */
+  private readonly expiredStopFailed = new Set<SandboxId>();
+  private readonly ttlWatchers = new Set<NodeJS.Timeout>();
   private readonly ttlIntervalMs: number;
   closed = false;
 
@@ -146,7 +151,7 @@ export class Internals {
       state.close();
       throw e;
     }
-    self.recordPolicyRevision('system');
+    self.recordPolicyRevision('system', 'startup');
     return self;
   }
 
@@ -181,14 +186,36 @@ export class Internals {
     }
   }
 
-  recordPolicyRevision(actor: string): number | null {
+  /**
+   * Make sure the policy in force is the latest stored revision. A file that differs from the
+   * latest revision was edited outside abox (while no manager ran, or by another tool): it is stored
+   * as actor `external-edit` and, so that the hash chain shows it too, audited as
+   * `policy.external_edit` with the old and new revision and content hashes (never the content).
+   */
+  recordPolicyRevision(actor: string, detected: 'startup' | 'reload'): number | null {
     const latest = this.state.policyRevisions.latest();
     if (latest && latest.contentHash === this.policy.contentHash) return latest.rev;
-    return this.state.policyRevisions.record({
+    const external = latest !== undefined;
+    const rec = this.state.policyRevisions.record({
       contentHash: this.policy.contentHash,
       content: this.policyText,
-      actor: latest ? 'external-edit' : actor,
-    }).rev;
+      actor: external ? 'external-edit' : actor,
+    });
+    // `changed` is false when another process recorded the same edit first; it audits it.
+    if (external && rec.changed) {
+      this.audit('system', 'policy.external_edit', {
+        decision: 'info',
+        details: {
+          oldRevision: latest.rev,
+          oldHash: latest.contentHash,
+          revision: rec.rev,
+          newHash: this.policy.contentHash,
+          bytes: Buffer.byteLength(this.policyText),
+          detected,
+        },
+      });
+    }
+    return rec.rev;
   }
 
   /** Pick up edits of policy.yaml made by a human in another process (cheap stat, at most every 500 ms). */
@@ -212,11 +239,7 @@ export class Internals {
       this.policyText = loaded.text;
       this.policyStamp = loaded.stamp;
       if (changed) {
-        this.recordPolicyRevision('external-edit');
-        this.audit('system', 'policy.reload', {
-          decision: 'info',
-          details: { contentHash: loaded.policy.contentHash },
-        });
+        this.recordPolicyRevision('external-edit', 'reload');
         this.emit('policy.changed', { data: { contentHash: loaded.policy.contentHash } });
       }
     } catch (e) {
@@ -597,8 +620,10 @@ export class Internals {
         try {
           const p = await this.providerForRecord(rec);
           await p.stop(rec.id);
+          this.expiredQuiet.add(rec.id);
         } catch (e) {
-          if (!(e instanceof AboxError && e.code === 'not_found')) stopError = errMessage(e);
+          if (e instanceof AboxError && e.code === 'not_found') this.expiredQuiet.add(rec.id);
+          else stopError = errMessage(e);
         }
         this.audit('system', 'sandbox.expired', {
           sandboxId: rec.id,
@@ -625,9 +650,81 @@ export class Internals {
     return done;
   }
 
+  /**
+   * Make sure every expired sandbox is really stopped. `sweepTtl` marks a sandbox `expired` once and
+   * stops it once; when that stop failed (engine busy, host unreachable, the process died in
+   * between) nothing would ever try again, and a backend deadline that was moved from inside the
+   * sandbox would go unnoticed. This asks again, for the sandboxes this process has not seen
+   * stopped yet; `stop` is idempotent, so concurrent processes can do the same. Removal stays with
+   * `gc`: the results of an expired sandbox can still be exported.
+   */
+  async enforceExpired(): Promise<SandboxId[]> {
+    const stopped: SandboxId[] = [];
+    for (const rec of this.state.sandboxes.list({ state: ['expired'] })) {
+      if (this.closed) break;
+      if (this.expiredQuiet.has(rec.id)) continue;
+      try {
+        await (await this.providerForRecord(rec)).stop(rec.id);
+        this.expiredQuiet.add(rec.id);
+        this.expiredStopFailed.delete(rec.id);
+        stopped.push(rec.id);
+      } catch (e) {
+        if (e instanceof AboxError && e.code === 'not_found') {
+          this.expiredQuiet.add(rec.id);
+          continue;
+        }
+        if (this.expiredStopFailed.has(rec.id)) continue;
+        this.expiredStopFailed.add(rec.id);
+        this.audit('system', 'sandbox.expired_stop', {
+          sandboxId: rec.id,
+          decision: 'error',
+          details: { owner: rec.owner, expiresAt: rec.expiresAt, message: errMessage(e) },
+        });
+      }
+    }
+    return stopped;
+  }
+
+  /**
+   * Enforce deadlines from a long-running process (`abox mcp serve`, the GUI): without it a sandbox
+   * is only stopped when some abox command happens to run. Every `intervalMs` the overdue sandboxes
+   * are marked expired and stopped (`sweepTtl`) and the expired ones are checked to be stopped
+   * (`enforceExpired`). The timer does not keep the process alive. Several processes may do this at
+   * once: the state change is a conditional update in the shared database, so each sandbox is
+   * expired exactly once, and stopping is idempotent. Returns the function that stops the watcher.
+   */
+  startTtlWatcher(intervalMs: number, onError?: (e: unknown) => void): () => void {
+    let running = false;
+    const timer = setInterval(
+      () => {
+        if (running || this.closed) return;
+        running = true;
+        void (async () => {
+          try {
+            await this.sweepTtl(true);
+            await this.enforceExpired();
+          } catch (e) {
+            onError?.(e);
+          } finally {
+            running = false;
+          }
+        })();
+      },
+      Math.max(10, intervalMs),
+    );
+    timer.unref();
+    this.ttlWatchers.add(timer);
+    return () => {
+      clearInterval(timer);
+      this.ttlWatchers.delete(timer);
+    };
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    for (const t of this.ttlWatchers) clearInterval(t);
+    this.ttlWatchers.clear();
     this.listeners.clear();
     this.state.close();
   }

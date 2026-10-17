@@ -56,6 +56,21 @@ export function renderTemplateSnapshot(t: ResolvedTemplate): string {
       ...(t.base.os !== undefined ? { os: t.base.os } : {}),
       ...(t.base.dockerfile !== undefined ? { dockerfile: t.base.dockerfile } : {}),
     },
+    // The Dockerfile verbatim and what else the engine receives with it: a change to any of it shows in the diff.
+    dockerfile: t.buildContext ? t.buildContext.dockerfileText : undefined,
+    build_context: t.buildContext
+      ? {
+          files: t.buildContext.files.map((f) =>
+            f.type === 'symlink'
+              ? `${f.path} -> ${f.target ?? ''}`
+              : `${f.path} (${f.size} bytes, sha256 ${f.sha256.slice(0, 12)})`,
+          ),
+          ...(t.buildContext.filesTruncated
+            ? { more: `${t.buildContext.fileCount - t.buildContext.files.length} more files` }
+            : {}),
+          digest: t.buildContext.digest.slice(0, 16),
+        }
+      : undefined,
     // Packages and tool presets by their short labels (their scripts come from abox); setup verbatim.
     install: t.build.filter((s) => !SETUP_STEP.test(s.name)).map((s) => s.name),
     setup: setup.length > 0 ? setup : undefined,
@@ -107,7 +122,10 @@ export function templateRisks(t: ResolvedTemplate): string[] {
     );
   if (t.base.dockerfile !== undefined)
     out.push(
-      `builds from the Dockerfile ${t.base.dockerfile} from the project: every instruction in it runs at build time`,
+      `builds from the Dockerfile ${t.base.dockerfile} from the project: every instruction in it runs at build time` +
+        (t.buildContext
+          ? `, and every file in ${t.buildContext.dir} (${t.buildContext.fileCount} file${t.buildContext.fileCount === 1 ? '' : 's'}, ${t.buildContext.totalBytes} bytes) can be copied into the image`
+          : ''),
     );
   if (t.base.os !== undefined && /^[^/]+\.[^/]+\/|^[^/]+:\d+\//.test(t.base.os))
     out.push(`base image ${t.base.os} comes from a registry outside Docker Hub`);

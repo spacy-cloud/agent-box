@@ -7,7 +7,7 @@ import type { Abox } from '@abox/core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import type { McpLimits } from './runtime.js';
+import { startTtlWatch, type McpLimits } from './runtime.js';
 import { createMcpServer } from './server.js';
 
 export interface ServeHttpOptions {
@@ -23,6 +23,8 @@ export interface ServeHttpOptions {
    */
   allowedOrigins?: string[];
   limits?: McpLimits;
+  /** How often expired sandboxes are stopped in the background, ms (default 15 s, 0 = never). */
+  ttlWatchMs?: number;
   /** Max concurrent sessions overall (default 64) and per token (default 16). */
   maxSessions?: number;
   maxSessionsPerToken?: number;
@@ -367,6 +369,7 @@ export async function serveHttp(opts: ServeHttpOptions): Promise<HttpServerHandl
     Math.min(60_000, Math.max(1000, Math.floor(idleMs / 2))),
   );
   sweep.unref();
+  const stopTtlWatch = startTtlWatch(opts.abox, opts.ttlWatchMs);
 
   opts.onListening?.(address);
 
@@ -376,6 +379,7 @@ export async function serveHttp(opts: ServeHttpOptions): Promise<HttpServerHandl
     close(): Promise<void> {
       closing ??= (async () => {
         clearInterval(sweep);
+        stopTtlWatch();
         const all = [...sessions.values()];
         sessions.clear();
         await Promise.allSettled(all.map((s) => s.server.close()));

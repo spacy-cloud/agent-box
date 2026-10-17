@@ -120,6 +120,9 @@ import type {
   TemplateValidation,
 } from './types.js';
 
+/** How often `startTtlWatcher` enforces deadlines by default. */
+export const DEFAULT_TTL_WATCH_MS = 15_000;
+
 export interface AboxOpenOptions extends AboxOptions {
   /** Run the light reconcile (TTL sweep, ghost/stale marking; nothing is deleted) on open. Default true. */
   reconcileOnOpen?: boolean;
@@ -173,13 +176,20 @@ export class Abox {
   }
 
   // -- templates -------------------------------------------------------------------------------------
-  listTemplates(caller: Caller, o: { projectDir?: string } = {}): Promise<TemplateList> {
+  /**
+   * `workspacePath`: the workspace a create would use; its `.sandbox` templates are listed too
+   * (agents: only below their workspace roots, otherwise `policy_denied`).
+   */
+  listTemplates(
+    caller: Caller,
+    o: { projectDir?: string; workspacePath?: string } = {},
+  ): Promise<TemplateList> {
     return listTemplates(this.I, caller, o);
   }
   showTemplate(
     caller: Caller,
     name: string,
-    o: { projectDir?: string } = {},
+    o: { projectDir?: string; workspacePath?: string } = {},
   ): Promise<TemplateDetails> {
     return showTemplate(this.I, caller, name, o);
   }
@@ -465,6 +475,17 @@ export class Abox {
    */
   gcOrphans(caller: Caller, o: GcOrphansOptions = {}): Promise<GcOrphansReport> {
     return gcOrphans(this.I, caller, o);
+  }
+  /**
+   * For long-running processes (`abox mcp serve`, the GUI): enforce sandbox deadlines in the
+   * background, every `intervalMs` (default 15 s), so a sandbox is stopped on time even when no
+   * other abox command runs. It stops what is overdue (as the sweep on every call does) and retries
+   * stops that failed; removal stays with `gc`. Safe next to other abox processes on the same data
+   * directory. The timer is unref'd and ends with `close()`; returns a function that stops it
+   * earlier. `onError` is told about a failed round (the next one retries).
+   */
+  startTtlWatcher(o: { intervalMs?: number; onError?: (e: unknown) => void } = {}): () => void {
+    return this.I.startTtlWatcher(o.intervalMs ?? DEFAULT_TTL_WATCH_MS, o.onError);
   }
   /** Run the TTL sweep now (it also runs, rate limited, on every call). Human only. */
   async sweepTtl(caller: Caller): Promise<string[]> {

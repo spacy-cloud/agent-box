@@ -93,3 +93,24 @@ export function durationMs(value: string | number, field: string): number {
     );
   }
 }
+
+/**
+ * Enforce sandbox deadlines for as long as this MCP server runs: without it an expired sandbox is
+ * only stopped when some other abox command runs. `ms` is the interval (default: the manager's,
+ * 15 s); `0` turns it off. Failures go to stderr, at most one line a minute. Returns the stop function.
+ */
+export function startTtlWatch(abox: Abox, ms?: number): () => void {
+  if (ms === 0) return () => undefined;
+  let lastReport = -Infinity;
+  return abox.startTtlWatcher({
+    ...(ms !== undefined ? { intervalMs: ms } : {}),
+    onError: (e) => {
+      const now = Date.now();
+      if (now - lastReport < 60_000) return;
+      lastReport = now;
+      process.stderr.write(
+        `abox-mcp: sandbox expiry check failed: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+    },
+  });
+}

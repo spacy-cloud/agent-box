@@ -7,7 +7,11 @@ export function invalid(message: string, hint?: string): AboxError {
 /** `30s`, `2h`, `1h30m` or plain milliseconds with `ms` suffix -> milliseconds. */
 export function durationMs(value: string, flag: string): number {
   const ms = /^(\d+)ms$/.exec(value.trim());
-  if (ms) return Number(ms[1]);
+  if (ms) {
+    const n = Number(ms[1]);
+    if (!Number.isSafeInteger(n)) throw invalid(`${flag}: duration "${value}" is too large`);
+    return n;
+  }
   try {
     return parseDuration(value);
   } catch (e) {

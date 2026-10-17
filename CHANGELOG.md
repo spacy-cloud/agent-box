@@ -10,6 +10,16 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Expired sandboxes are stopped in the background by `abox mcp serve` (stdio and HTTP) and the GUI
+  (every 15 s), and a stop that failed is retried, instead of only when some command runs.
+- `access_request` kind=resources changes the cpu and memory limit of a running or stopped sandbox
+  (Docker and Podman, new provider capability `updateResources`) within the profile limits.
+  kind=network on a sandbox created with network `none` stays `unsupported`, with a hint that names
+  `overrides.network`.
+- `abox host add --max-sandboxes/--cpus/--memory` set host limits. In the GUI Hosts view, "New
+  sandbox" opens the wizard with that host preselected.
+- MCP: `template_list` and `template_show` accept `workspace_path` to include a project's own
+  templates, marked as project templates with their trust state.
 - **GUI project folders:** pick a project folder in the Templates view and in the first step of New
   sandbox, and its `.sandbox/*.yaml` templates are listed with a "project" badge and their trust
   state, with Review and the normal confirmation before a sandbox is created. The folder is checked
@@ -71,12 +81,19 @@ release. Nothing has been released yet.
 - **CI:** a `GUI end-to-end tests` job runs the Playwright suite of the Electron app on
   `ubuntu-24.04` with Node 24 under `xvfb` (builds node-pty, allows unprivileged user namespaces for
   Chromium's sandbox, uploads traces on failure). The specs that need Docker skip themselves there
-  (17 of 21 run). `docs/security.md` and `CONTRIBUTING.md` now list which test levels CI runs and
+  (24 of 28 tests run). `docs/security.md` and `CONTRIBUTING.md` now list which test levels CI runs and
   the opt-in switches (`ABOX_TEST_DOCKER`, `ABOX_TEST_DOCKER_FULL`, `ABOX_TEST_KEYRING`,
   `ABOX_TEST_VM`).
 
 ### Changed
 
+- `abox approvals approve <id>` shows the request, why it needs approval, the risks and the template
+  review first and asks for confirmation on a terminal; `--yes` is required without a terminal and
+  with `--json`.
+- `abox template validate` rejects proxy secret hosts that `create` rejects (wildcards, ports).
+  `abox template ls` shows `READY = no` with the reason for templates that fail validation.
+- MCP: `template://` resources follow the same filter as `template_list`.
+- CI: the Test job also runs the GUI typecheck and unit tests.
 - The create request digest includes the resolved template base (`os` image, `dockerfile`, and the
   `registry` it maps to), so an approval is bound to the base image and cannot be reused for
   another. Pending approvals made before this change are requested again once.
@@ -120,12 +137,35 @@ release. Nothing has been released yet.
 
 ### Security
 
+- Trust and approvals cover a template's Dockerfile: for `base.dockerfile` the content hash, the
+  create request digest and the image cache key include the Dockerfile and every file in its
+  directory (the build context). Rewriting the Dockerfile or a copied file after an approval makes
+  a project template untrusted again and needs a new approval; a context that changes between the
+  check and the build is not built (`conflict`). The content hash of a project template also covers
+  the project templates it extends, and a project template may only use a Dockerfile inside its
+  own project. The review shows the Dockerfile as a diff and lists the context files with sizes.
+- An agent can no longer move its own sandbox deadline: `sandbox_write_file` / copy-in refuse
+  `/usr/local/share/abox` (deadline file and proxy CA), the container entrypoint only honours a
+  deadline file that is root-owned and not writable by others, and `inspect`/`list`/`start` ignore
+  any other file. The registry stays the authority.
+- Agents may use a directory below a workspace root, not the root itself (`~/projects` is refused,
+  `~/projects/app` is fine); humans are unchanged.
+- Mount targets requested at create time reject `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` like
+  template validation does (one shared list).
+- An edit of `policy.yaml` made outside abox, or while no manager ran, writes a
+  `policy.external_edit` audit entry with the old and new revision and hash (replaces
+  `policy.reload`).
 - An agent calling an MCP tool that does not exist (`policy_set`, `approve`, `ssh_exec`, ...) is
   recorded in the audit log as `mcp.unknown_tool` (tool name, context, argument names only; rate
   limited).
 
 ### Fixed
 
+- A duration or size that overflows says "too large" instead of "must be greater than zero".
+- `abox mcp serve --help` no longer prints the default twice.
+- Docs: stdio MCP `--agent` identity documented as a known limitation, egress audit timing, remote
+  `worktree`, Orca `init`, VM image names, mount targets, the Orca plugin README, MCP tool and
+  result field names, and where contexts and tokens live.
 - GUI: the Templates view's "Review ..." button was unreachable because project templates were
   never listed; its review dialog now also passes the accessibility check (heading order).
 - `abox extend` / `access_request` kind=ttl now move the deadline the backend itself enforces, not

@@ -99,7 +99,7 @@ export function fail(
 const DEFAULT_HINTS: Partial<Record<string, string>> = {
   not_found: 'Check the id with sandbox_list. You only see your own sandboxes.',
   policy_denied:
-    'Do not work around this. Use access_request (kind network|mount|resources|ttl) or tell the human what is blocked; policy_show lists your limits.',
+    'Do not work around this. If the limit can be raised for a running sandbox, use access_request (kind ttl|resources, or network for an allowlist sandbox); otherwise create a new sandbox within your limits or tell the human what is blocked. policy_show lists your limits.',
   approval_denied:
     'A human denied this request. Do not retry the same request; adjust it or tell the human.',
   approval_expired:

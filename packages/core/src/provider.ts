@@ -115,6 +115,16 @@ export interface SandboxProvider {
    */
   extendExpiry?(id: SandboxId, expiresAt: number): Promise<void>;
 
+  /**
+   * Change the cpu and/or memory limit of an existing sandbox, running or stopped, to exactly
+   * these values (`access_request` kind=resources). Only the given fields change, and the change
+   * is permanent (a restart keeps it). The manager has already checked the values against the
+   * profile; a backend that refuses (e.g. a memory limit below what the sandbox uses now) fails
+   * and leaves the old limits. Optional (see `capabilities().updateResources`); absent =
+   * `unsupported`.
+   */
+  updateResources?(id: SandboxId, limits: { cpus?: number; memoryBytes?: number }): Promise<void>;
+
   /** Egress decisions recorded by the proxy since `sinceTs` (allowlist mode only). */
   networkEvents?(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]>;
   /** Combined stdout/stderr of the sandbox main process, if any. */

@@ -15,6 +15,7 @@ import {
   testHost,
   trustHostKey,
   type HostBackendKind,
+  type HostLimits,
   type HostProfile,
   type HostProfileInput,
   type IsolationLevel,
@@ -22,7 +23,34 @@ import {
 import type { Cli } from '../cli.js';
 import { CliExit } from '../errors.js';
 import { formatRelative, renderKeyValues, renderTable, safe } from '../format.js';
-import { collect, commaList, invalid } from '../parse.js';
+import { collect, commaList, invalid, positiveNumber, sizeBytes } from '../parse.js';
+
+/** `--max-sandboxes`, `--cpus`, `--memory` -> the `limits` of hosts.yaml (same bounds as its schema). */
+export function parseHostLimits(o: {
+  maxSandboxes?: string;
+  cpus?: string;
+  memory?: string;
+}): HostLimits | undefined {
+  const limits: HostLimits = {};
+  if (o.maxSandboxes !== undefined) {
+    const n = Number(o.maxSandboxes);
+    if (!/^\d+$/.test(o.maxSandboxes.trim()) || !Number.isSafeInteger(n) || n > 10_000)
+      throw invalid(
+        `--max-sandboxes: expected a whole number from 0 to 10000, got "${safe(o.maxSandboxes)}"`,
+      );
+    limits.sandboxes = n;
+  }
+  if (o.cpus !== undefined) {
+    const n = positiveNumber(o.cpus, '--cpus');
+    if (n > 1024) throw invalid(`--cpus: at most 1024, got "${safe(o.cpus)}"`);
+    limits.cpus = n;
+  }
+  if (o.memory !== undefined) {
+    sizeBytes(o.memory, '--memory');
+    limits.memory = o.memory.trim();
+  }
+  return Object.keys(limits).length > 0 ? limits : undefined;
+}
 
 function address(p: HostProfile): string {
   if (p.kind === 'local') return 'this machine';
@@ -108,6 +136,9 @@ export function registerHost(program: Command, cli: Cli): void {
     )
     .option('--data-dir <path>', 'working directory root on the host (process/vm backends)')
     .option('--tag <tag>', 'tag (repeatable)', collect)
+    .option('--max-sandboxes <n>', 'limit: sandboxes on this host in total (0..10000)')
+    .option('--cpus <n>', 'limit: CPUs for all sandboxes on this host together (up to 1024)')
+    .option('--memory <size>', 'limit: memory for all sandboxes on this host together, e.g. 16g')
     .action(
       async (
         id: string,
@@ -124,6 +155,9 @@ export function registerHost(program: Command, cli: Cli): void {
           minIsolation?: IsolationLevel;
           dataDir?: string;
           tag?: string[];
+          maxSandboxes?: string;
+          cpus?: string;
+          memory?: string;
         },
       ) => {
         const rt = await open();
@@ -138,6 +172,7 @@ export function registerHost(program: Command, cli: Cli): void {
         }
         if (o.port !== undefined && !/^\d{1,5}$/.test(o.port))
           throw invalid(`--port: expected a port number, got "${safe(o.port)}"`);
+        const limits = parseHostLimits(o);
         const input: HostProfileInput = {
           id,
           ...(o.hostname ? { hostname: o.hostname } : {}),
@@ -152,9 +187,15 @@ export function registerHost(program: Command, cli: Cli): void {
           ...(o.minIsolation ? { minIsolation: o.minIsolation } : {}),
           ...(o.dataDir ? { dataDir: o.dataDir } : {}),
           ...(o.tag?.length ? { tags: o.tag } : {}),
+          ...(limits ? { limits } : {}),
         };
         const p = rt.hostRegistry.add(input);
-        rt.audit('host.add', { host: p.id, zone: p.zone, backends: p.backends });
+        rt.audit('host.add', {
+          host: p.id,
+          zone: p.zone,
+          backends: p.backends,
+          ...(p.limits ? { limits: p.limits } : {}),
+        });
         cli.success(
           p,
           () =>

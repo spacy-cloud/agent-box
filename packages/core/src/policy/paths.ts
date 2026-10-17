@@ -308,6 +308,12 @@ export interface CheckHostPathOptions {
    * tool configuration that no sandbox needs. Humans are not subject to this rule.
    */
   denyHiddenHomeDirs?: boolean;
+  /**
+   * Agents: the path must lie strictly *below* a root, the root directory itself is refused (the
+   * concept allows paths "unterhalb" the allowed roots: `~/projects` is the collection of
+   * projects, not a project). Humans are not subject to this rule.
+   */
+  strictlyBelowRoots?: boolean;
 }
 
 const SOCKET_SCAN_MAX_ENTRIES = 250_000;
@@ -422,6 +428,17 @@ export function checkHostPath(canonical: string, opts: CheckHostPathOptions): Pa
       hint: `Use a path inside one of the allowed roots, or ask the human to add the project directory to ${opts.kind === 'mount' ? 'mounts.roots' : 'workspace.roots'} of the profile with \`abox policy edit\` (\`abox init --agent <name>\` shows the current roots).`,
     };
   }
+  if (
+    opts.strictlyBelowRoots &&
+    !opts.roots.some((r) => isWithin(canonical, r) && canonical !== r)
+  ) {
+    return {
+      ok: false,
+      code: 'outside_roots',
+      reason: `${label} path ${canonical} is an allowed ${label} root itself; agents may only use a directory below a root (${opts.roots.join(', ')})`,
+      hint: `Use a project directory inside the root (for example ${canonical}/<project>), or ask the human to add the project directory itself to ${opts.kind === 'mount' ? 'mounts.roots' : 'workspace.roots'} of the profile with \`abox policy edit\`.`,
+    };
+  }
   return { ok: true };
 }
 
@@ -475,6 +492,26 @@ function findSocket(root: string): string | 'unverifiable' | undefined {
 }
 
 /**
+ * Trees inside the sandbox that nothing may be mounted onto (nor placed in by a template): system
+ * locations the sandbox needs for itself. One list for the create-time check (`checkMountTarget`)
+ * and the template validation.
+ */
+export const RESERVED_SANDBOX_TREES: readonly string[] = [
+  '/proc',
+  '/sys',
+  '/dev',
+  '/etc',
+  '/run',
+  '/var/run',
+  '/boot',
+  '/bin',
+  '/sbin',
+  '/usr',
+  '/lib',
+  '/lib64',
+];
+
+/**
  * Validates a path *inside* the sandbox used as mount target: absolute,
  * normalized, no control characters, and not one of the system locations a
  * sandbox needs for itself.
@@ -498,7 +535,7 @@ export function checkMountTarget(target: string): { ok: true } | { ok: false; re
     };
   }
   const t = foldPath(norm);
-  const reserved = ['/', '/proc', '/sys', '/dev', '/etc', '/run', '/var/run', '/boot'];
+  const reserved = ['/', ...RESERVED_SANDBOX_TREES];
   for (const r of reserved) {
     if (r === '/' ? t === '/' : isWithin(t, r)) {
       return {

@@ -56,6 +56,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test
+      # The root vitest run excludes packages/app and `tsc -b` does not reference it, so the GUI's
+      # typecheck (main, renderer, e2e) and its unit tests (Vitest with jsdom, no display or
+      # Electron needed) run as their own steps. They import the built workspace packages.
+      - name: GUI typecheck
+        run: pnpm --filter @abox/app typecheck
+      - name: GUI unit tests
+        run: pnpm --filter @abox/app test
 
   docker-tests:
     name: Docker integration tests

@@ -3,7 +3,7 @@ import type { Abox } from '@abox/core';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Readable, Writable } from 'node:stream';
 import { assertAgentContextId, createMcpServer } from './server.js';
-import type { McpLimits } from './runtime.js';
+import { startTtlWatch, type McpLimits } from './runtime.js';
 
 /**
  * Refuse to start for a context that is not an agent context of the current policy. (`human` is never
@@ -42,6 +42,8 @@ export interface ServeStdioOptions {
   /** Agent context (from `--agent`). Must exist in the policy and must not be `human`. */
   contextId: string;
   limits?: McpLimits;
+  /** How often expired sandboxes are stopped in the background, ms (default 15 s, 0 = never). */
+  ttlWatchMs?: number;
   /** Tests only. Default: process.stdin / process.stdout. */
   stdin?: Readable;
   stdout?: Writable;
@@ -67,6 +69,7 @@ export async function serveStdio(opts: ServeStdioOptions): Promise<void> {
     process.stderr.write(`abox-mcp: transport error: ${e.message}\n`);
   };
   await server.connect(transport);
+  const stopTtlWatch = startTtlWatch(opts.abox, opts.ttlWatchMs);
   const onEnd = (): void => {
     void server.close().catch(() => undefined);
   };
@@ -75,6 +78,7 @@ export async function serveStdio(opts: ServeStdioOptions): Promise<void> {
   try {
     await closed;
   } finally {
+    stopTtlWatch();
     stdin.off('end', onEnd);
     stdin.off('close', onEnd);
   }

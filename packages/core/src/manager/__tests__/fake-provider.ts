@@ -51,6 +51,10 @@ export interface FakeOptions {
   noExtendExpiry?: boolean;
   /** `extendExpiry` fails with this message (the backend refuses to move its deadline). */
   failExtendExpiry?: string;
+  /** The backend can change cpu / memory limits of an existing sandbox: provides `updateResources`. */
+  updateResources?: boolean;
+  /** `updateResources` fails with this message (e.g. memory below what the sandbox uses). */
+  failUpdateResources?: string;
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -70,6 +74,8 @@ export class FakeProvider implements SandboxProvider {
   readonly gcCalls: string[][] = [];
   /** Every `extendExpiry` call that was accepted. */
   readonly expiryUpdates: Array<{ id: SandboxId; expiresAt: number }> = [];
+  /** Every `updateResources` call that was accepted. */
+  readonly resourceUpdates: Array<{ id: SandboxId; cpus?: number; memoryBytes?: number }> = [];
   /** Foreign objects that are still there / the refs `removeForeign` deleted. */
   readonly foreignResources: ForeignResource[] = [];
   readonly foreignRemoved: string[] = [];
@@ -88,6 +94,7 @@ export class FakeProvider implements SandboxProvider {
   private readonly caps: ProviderCapabilities;
   updateNetwork?: SandboxProvider['updateNetwork'];
   extendExpiry?: SandboxProvider['extendExpiry'];
+  updateResources?: SandboxProvider['updateResources'];
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
   networkEvents?: SandboxProvider['networkEvents'];
@@ -137,6 +144,17 @@ export class FakeProvider implements SandboxProvider {
         // a new object: `specs` keeps the spec the sandbox was created with
         sb.spec = { ...sb.spec, expiresAt };
         this.expiryUpdates.push({ id, expiresAt });
+        return Promise.resolve();
+      };
+    }
+    if (opts.updateResources) {
+      this.caps.updateResources = true;
+      this.updateResources = (id, limits) => {
+        const sb = this.get(id);
+        if (this.opts.failUpdateResources)
+          return Promise.reject(new AboxError('backend_error', this.opts.failUpdateResources));
+        sb.spec = { ...sb.spec, resources: { ...sb.spec.resources, ...limits } };
+        this.resourceUpdates.push({ id, ...limits });
         return Promise.resolve();
       };
     }

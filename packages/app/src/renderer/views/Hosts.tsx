@@ -14,6 +14,7 @@ import {
 } from '../components/ui';
 import { hostColor } from '../components/Terminal';
 import { useSshTabs } from './ssh-tabs';
+import { NewSandboxDialog } from './NewSandbox';
 import {
   canTrust,
   hostKeyReducer,
@@ -31,7 +32,7 @@ import type {
 } from '../../shared/types';
 
 export function HostsView() {
-  const { t, notify } = useApp();
+  const { t, notify, navigate } = useApp();
   const ssh = useSshTabs();
   const q = useQuery('hosts:list', undefined, { pollMs: 5000 });
   const fw = useQuery('hosts:forwards', undefined, { pollMs: 2500, live: false });
@@ -42,6 +43,8 @@ export function HostsView() {
   );
   const [forwardsFor, setForwardsFor] = useState<string | null>(null);
   const [removeFor, setRemoveFor] = useState<HostRow | null>(null);
+  /** Host id the New sandbox wizard is open for (`local` = this computer). */
+  const [createOn, setCreateOn] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const now = useNow(15_000);
@@ -185,6 +188,7 @@ export function HostsView() {
                     row={r}
                     now={now}
                     busy={busy === r.profile.id}
+                    onCreate={() => setCreateOn(r.profile.id)}
                     onFavorite={() => void toggleFavorite(r)}
                     onTest={() => void test(r)}
                     onTerminal={() => void terminal(r)}
@@ -249,6 +253,16 @@ export function HostsView() {
           onClose={() => setForwardsFor(null)}
         />
       ) : null}
+      {createOn ? (
+        <NewSandboxDialog
+          host={createOn}
+          onClose={() => setCreateOn(null)}
+          onCreated={(id) => {
+            setCreateOn(null);
+            navigate({ view: 'detail', sandboxId: id });
+          }}
+        />
+      ) : null}
       {removeFor ? (
         <ConfirmDialog
           title={t('hosts.remove.title')}
@@ -286,6 +300,7 @@ function HostLine(props: {
   row: HostRow;
   now: number;
   busy: boolean;
+  onCreate(): void;
   onFavorite(): void;
   onTest(): void;
   onTerminal(): void;
@@ -355,39 +370,43 @@ function HostLine(props: {
         <StatusCell row={row} now={props.now} />
       </td>
       <td>
-        {local ? (
-          <span className="muted">—</span>
-        ) : (
-          <div className="row-actions">
-            <button type="button" disabled={props.busy} onClick={props.onTest}>
-              {props.busy ? t('hosts.testing') : t('hosts.action.test')}
-              <span className="sr-only"> {p.id}</span>
-            </button>
-            <button type="button" disabled={props.busy} onClick={props.onTerminal}>
-              {t('hosts.action.terminal')}
-              <span className="sr-only"> {p.id}</span>
-            </button>
-            <button type="button" onClick={props.onKey}>
-              {t('hosts.action.key')}
-              <span className="sr-only"> {p.id}</span>
-            </button>
-            <button type="button" onClick={props.onForwards}>
-              {t('hosts.action.forwards')}
-              {p.portForwards.length > 0
-                ? ` (${row.forwardsRunning}/${p.portForwards.length})`
-                : ''}
-              <span className="sr-only"> {p.id}</span>
-            </button>
-            <button type="button" onClick={props.onEdit}>
-              {t('hosts.action.edit')}
-              <span className="sr-only"> {p.id}</span>
-            </button>
-            <button type="button" className="danger" onClick={props.onRemove}>
-              {t('hosts.action.remove')}
-              <span className="sr-only"> {p.id}</span>
-            </button>
-          </div>
-        )}
+        <div className="row-actions">
+          <button type="button" onClick={props.onCreate}>
+            {t('hosts.action.create')}
+            <span className="sr-only"> {p.id}</span>
+          </button>
+          {!local ? (
+            <>
+              <button type="button" disabled={props.busy} onClick={props.onTest}>
+                {props.busy ? t('hosts.testing') : t('hosts.action.test')}
+                <span className="sr-only"> {p.id}</span>
+              </button>
+              <button type="button" disabled={props.busy} onClick={props.onTerminal}>
+                {t('hosts.action.terminal')}
+                <span className="sr-only"> {p.id}</span>
+              </button>
+              <button type="button" onClick={props.onKey}>
+                {t('hosts.action.key')}
+                <span className="sr-only"> {p.id}</span>
+              </button>
+              <button type="button" onClick={props.onForwards}>
+                {t('hosts.action.forwards')}
+                {p.portForwards.length > 0
+                  ? ` (${row.forwardsRunning}/${p.portForwards.length})`
+                  : ''}
+                <span className="sr-only"> {p.id}</span>
+              </button>
+              <button type="button" onClick={props.onEdit}>
+                {t('hosts.action.edit')}
+                <span className="sr-only"> {p.id}</span>
+              </button>
+              <button type="button" className="danger" onClick={props.onRemove}>
+                {t('hosts.action.remove')}
+                <span className="sr-only"> {p.id}</span>
+              </button>
+            </>
+          ) : null}
+        </div>
       </td>
     </tr>
   );

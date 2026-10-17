@@ -86,7 +86,9 @@ Mount checks happen in the core, not in the backend.
 - **Allowed roots.** Only paths below allowed roots (for example `~/projects`) are permitted.
   Without a `policy.yaml` the built-in policy applies: agents may only use workspaces below
   `~/projects`, `~/Projekte`, `~/src`, `~/code`, `~/dev`, `~/work`, `~/git` and `~/repos`. The home
-  directory as a whole is never a root. Independently of any roots, an agent can never use a path
+  directory as a whole is never a root. For agents the root itself is not a workspace either: the
+  path must lie _below_ a root (`~/projects/app` yes, `~/projects` no; the error says so). Humans
+  may use a root directory. Independently of any roots, an agent can never use a path
   inside a hidden directory directly below the home directory (`~/.claude`, `~/.codex`, `~/.cache`,
   ...), because those hold credentials and tool configuration. Humans are not limited by these
   roots; the forbidden-path list applies to everyone.
@@ -177,7 +179,10 @@ bound to profile rights.
 A profile (in `policy.yaml`) groups the limits and rights for an agent context: allowed
 templates, limits (sandbox count, CPUs, memory, TTL), workspace roots and modes, network modes and
 presets, mounts, allowed secrets and injection methods, and minimum isolation per capability.
-Profiles can extend each other. Illustrative example:
+Profiles can extend each other. The agent contexts themselves (which names exist and which profile
+each one uses) are defined in the same `policy.yaml`; there is no separate `agents.yaml`. The
+tokens for HTTP agents are not in a file: they live in the state database (`state.db`), as SHA-256
+hashes only. Illustrative example:
 
 ```yaml
 profiles:
@@ -217,8 +222,11 @@ Properties:
   the defaults, mounts, network destinations, resources and expiry.
 - **No command blocklist.** `npm test` can run arbitrary code. What matters are the technical
   limits of the environment, not command names.
-- **Policy changes** are versioned (revision in the audit log) and possible only through the CLI or
-  GUI, never through MCP. Attempts are logged, including calls of agents to MCP tools that do not
+- **Policy changes** are versioned (a revision per content hash; `policy.set` in the audit log)
+  and possible only through the CLI or GUI, never through MCP. An edit of `policy.yaml` made
+  outside abox (a text editor, or while no abox process ran) is picked up too: it gets a revision
+  with the actor `external-edit` and a `policy.external_edit` audit entry with the old and new
+  revision and content hashes (never the content), so it shows in the hash chain. Attempts are logged, including calls of agents to MCP tools that do not
   exist (`policy_set`, `approve`, `ssh_exec`, ...): the audit log gets `mcp.unknown_tool` with the
   tool name and the agent context (rate limited; argument values are never recorded).
 - **Fail closed.** If nobody decides before the timeout, the request is denied.
@@ -237,6 +245,13 @@ the build, mounts, network, secrets, isolation). `abox create`, `abox template b
 `abox template review <name>` and `abox approvals show <id>` show it. An approval is bound to the
 content hash; if the file changes after the request, `approvals show` warns.
 
+The content hash covers more than the YAML file: for a template with `base.dockerfile` it includes
+the Dockerfile and every file in its directory (the build context the engine receives, which the
+Dockerfile can `COPY`), and for a template that `extends` another project template the parent's
+content. The same digest is part of the create request and of the image cache key, so rewriting
+the Dockerfile after an approval needs a new approval. The review shows the Dockerfile and lists
+the context files. A project template may only use a Dockerfile inside its own project.
+
 ## Audit log
 
 - Each entry records time, actor (human or agent context), action, sandbox, decision (allowed,
@@ -246,6 +261,10 @@ content hash; if the file changes after the request, `approvals show` warns.
 - Command output is not stored in the audit log; it goes to rotating per-sandbox log files with
   configurable, short default retention.
 - Available through the GUI (with filters), `abox audit`, and export as JSON Lines.
+- **Egress entries (`network.egress`) arrive late.** The proxy sidecar keeps its own log; abox
+  copies it into the audit log when it next touches the sandbox (exec, inspect, stop, remove, the
+  TTL sweep) and when you query the audit log, never continuously. A connection made by a process
+  nobody touches shows up only at the next of those moments.
 
 The hash chain detects modification by accident or by a process that does not recompute it. It
 does not stop an attacker with full write access to the database from rewriting the whole chain.
@@ -290,7 +309,15 @@ Docker backend through the real manager and checks, among others:
   planted itself; the engine socket is not reachable; `.git` is read-only in `mount` mode.
 - Network `none`: no DNS, no connections. `allowlist`: only allowed domains, others are denied and
   audited; direct IP access, private ranges, the Docker host and other sandboxes are unreachable.
-- Fork bombs and memory hogs are stopped by limits; the TTL is enforced.
+- Fork bombs and memory hogs are stopped by limits; the TTL is enforced. The manager's registry is
+  the authority for the deadline: every `abox` command, `abox mcp serve` (stdio and HTTP) and the
+  GUI (every 15 s in the background) stop a sandbox whose deadline passed and retry a stop that
+  failed, so a sandbox does not outlive its TTL while only the MCP server runs. In a Docker
+  container the entrypoint also ends the container at its deadline; the sandbox file APIs
+  (`sandbox_write_file`, copy in) refuse `/usr/local/share/abox`, where that deadline and the proxy
+  CA live, and the entrypoint ignores a deadline file that is not root-owned and read-only for
+  others. A process with root inside the container could still write that file; the sweep stops
+  the sandbox at the registry's deadline all the same.
 - Agent context A can neither see nor influence sandboxes of context B.
 - `policy.yaml` cannot be changed through the agent path, and the attempt is audited.
 - Path canonicalization: `..`, symlinks, case, Unicode tricks.
@@ -307,12 +334,12 @@ default `pnpm test`. A failing test there is a finding, not noise.
 **What CI runs** (`.github/workflows/ci.yml`, on Linux with Node 24, for every push and pull request
 to `main` and `dev`):
 
-| Job                      | Runs                                                                                                                                                                                           | Not covered                                                 |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Lint, Build              | ESLint, Prettier check, `tsc -b`                                                                                                                                                               |                                                             |
-| Test                     | `pnpm test`: unit and process-backend contract tests, no container engine                                                                                                                      | everything that is guarded below                            |
-| Docker integration tests | `pnpm test:docker` (`ABOX_TEST_DOCKER=1`): Docker backend, proxy, `packages/e2e` security suite against the runner's rootful Docker engine                                                     | Podman, rootless Docker, remote engines                     |
-| GUI end-to-end tests     | The Electron app with Playwright under `xvfb`, without `ABOX_TEST_DOCKER`: 17 of 21 specs run; the 4 that need Docker (terminal, template build, ssh against a throwaway sshd) skip themselves | the Docker-guarded GUI specs, AppImage build and smoke test |
+| Job                      | Runs                                                                                                                                                                                             | Not covered                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| Lint, Build              | ESLint, Prettier check, `tsc -b`                                                                                                                                                                 |                                                             |
+| Test                     | `pnpm test`: unit and process-backend contract tests, no container engine; plus the GUI's typecheck and unit tests (`pnpm --filter @abox/app typecheck` and `test`, which the root run excludes) | everything that is guarded below                            |
+| Docker integration tests | `pnpm test:docker` (`ABOX_TEST_DOCKER=1`): Docker backend, proxy, `packages/e2e` security suite against the runner's rootful Docker engine                                                       | Podman, rootless Docker, remote engines                     |
+| GUI end-to-end tests     | The Electron app with Playwright under `xvfb`, without `ABOX_TEST_DOCKER`: 24 of 28 tests run; the 4 that need Docker (terminal, template build, ssh against a throwaway sshd) skip themselves   | the Docker-guarded GUI specs, AppImage build and smoke test |
 
 Not run in CI: the VM backend (`ABOX_TEST_VM=1`, needs KVM), the real-keyring test
 (`ABOX_TEST_KEYRING=1`), Podman, the AppImage, other distributions, and anything that needs a real
@@ -374,6 +401,17 @@ of this documentation; it will be published per release alongside the changelog.
 
 - **The audit hash chain detects modification but cannot detect truncation at the tail.** Someone
   with write access to the database can drop the newest entries, or recompute the whole chain.
+- **The identity of a stdio MCP server is whatever `--agent` its launching command says.** The
+  server takes the agent context from that argument, and the agent's MCP client configuration (for
+  example `.mcp.json`) is where the argument lives. An agent that can edit its own client
+  configuration, or that someone starts with another `--agent`, can therefore run the next server
+  under a more privileged context if `policy.yaml` defines one. For stronger separation use the
+  HTTP server with one token per agent (`abox token create <context>`): the token, not an argument,
+  decides the context, and it is stored only as a hash. Keep client configurations out of the
+  sandbox workspace and out of reach of the agent, and define only the contexts you need.
+- **Egress audit entries are written late.** They are copied from the proxy log into the audit log
+  when abox next touches the sandbox or the audit log is queried (see
+  [Audit log](#audit-log)), so the log can lag behind what a running sandbox did.
 - There is no command blocklist: `npm test` can run anything. The limits are those of the
   environment.
 - Multi-agent quotas (per agent versus global) are not finalised.
@@ -404,7 +442,7 @@ of this documentation; it will be published per release alongside the changelog.
   slash commands (`/abox:new`, `/abox:list`, ...) have not been run at all**; they need an
   interactive session. Details in `packages/agent-kit/README.md`.
 - The desktop app is unreleased (no published package). Its end-to-end tests run under a virtual
-  display (`xvfb`; 21 tests, including the Docker-guarded terminal, template and ssh ones, which
+  display (`xvfb`; 28 tests, including the Docker-guarded terminal, template and ssh ones, which
   pass locally); CI runs them without the Docker-guarded ones; they are not part of the default
   `pnpm test`. An AppImage builds and starts
   (`pnpm --filter @abox/app dist` and `smoke`), but it is neither signed nor published, and it has

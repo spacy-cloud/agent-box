@@ -162,6 +162,8 @@ describe('basics', () => {
   it('rejects bad flag values with exit code 2', async () => {
     for (const args of [
       ['create', 'alpine-min', '--ttl', 'soon'],
+      ['create', 'alpine-min', '--ttl', '9999999999999999h'],
+      ['create', 'alpine-min', '--ttl', '99999999999999999999ms'],
       ['create', 'alpine-min', '--cpus', '-3'],
       ['create', 'alpine-min', '--memory', 'lots'],
       ['exec', 'local/aaaaaaaa', '--env', 'NOVALUE', '--', 'true'],
@@ -171,6 +173,14 @@ describe('basics', () => {
       const r = await run(t, ['--json', ...args]);
       expect(r.code, args.join(' ')).toBe(2);
       expect(r.json.code).toBe('invalid_input');
+    }
+  });
+
+  it('says "too large" for a duration beyond the safe integer range', async () => {
+    for (const ttl of ['9999999999999999h', '99999999999999999999ms']) {
+      const r = await run(t, ['--json', 'create', 'alpine-min', '--ttl', ttl]);
+      expect(r.code).toBe(2);
+      expect(r.json.message).toMatch(/too large/);
     }
   });
 

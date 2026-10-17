@@ -21,7 +21,7 @@ Skip the sandbox for plain reading/editing of the user's own code and for trivia
 
 ## Workflow
 
-1. **Pick a template.** Call `template_list`, choose by description (language, tools, network rules). Use `template_show` when the limits matter. Never invent a template name.
+1. **Pick a template.** Call `template_list`, choose by description (language, tools, network rules). Use `template_show` when the limits matter. When the project you will share has its own templates (`.sandbox/*.yaml`), pass its path as `workspace_path` to `template_list` / `template_show`: they are marked `project` and need human approval until trusted. Never invent a template name.
 2. **Create.** `sandbox_create` with `template`, a short `name`, and a `workspace`:
    - `worktree` or `clone` (with `ref`): isolated git copy; preferred for repos.
    - `copy`: isolated copy of a plain directory. `empty`: nothing from the host.

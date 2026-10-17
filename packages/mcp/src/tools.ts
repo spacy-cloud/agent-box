@@ -201,7 +201,7 @@ export function registerTools(register: Register): void {
     name: 'template_list',
     title: 'List templates',
     description:
-      'List sandbox templates you may use (language/tooling, isolation, network). Call this first and pick one by its description; never invent a template name.',
+      "List sandbox templates you may use (language/tooling, isolation, network). Call this first and pick one by its description; never invent a template name. Pass workspace_path (the project you will share) to include that project's own templates from its .sandbox directory; they are marked project=true and need human approval until trusted.",
     input: {
       filter: z
         .string()
@@ -212,15 +212,26 @@ export function registerTools(register: Register): void {
         .boolean()
         .optional()
         .describe('Also list templates your profile does not allow (default: only usable ones).'),
+      workspace_path: z
+        .string()
+        .min(1)
+        .max(4096)
+        .optional()
+        .describe(
+          'Host project path, the same as workspace.path of sandbox_create: also lists the templates of that project (<path>/.sandbox/*.yaml). Must be below your workspace roots.',
+        ),
     },
     annotations: READ,
     async handler(args, rt) {
-      const list = await rt.abox.listTemplates(rt.caller);
+      const list = await rt.abox.listTemplates(
+        rt.caller,
+        args.workspace_path !== undefined ? { workspacePath: args.workspace_path } : {},
+      );
       const f = args.filter?.trim().toLowerCase();
       const matching = list.templates.filter((t) =>
         f ? [t.name, t.description, t.useFor ?? ''].some((x) => x.toLowerCase().includes(f)) : true,
       );
-      const usableOf = (t: (typeof matching)[number]): boolean => t.allowed && t.backendAvailable;
+      const usableOf = (t: (typeof matching)[number]): boolean => t.allowed && t.ready;
       const shown = (args.all ? matching : matching.filter(usableOf)).map((t) => ({
         name: t.name,
         description: t.description.replace(/\s+/g, ' ').trim(),
@@ -229,10 +240,15 @@ export function registerTools(register: Register): void {
         isolation: t.isolation,
         networkMode: t.networkMode,
         usable: usableOf(t),
-        // project templates from a repository must be approved by a human before first use
+        source: t.source.kind,
+        // project templates come from a repository: a human must approve their content before first use
+        project: t.source.kind === 'project',
+        trusted: t.trusted,
         needsApproval: !t.trusted,
         allowed: t.allowed,
         backendAvailable: t.backendAvailable,
+        ready: t.ready,
+        ...(t.notReadyReason ? { notReadyReason: t.notReadyReason } : {}),
       }));
       const hidden = matching.length - shown.length;
       return ok(
@@ -241,7 +257,7 @@ export function registerTools(register: Register): void {
         shown
           .map(
             (t) =>
-              `- ${t.name}${t.usable ? '' : ' (not usable)'}${t.needsApproval ? ' (needs human approval first)' : ''}: ${t.description} [isolation=${t.isolation}, network=${t.networkMode}]`,
+              `- ${t.name}${t.project ? ' (project template)' : ''}${t.usable ? '' : ` (not usable${t.notReadyReason && t.allowed ? `: ${t.notReadyReason}` : ''})`}${t.needsApproval ? ' (needs human approval first)' : ''}: ${t.description} [isolation=${t.isolation}, network=${t.networkMode}]`,
           )
           .join('\n'),
       );
@@ -252,11 +268,25 @@ export function registerTools(register: Register): void {
     name: 'template_show',
     title: 'Show template',
     description:
-      'Show one template in detail with the limits that apply to you (resources, network, mounts, TTL).',
-    input: { name: z.string().min(1).max(64).describe('Template name from template_list.') },
+      'Show one template in detail with the limits that apply to you (resources, network, mounts, TTL). For a template of a project (source=project) pass the same workspace_path as for template_list; trusted says whether a human approved its current content.',
+    input: {
+      name: z.string().min(1).max(64).describe('Template name from template_list.'),
+      workspace_path: z
+        .string()
+        .min(1)
+        .max(4096)
+        .optional()
+        .describe(
+          'Host project path, the same as workspace.path of sandbox_create: also looks for the template in <path>/.sandbox. Must be below your workspace roots.',
+        ),
+    },
     annotations: READ,
     async handler(args, rt) {
-      const d = await rt.abox.showTemplate(rt.caller, args.name);
+      const d = await rt.abox.showTemplate(
+        rt.caller,
+        args.name,
+        args.workspace_path !== undefined ? { workspacePath: args.workspace_path } : {},
+      );
       const lim = d.effectiveLimits;
       return ok(
         `Template ${d.template.name}: ${d.allowed ? 'allowed' : 'NOT allowed'} for you` +
@@ -964,7 +994,7 @@ export function registerTools(register: Register): void {
     name: 'access_request',
     title: 'Request more access',
     description:
-      'Ask for more rights for a sandbox: kind=network (details.domains/presets), mount (details.source/target/access), resources (details.cpus/memory) or ttl (details.ttl). A human decides; give an honest reason. Do not repeat a pending request; poll with sandbox_inspect.',
+      'Ask for more rights for a running sandbox: kind=ttl (details.ttl), resources (details.cpus/memory, up to your limits) or network (details.domains/presets, only for an allowlist sandbox). mount and a new network mode are unsupported on a running sandbox: create a new one. Beyond your profile a human decides; give an honest reason. Do not repeat a pending request; poll with sandbox_inspect.',
     input: {
       id: sandboxId,
       kind: z.enum(['network', 'mount', 'resources', 'ttl']),

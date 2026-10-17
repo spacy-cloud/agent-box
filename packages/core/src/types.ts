@@ -150,10 +150,48 @@ export interface ResolvedTemplate {
   python?: { version: string; project?: string };
   vm?: { image: string; cloudInit?: string; diskSize?: string };
   source: { kind: TemplateSourceKind; path?: string };
-  /** sha256 hex over the build-relevant fields (base, build steps, user). */
+  /**
+   * Templates with `base.dockerfile`: the Dockerfile and the build context it can `COPY`, as
+   * hashed. Read when the template is loaded from a catalog.
+   */
+  buildContext?: BuildContextInfo;
+  /**
+   * sha256 hex over the build-relevant fields (base, build steps, user) and, for a Dockerfile
+   * base, the digest of its build context. Also the image cache key.
+   */
   hash: string;
-  /** sha256 hex over the full original file content (used for project-template trust). */
+  /**
+   * sha256 hex over the full original file content (used for project-template trust). It also
+   * covers what the file pulls in: project templates it `extends` and the build context of its
+   * Dockerfile, so a change there needs a new approval.
+   */
   contentHash: string;
+}
+
+/** The build context of a Dockerfile base: everything the container engine receives. */
+export interface BuildContextInfo {
+  /** Directory that is sent to the engine (the directory of the Dockerfile). */
+  dir: string;
+  /** Name of the Dockerfile inside it. */
+  dockerfile: string;
+  /** sha256 hex over names, types, modes, link targets and content of everything in the context. */
+  digest: string;
+  /** Content of the Dockerfile (what a reviewer reads). */
+  dockerfileText: string;
+  /** Files of the context (sorted, at most the first 500) with size and content hash. */
+  files: Array<{
+    path: string;
+    type: 'file' | 'symlink';
+    size: number;
+    sha256: string;
+    /** Symlinks: where they point. */
+    target?: string;
+  }>;
+  /** Number of files and symlinks in the whole context and their total size. */
+  fileCount: number;
+  totalBytes: number;
+  /** `files` is cut off (the digest still covers all of them). */
+  filesTruncated: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +424,12 @@ export interface ProviderCapabilities {
    * kind=ttl). Absent / false: the deadline is fixed at creation and extending is `unsupported`.
    */
   extendExpiry?: boolean;
+  /**
+   * `updateResources` can change the cpu and memory limits of an existing sandbox, running or not
+   * (`access_request` kind=resources). Absent / false: the limits are fixed at creation and
+   * changing them is `unsupported`.
+   */
+  updateResources?: boolean;
   /** Which resource limits are actually enforced. */
   limits: { cpus: boolean; memory: boolean; pids: boolean; disk: boolean };
   /** Can run as a non-root user inside the sandbox. */

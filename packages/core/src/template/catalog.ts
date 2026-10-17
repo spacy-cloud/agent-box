@@ -12,6 +12,7 @@ import type {
 } from '../types.js';
 import { parseDocument } from 'yaml';
 import { MAX_TEMPLATE_BYTES, parseTemplateYaml, templateInvalidError } from './parse.js';
+import { buildContextOf } from './context.js';
 import { resolveTemplate, type ParentTemplate, type TemplateLookup } from './resolve.js';
 
 /**
@@ -233,13 +234,18 @@ export class TemplateCatalog {
     const lookup: TemplateLookup = async (name, from): Promise<ParentTemplate | undefined> => {
       const found = await this.findParent(from, name);
       return found
-        ? { spec: found.spec, source: { kind: found.kind, path: found.path } }
+        ? {
+            spec: found.spec,
+            source: { kind: found.kind, path: found.path },
+            contentText: found.text,
+          }
         : undefined;
     };
     return resolveTemplate(entry.spec, {
       source: { kind: entry.kind, path: entry.path },
       contentText: entry.text,
       lookup,
+      buildContext: buildContextOf,
     });
   }
 }

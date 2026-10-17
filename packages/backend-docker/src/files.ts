@@ -4,6 +4,7 @@ import { pipeline } from 'node:stream';
 import type Docker from 'dockerode';
 import { AboxError } from '@abox/core';
 import { statusOf } from './errors.js';
+import { INTERNAL_DIRS } from './labels.js';
 import { tarFromEntries, readFirstEntry, reownArchive, type MemEntry } from './tar.js';
 
 /** Validate and normalise an absolute path inside a sandbox. */
@@ -13,6 +14,33 @@ export function sandboxPath(p: string, what = 'path'): string {
   }
   const norm = path.posix.normalize(p);
   return norm.length > 1 ? norm.replace(/\/+$/, '') : norm;
+}
+
+/**
+ * Does `p` (normalized, absolute) lie in, or contain, a location the backend manages inside the
+ * container (see `INTERNAL_DIRS`)? An ancestor counts too: a directory copied onto `/usr/local`
+ * would merge into the internal directory.
+ */
+export function touchesInternalPath(p: string): boolean {
+  return (
+    p === '/' ||
+    INTERNAL_DIRS.some((d) => p === d || p.startsWith(`${d}/`) || d.startsWith(`${p}/`))
+  );
+}
+
+/**
+ * Refuse a write to an abox-internal location. These files (the sandbox deadline, the proxy CA)
+ * are written by the backend as root; letting the sandbox file APIs write there would let an agent
+ * move its own deadline or replace the CA it is supposed to trust.
+ */
+export function assertWritablePath(p: string, what = 'path'): void {
+  if (touchesInternalPath(p)) {
+    throw new AboxError(
+      'policy_denied',
+      `${what} ${p} is managed by abox and cannot be written through the sandbox file API`,
+      { hint: 'Use a path in the workspace or the home directory.' },
+    );
+  }
 }
 
 /** Does a path exist inside the container (works for stopped containers)? */
@@ -126,7 +154,7 @@ export async function getFile(
   c: Docker.Container,
   file: string,
   maxBytes: number,
-): Promise<{ data: Buffer; truncated: boolean; size: number }> {
+): Promise<{ data: Buffer; truncated: boolean; size: number; uid: number; mode: number }> {
   let cur = file;
   for (let hop = 0; hop < 9; hop++) {
     const stream = (await c.getArchive({ path: cur })) as unknown as Readable;
@@ -137,7 +165,13 @@ export async function getFile(
       continue;
     }
     if (entry.type !== 'file') throw new AboxError('invalid_input', `Not a regular file: ${file}`);
-    return { data: entry.data, truncated: entry.truncated, size: entry.size };
+    return {
+      data: entry.data,
+      truncated: entry.truncated,
+      size: entry.size,
+      uid: entry.uid,
+      mode: entry.mode,
+    };
   }
   throw new AboxError('invalid_input', `Too many symlinks while resolving ${file}`);
 }

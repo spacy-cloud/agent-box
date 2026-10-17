@@ -463,7 +463,7 @@ contexts:
     if (first.status !== 'pending_approval') return;
     const ls = await runBin(t, ['approvals', 'ls', '--json']);
     expect(ls.json.data.approvals.map((a: { id: string }) => a.id)).toContain(first.approvalId);
-    const approve = await runBin(t, ['approvals', 'approve', first.approvalId, '--json']);
+    const approve = await runBin(t, ['approvals', 'approve', first.approvalId, '--yes', '--json']);
     expect(approve.code, approve.stderr).toBe(0);
     const second = await agent();
     expect(second.status).toBe('created');
@@ -474,6 +474,107 @@ contexts:
       );
     }
   }, 120_000);
+
+  it('Dockerfile base: trust and approvals cover the Dockerfile; a rewrite after the approval fails closed', async () => {
+    writePolicy(
+      t,
+      `version: 1
+profiles:
+  agent:
+    approval: medium
+    templates: [df-tpl]
+    limits: { sandboxes: 3, cpus: 2, memory: 1g, ttl: 1h }
+    workspace: { roots: ['${t.home}'], modes: [copy, empty] }
+    network: { modes: [none], allow_presets: [], allow: [] }
+    mounts: deny
+    secrets: { allowed: [], inject: [proxy] }
+    isolation: { min: container, network_open: vm, mounts: container, secrets_env: container }
+contexts:
+  tester: { profile: agent }
+`,
+    );
+    rmImages.push('df-tpl', 'df-tpl-base');
+    const proj = join(t.home, 'df-proj');
+    const dir = join(proj, '.sandbox');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'df-tpl.yaml'),
+      'apiVersion: 1\nname: df-tpl\ndescription: Template with its own Dockerfile, CLI docker tests only.\nbackend: docker\nbase: { dockerfile: ./Dockerfile }\nresources: { cpus: 1, memory: 256m, pids: 128, ttl: 30m }\n',
+    );
+    const dockerfile = join(dir, 'Dockerfile');
+    writeFileSync(dockerfile, 'FROM alpine:3.22\nRUN echo ok > /etc/marker-ok\n');
+    const images = (): string =>
+      spawnSync('docker', ['images', '--format', '{{.Repository}}:{{.Tag}}', 'abox/df-tpl*'], {
+        encoding: 'utf8',
+      })
+        .stdout.split('\n')
+        .filter(Boolean)
+        .sort()
+        .join('\n');
+    const agent = async (requestId: string) => {
+      const rt = await openAbox({ env: t.env, contextId: 'tester' });
+      try {
+        return await rt.abox.createSandbox(
+          rt.caller,
+          {
+            template: 'df-tpl',
+            requestId,
+            projectDir: proj,
+            workspace: { mode: 'empty' as const },
+          },
+          { waitForApprovalMs: 0 },
+        );
+      } finally {
+        await rt.close();
+      }
+    };
+
+    const first = await agent('df-1');
+    expect(first.status).toBe('pending_approval');
+    if (first.status !== 'pending_approval') return;
+    expect(first.kind).toBe('template_trust');
+    const approve = await runBin(t, ['approvals', 'approve', first.approvalId, '--yes', '--json']);
+    expect(approve.code, approve.stderr).toBe(0);
+    const ok = await agent('df-1');
+    expect(ok.status).toBe('created');
+    if (ok.status !== 'created') return;
+    created.push(ok.sandbox.id);
+    expect((await runBin(t, ['exec', ok.sandbox.id, '--', 'cat', '/etc/marker-ok'])).stdout).toBe(
+      'ok\n',
+    );
+    const imagesBefore = images();
+    expect(imagesBefore).toContain('abox/df-tpl:');
+
+    // the Dockerfile is rewritten after the approval
+    writeFileSync(
+      dockerfile,
+      'FROM alpine:3.22\nRUN echo ok > /etc/marker-ok\nRUN echo EVIL2 > /etc/marker\n',
+    );
+    const evil = await agent('df-2');
+    expect(evil.status).toBe('pending_approval');
+    if (evil.status !== 'pending_approval') {
+      if (evil.status === 'created') created.push(evil.sandbox.id);
+      return;
+    }
+    expect(evil.approvalId).not.toBe(first.approvalId);
+    // nothing was built or started for the unapproved content
+    expect(images()).toBe(imagesBefore);
+    const review = await runBin(t, ['approvals', 'show', evil.approvalId]);
+    expect(review.stdout).toContain('+  RUN echo EVIL2 > /etc/marker');
+    expect(review.stdout).toContain('Build context');
+
+    // with a new approval of the new content it works again
+    const approve2 = await runBin(t, ['approvals', 'approve', evil.approvalId, '--yes', '--json']);
+    expect(approve2.code, approve2.stderr).toBe(0);
+    const again = await agent('df-2');
+    expect(again.status).toBe('created');
+    if (again.status === 'created') {
+      created.push(again.sandbox.id);
+      expect((await runBin(t, ['exec', again.sandbox.id, '--', 'cat', '/etc/marker'])).stdout).toBe(
+        'EVIL2\n',
+      );
+    }
+  }, 300_000);
 });
 
 describe.runIf(DOCKER && process.env['ABOX_TEST_NODE_DEV'] === '1')(

@@ -2,6 +2,8 @@ import { posix } from 'node:path';
 import { AboxError, type ErrorIssue } from '../errors.js';
 import { isolationAtLeast, type ProviderCapabilities, type ResolvedTemplate } from '../types.js';
 import { domainCovered, normalizeDomainPattern } from '../policy/domains.js';
+import { RESERVED_SANDBOX_TREES } from '../policy/paths.js';
+import { normalizeHost } from '../secrets/inject.js';
 import { templateInvalidError } from './parse.js';
 
 /** Issue found by `validateTemplate`. `unsupported` = valid template the backend cannot deliver. */
@@ -113,20 +115,7 @@ function checkMountSource(source: string): string | undefined {
   return undefined;
 }
 
-const FORBIDDEN_TARGET_TREES = [
-  '/proc',
-  '/sys',
-  '/dev',
-  '/etc',
-  '/run',
-  '/var/run',
-  '/boot',
-  '/bin',
-  '/sbin',
-  '/usr',
-  '/lib',
-  '/lib64',
-];
+const FORBIDDEN_TARGET_TREES = RESERVED_SANDBOX_TREES;
 
 function checkSandboxPath(what: string, p: string): string | undefined {
   const norm = posix.normalize(p).replace(/(.)\/+$/, '$1');
@@ -230,6 +219,15 @@ export function validateTemplate(
 
   t.secrets.forEach((s, i) => {
     if (s.inject === 'proxy') {
+      // The same rule `sandbox_create` applies when it builds the injections (exact host names only).
+      s.hosts.forEach((h, j) => {
+        try {
+          normalizeHost(h);
+        } catch (e) {
+          const hint = e instanceof AboxError && e.hint ? ` (${e.hint})` : '';
+          bad(`secrets[${i}].hosts[${j}]`, `secret "${s.ref}": ${(e as Error).message}${hint}`);
+        }
+      });
       if (t.network.mode !== 'allowlist') {
         bad(
           `secrets[${i}].inject`,

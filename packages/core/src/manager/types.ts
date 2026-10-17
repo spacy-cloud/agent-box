@@ -4,6 +4,7 @@ import type { ErrorIssue } from '../errors.js';
 import type {
   AccessMode,
   BackendKind,
+  BuildContextInfo,
   DirEntry,
   ForeignResource,
   HostConnection,
@@ -88,6 +89,13 @@ export interface TemplateListEntry {
   allowed: boolean;
   /** A provider for the template's backend is registered in this abox instance. */
   backendAvailable: boolean;
+  /**
+   * A create from this template can work here: the backend is usable and the template passes
+   * validation (security rules, backend capabilities). Policy and approvals are separate (`allowed`).
+   */
+  ready: boolean;
+  /** Why `ready` is false (the first problem; `abox template validate` lists all). */
+  notReadyReason?: string;
   contentHash: string;
   hash: string;
 }
@@ -143,6 +151,11 @@ export interface TemplateReview {
   diff: string;
   /** The risky points of the template as sentences. */
   risks: string[];
+  /**
+   * Templates with their own Dockerfile: the Dockerfile text and the files of its build context
+   * (the diff above covers the same, compared with the last trusted version).
+   */
+  buildContext?: BuildContextInfo;
   /** Set when `expectedContentHash` was passed and the file no longer has that content. */
   changedSinceRequest?: boolean;
 }

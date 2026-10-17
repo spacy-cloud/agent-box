@@ -59,7 +59,10 @@ TTL sleeper, the container exits at its deadline (also after a restart). The dea
 that was written to `/usr/local/share/abox/expires` inside the container: labels cannot change on a
 container, so the entrypoint re-reads that root-owned file when its sleep ends, and `start`,
 `inspect` and `list` take the later of both. The file is a volume on a read-only root filesystem, so
-it survives restarts there too; the sandbox user cannot write it. Containers created before this
+it survives restarts there too; the sandbox user cannot write it: the entrypoint only honours the
+file while it is owned by root and not writable by anyone else, and `writeFile` / `copyIn` refuse
+everything in and around `/usr/local/share/abox`. The registry of the manager stays the authority
+(its sweep stops an overdue sandbox whatever the file says). Containers created before this
 (no `abox.expiry-file` label) cannot move their deadline: `extendExpiry` answers `unsupported`. The
 proxy sidecar has no deadline of its own, it is started and stopped with the sandbox.
 

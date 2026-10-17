@@ -575,6 +575,20 @@ describe('validateTemplate', () => {
     expect(r.issues[0]!.path).toBe('network.allow');
   });
 
+  it('proxy secret hosts must be exact host names, as sandbox_create requires', async () => {
+    const r = await check(
+      "network: { mode: allowlist, allow: ['*.github.com', 'api.example.org:8443'] }\nsecrets:\n  - { ref: gh, hosts: ['*.github.com', 'api.example.org:8443', github.com] }\n",
+    );
+    expect(r.ok).toBe(false);
+    expect(r.issues.map((i) => i.path)).toEqual(['secrets[0].hosts[0]', 'secrets[0].hosts[1]']);
+    expect(r.issues[0]!.message).toContain('invalid secret destination host');
+    expect(r.issues[0]!.message).toContain('exact host names');
+    // env / file secrets have no destination hosts
+    expect(
+      (await check('secrets:\n  - { ref: gh, inject: env, hosts: ["*.github.com"] }\n')).ok,
+    ).toBe(true);
+  });
+
   it('proxy secrets need an allowlist network', async () => {
     const r = await check('secrets:\n  - { ref: gh, hosts: [github.com] }\n');
     expect(r.issues[0]!.path).toBe('secrets[0].inject');

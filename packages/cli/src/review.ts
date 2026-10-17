@@ -27,6 +27,27 @@ export function reviewLines(cli: Cli, r: TemplateReview): string[] {
     lines.push(cli.style('yellow', '  Look at first:'));
     for (const risk of r.risks) lines.push(`    ! ${safe(risk)}`);
   }
+  const bc = r.buildContext;
+  if (bc) {
+    lines.push(
+      cli.style(
+        'bold',
+        `  Build context ${safe(bc.dir)} (${bc.fileCount} file${bc.fileCount === 1 ? '' : 's'}, ${bc.totalBytes} bytes; everything in it is sent to the engine and can be copied into the image):`,
+      ),
+    );
+    for (const f of bc.files)
+      lines.push(
+        `    ${safe(f.path)}${f.type === 'symlink' ? ` -> ${safe(f.target ?? '')}` : `  ${f.size} bytes`}${f.path === bc.dockerfile ? '  (Dockerfile)' : ''}`,
+      );
+    if (bc.filesTruncated)
+      lines.push(`    ... ${bc.fileCount - bc.files.length} more files (covered by the hash)`);
+    // Against a trusted version only the changes are in the diff: show the whole file as well.
+    if (r.against.kind === 'previous') {
+      lines.push(cli.style('bold', `  ${safe(bc.dockerfile)} in full:`));
+      for (const l of bc.dockerfileText.replace(/\n$/, '').split('\n'))
+        lines.push(`    | ${safe(l)}`);
+    }
+  }
   lines.push(cli.style('bold', '  Resolved template:'));
   if (r.diff === '') {
     lines.push('    (no difference in the resolved template; only comments or formatting changed)');

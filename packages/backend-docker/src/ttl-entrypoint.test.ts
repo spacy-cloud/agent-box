@@ -1,11 +1,16 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type Docker from 'dockerode';
 import { ttlEntrypoint } from './hostconfig.js';
-import { effectiveExpiresAt, hasMovableExpiry, toEpochSeconds } from './expiry.js';
+import {
+  effectiveExpiresAt,
+  hasMovableExpiry,
+  isTrustedExpiryFile,
+  toEpochSeconds,
+} from './expiry.js';
 import { LABEL } from './labels.js';
 
 const nowSec = (): number => Math.floor(Date.now() / 1000);
@@ -20,12 +25,16 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+/** The file is owned by the test user here, so that user stands in for root. */
+const me = process.getuid?.() ?? 0;
+
 /** Run the real entrypoint script with the local `sh`; resolves with the exit code and the run time. */
 function runEntrypoint(
   deadlineSec: number,
   during?: () => Promise<void>,
+  trustedUid = me,
 ): Promise<{ code: number | null; ms: number }> {
-  const [sh, ...args] = ttlEntrypoint(deadlineSec * 1000, file);
+  const [sh, ...args] = ttlEntrypoint(deadlineSec * 1000, file, trustedUid);
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const child = spawn(sh as string, args, { stdio: 'ignore' });
@@ -74,6 +83,66 @@ describe('ttlEntrypoint', () => {
     const invalid = await runEntrypoint(nowSec() + 1);
     expect(invalid.code).toBe(0);
     expect(invalid.ms).toBeLessThan(4500);
+  });
+});
+
+describe('ttlEntrypoint: only a file the backend could have written moves the deadline', () => {
+  it('ignores a file owned by somebody else', async () => {
+    await writeFile(file, `${nowSec() + 60}\n`);
+    const r = await runEntrypoint(nowSec() + 1, undefined, me + 1);
+    expect(r.code).toBe(0);
+    expect(r.ms).toBeLessThan(4000);
+  });
+
+  it('ignores a file that group or others can write', async () => {
+    for (const mode of [0o664, 0o646, 0o666]) {
+      await writeFile(file, `${nowSec() + 60}\n`);
+      await chmod(file, mode);
+      const r = await runEntrypoint(nowSec() + 1);
+      expect(r.ms).toBeLessThan(4000);
+    }
+  });
+
+  it('accepts a file that is read-only for everyone but the owner', async () => {
+    await writeFile(file, `${nowSec() + 3}\n`);
+    await chmod(file, 0o600);
+    const r = await runEntrypoint(nowSec() + 1);
+    expect(r.ms).toBeGreaterThan(1900);
+  });
+
+  it('ignores a symlink, even to a file it would accept', async () => {
+    const target = join(dir, 'target');
+    await writeFile(target, `${nowSec() + 60}\n`);
+    await symlink(target, file);
+    const r = await runEntrypoint(nowSec() + 1);
+    expect(r.ms).toBeLessThan(4000);
+  });
+
+  it('ignores a value that is not an epoch time in seconds', async () => {
+    await writeFile(file, '99999999999999\n');
+    const r = await runEntrypoint(nowSec() + 1);
+    expect(r.code).toBe(0);
+    expect(r.ms).toBeLessThan(4000);
+  });
+
+  it('a file replaced by a forged one while it sleeps changes nothing', async () => {
+    await writeFile(file, `${nowSec() + 1}\n`);
+    const r = await runEntrypoint(nowSec() + 1, async () => {
+      await new Promise((res) => setTimeout(res, 300));
+      await writeFile(file, `${nowSec() + 60}\n`);
+      await chmod(file, 0o666);
+    });
+    expect(r.ms).toBeLessThan(4500);
+  });
+});
+
+describe('isTrustedExpiryFile', () => {
+  it('is root-owned and not writable by group or others', () => {
+    expect(isTrustedExpiryFile(0, 0o644)).toBe(true);
+    expect(isTrustedExpiryFile(0, 0o600)).toBe(true);
+    expect(isTrustedExpiryFile(1000, 0o644)).toBe(false);
+    expect(isTrustedExpiryFile(0, 0o664)).toBe(false);
+    expect(isTrustedExpiryFile(0, 0o646)).toBe(false);
   });
 });
 

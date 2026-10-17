@@ -34,11 +34,7 @@ export function registerMcp(program: Command, cli: Cli): void {
       '--http <host:port>',
       'serve Streamable HTTP on a loopback address, e.g. 127.0.0.1:8765 (token required)',
     )
-    .option(
-      '--agent <context>',
-      'agent context from policy.yaml for stdio (default: "default")',
-      'default',
-    )
+    .option('--agent <context>', 'agent context from policy.yaml for stdio', 'default')
     .action(async (o: { http?: string; agent: string }) => {
       const mod = await loadMcp();
       if (o.http !== undefined) {

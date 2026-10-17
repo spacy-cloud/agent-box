@@ -32,6 +32,11 @@ describe('units', () => {
   it.each(['', 'h', '4', '4x', '-1h', '0h', '1h 30m x', 'abc'])('rejects duration %j', (s) => {
     expect(tryParseDuration(s)).toBeUndefined();
   });
+  it('says "too large" for durations beyond the safe integer range', () => {
+    expect(() => parseDuration('9999999999999999h')).toThrow(/too large/);
+    expect(() => parseDuration('0h')).toThrow(/expected e\.g\./);
+    expect(tryParseDuration('9999999999999999h')).toBeUndefined();
+  });
   it('formats', () => {
     expect(formatSize(8 * 1024 ** 3)).toBe('8g');
     expect(formatSize(512 * 1024 ** 2)).toBe('512m');

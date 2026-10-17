@@ -49,14 +49,23 @@ export const EGRESS_NETWORK = 'abox-egress';
 export const PROXY_ALIAS = 'abox-proxy';
 export const PROXY_PORT = 3128;
 export const CA_DIR = '/usr/local/share/abox';
+/**
+ * Locations inside the container that belong to the backend (CA files, the deadline, stashed spec
+ * files). Root-owned, and never written through the sandbox file APIs (`writeFile`, `copyIn`).
+ */
+export const INTERNAL_DIRS: readonly string[] = [CA_DIR];
 export const CA_CERT_PATH = `${CA_DIR}/ca.crt`;
 /** Where spec files destined for the /tmp tmpfs wait; `start` copies them into /tmp. */
 export const TMP_STASH = `${CA_DIR}/tmpfiles`;
 export const CA_BUNDLE_PATH = `${CA_DIR}/ca-bundle.crt`;
 /**
  * Current deadline (epoch seconds) of the sandbox, written as root by `extendExpiry` and read by
- * the entrypoint. Same directory as the CA files: root-owned, and a volume when the rootfs is
- * read-only, so the sandbox user can neither change it nor lose it on a restart.
+ * the entrypoint, which only honours it while it is owned by root and not writable by anyone else.
+ * Same directory as the CA files: root-owned, and a volume when the rootfs is read-only, so the
+ * sandbox user can neither change it nor lose it on a restart. It can only ever move the
+ * deadline *later* than the container's creation label, and only the manager's registry decides
+ * whether that is allowed: the sweep of `Abox` stops a sandbox at its registry deadline whatever
+ * this file says.
  */
 export const EXPIRY_FILE = `${CA_DIR}/expires`;
 

@@ -96,7 +96,9 @@ All backends run against the same contract suite in `packages/contract-tests`.
   an equivalent marker). On startup the core **reconciles** its registry with the backend: orphaned
   sandboxes are reported (`abox doctor`), not silently deleted.
 - **SQLite for metadata:** sandbox registry, template versions and trust decisions, approvals
-  (open, granted, denied), the audit log and policy revisions. It uses the built-in `node:sqlite`
+  (open, granted, denied), the audit log, policy revisions and the HTTP agent tokens (as SHA-256
+  hashes). The agent contexts and their profiles are not in the database: they are defined in
+  `policy.yaml`. There is no separate `agents.yaml`. The database uses the built-in `node:sqlite`
   module in WAL mode so the CLI, one or more MCP servers and the GUI can use the same database at
   the same time.
 - **Paths follow XDG:** configuration in `~/.config/abox` (including `policy.yaml` and user
@@ -161,7 +163,8 @@ same locally and remotely.
   and the remote host trusts the controller. A possible later model (M2) would run abox headless on
   the remote host with its own policy and audit.
 - The image cache, the proxy sidecar and TTL enforcement live on the target host.
-- Workspace mode `mount` is not available remotely; use `clone`, `worktree`, `copy` or `sync`.
+- Workspace modes `mount` and `worktree` are not available remotely (the manager rejects them);
+  use `clone`, `copy` or `sync`.
 - Hosts have a **zone** and an optional minimum isolation level. See
   [security.md](security.md#remote-hosts-and-ssh).
 

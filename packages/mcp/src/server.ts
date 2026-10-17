@@ -1,4 +1,4 @@
-import { isAboxError } from '@abox/core';
+import { AboxError, isAboxError } from '@abox/core';
 import type { Abox, Caller } from '@abox/core';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
@@ -269,23 +269,34 @@ function registerResources(server: McpServer, abox: Abox, caller: Caller): void 
       list: async () => {
         const t = await abox.listTemplates(caller);
         return {
-          resources: t.templates.map((x) => ({
-            uri: `template://${x.name}`,
-            name: `template ${x.name}`,
-            description: x.description.replace(/\s+/g, ' ').trim().slice(0, 300),
-            mimeType: 'application/json',
-          })),
+          // the same filter as template_list: only what this context may use here
+          resources: t.templates
+            .filter((x) => x.allowed && x.ready)
+            .map((x) => ({
+              uri: `template://${x.name}`,
+              name: `template ${x.name}`,
+              description: x.description.replace(/\s+/g, ' ').trim().slice(0, 300),
+              mimeType: 'application/json',
+            })),
         };
       },
     }),
     {
       title: 'Template',
-      description: 'A sandbox template with the limits that apply to you.',
+      description:
+        'A sandbox template with the limits that apply to you (only templates you may use; for the templates of a project use template_list with workspace_path).',
       mimeType: 'application/json',
     },
     async (uri, vars) => {
       try {
         const d = await abox.showTemplate(caller, one(vars['name']));
+        // not listed above, so not readable either (template_show still explains why it is not allowed)
+        if (!d.allowed)
+          throw new AboxError(
+            'policy_denied',
+            `template '${d.template.name}' is not allowed for your profile`,
+            { hint: 'Use a template from template_list.' },
+          );
         return json(uri, d);
       } catch (e) {
         throw asMcpError(e);

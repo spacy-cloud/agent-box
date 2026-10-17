@@ -39,6 +39,7 @@ let mainWindow: BrowserWindow | null = null;
 let runtime: AboxRuntime | null = null;
 let runtimeError: string | null = null;
 let monitor: Monitor | null = null;
+let stopTtlWatch: (() => void) | null = null;
 let tray: TrayController | null = null;
 let settings: GuiSettings;
 let locale: Locale = 'de';
@@ -195,6 +196,8 @@ async function boot(): Promise<void> {
       onApprovals,
     });
     monitor.start();
+    // Expired sandboxes are stopped on time while the GUI runs, not only when a command happens to.
+    stopTtlWatch = runtime.abox.startTtlWatcher();
   }
 
   createWindow();
@@ -212,6 +215,7 @@ if (!app.requestSingleInstanceLock()) {
     if (quitting) return;
     quitting = true;
     monitor?.stop();
+    stopTtlWatch?.();
     tty.closeAll();
     tray?.destroy();
     void ipc?.shutdown().catch(() => undefined);

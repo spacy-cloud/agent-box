@@ -99,6 +99,7 @@ describe('approvals without a GUI', () => {
       first.approvalId,
       '--note',
       'looks fine',
+      '--yes',
       '--json',
     ]);
     expect(approve.code, approve.stderr).toBe(0);
@@ -153,7 +154,7 @@ describe('approvals without a GUI', () => {
     );
     if (first.status !== 'pending_approval') throw new Error('expected a pending approval');
     await sleep(1500);
-    const approve = await run(t, ['approvals', 'approve', first.approvalId, '--json']);
+    const approve = await run(t, ['approvals', 'approve', first.approvalId, '--yes', '--json']);
     expect(approve.code).toBe(3);
     expect(approve.json).toMatchObject({ ok: false, code: 'approval_expired' });
     await expect(
@@ -174,7 +175,7 @@ describe('approvals without a GUI', () => {
       rt.abox.createSandbox(rt.caller, createReq('r-esc'), { waitForApprovalMs: 0 }),
     );
     if (created.status !== 'pending_approval') throw new Error('expected a pending approval');
-    await run(t, ['approvals', 'approve', created.approvalId]);
+    await run(t, ['approvals', 'approve', created.approvalId, '--yes']);
     const box = await asAgent('striker', (rt) =>
       rt.abox.createSandbox(rt.caller, createReq('r-esc'), { waitForApprovalMs: 0 }),
     );
@@ -197,10 +198,84 @@ describe('approvals without a GUI', () => {
     expect(show.stdout).toContain('\\x1b[31mRED');
     const ls = await run(t, ['approvals', 'ls']);
     expect(ls.stdout).not.toContain('\u001b');
-    const approved = await run(t, ['approvals', 'approve', access.approvalId, '--json']);
+    const approved = await run(t, ['approvals', 'approve', access.approvalId, '--yes', '--json']);
     expect(approved.code, approved.stderr).toBe(0);
     expect(approved.json.data.applied.ok).toBe(true);
     await run(t, ['rm', '--force', box.sandbox.id]);
+  });
+});
+
+describe('approvals approve: shows the request and asks first', () => {
+  const pendingId = async (requestId: string): Promise<string> => {
+    const r = await asAgent('tester', (rt) =>
+      rt.abox.createSandbox(rt.caller, createReq(requestId), { waitForApprovalMs: 0 }),
+    );
+    if (r.status !== 'pending_approval') throw new Error('expected a pending approval');
+    return r.approvalId;
+  };
+  const statusOf = async (id: string): Promise<string | undefined> =>
+    (await run(t, ['approvals', 'ls', '--all', '--json'])).json.data.approvals.find(
+      (a: { id: string }) => a.id === id,
+    )?.status;
+
+  it('without --yes it does nothing when there is no terminal, and with --json', async () => {
+    const id = await pendingId('r-ask-1');
+    const plain = await run(t, ['approvals', 'approve', id]);
+    expect(plain.code).toBe(3);
+    expect(plain.stderr).toContain('--yes');
+    // the summary of "approvals show" was printed on the way
+    expect(plain.stderr).toContain('Exact request that would be approved');
+    const json = await run(t, ['approvals', 'approve', id, '--json']);
+    expect(json.code).toBe(3);
+    expect(json.json).toMatchObject({ ok: false, code: 'approval_required' });
+    expect(await statusOf(id)).toBe('pending');
+  });
+
+  it('on a terminal it prints the summary and asks; only a yes approves', async () => {
+    const id = await pendingId('r-ask-2');
+    const no = await run(t, ['approvals', 'approve', id], { tty: true, stdin: 'n\n' });
+    expect(no.code).toBe(3);
+    expect(no.stderr).toContain('Exact request that would be approved');
+    expect(no.stderr).toContain('Risks (computed by abox)');
+    expect(no.stderr).toContain('Why approval is needed');
+    expect(no.stderr).toContain(`Approve ${id}? [y/N]`);
+    expect(await statusOf(id)).toBe('pending');
+    const yes = await run(t, ['approvals', 'approve', id], { tty: true, stdin: 'y\n' });
+    expect(yes.code, yes.stderr).toBe(0);
+    expect(yes.stdout).toContain('approved');
+    expect(await statusOf(id)).toBe('approved');
+  });
+
+  it('--yes approves and still prints the summary', async () => {
+    const a = await pendingId('r-ask-3');
+    const text = await run(t, ['approvals', 'approve', a, '--yes']);
+    expect(text.code, text.stderr).toBe(0);
+    expect(text.stderr).toContain('Exact request that would be approved');
+  });
+
+  it('--yes --json approves silently', async () => {
+    const b = await pendingId('r-ask-4');
+    const json = await run(t, ['approvals', 'approve', b, '--yes', '--json']);
+    expect(json.code, json.stderr).toBe(0);
+    expect(json.stderr).toBe('');
+    expect(json.json.data.approval.status).toBe('approved');
+  });
+
+  it('deny stays a plain one-step command', async () => {
+    const id = await pendingId('r-ask-5');
+    const r = await run(t, ['approvals', 'deny', id]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stderr).toBe('');
+    expect(await statusOf(id)).toBe('denied');
+  });
+
+  it('a decided or unknown approval is reported as before', async () => {
+    const id = await pendingId('r-ask-6');
+    await run(t, ['approvals', 'deny', id]);
+    const again = await run(t, ['approvals', 'approve', id, '--yes', '--json']);
+    expect(again.code).not.toBe(0);
+    const unknown = await run(t, ['approvals', 'approve', 'nope', '--yes', '--json']);
+    expect(unknown.json).toMatchObject({ ok: false, code: 'not_found' });
   });
 });
 
@@ -558,6 +633,63 @@ Host *.internal
     expect(rm.json.data.removed).toBe(true);
     expect((await run(t, ['host', 'rm', 'vps', '--json'])).code).toBe(2);
     expect((await run(t, ['host', 'rm', 'local', '--json'])).code).toBe(2);
+  });
+
+  it('adds a host with limits (--max-sandboxes, --cpus, --memory) and validates them', async () => {
+    const add = await run(t, [
+      'host',
+      'add',
+      'lab1',
+      '--hostname',
+      'lab1.example.org',
+      '--zone',
+      'lab',
+      '--max-sandboxes',
+      '4',
+      '--cpus',
+      '8',
+      '--memory',
+      '16g',
+      '--json',
+    ]);
+    expect(add.code, add.stderr).toBe(0);
+    expect(add.json.data.limits).toEqual({ sandboxes: 4, cpus: 8, memory: '16g' });
+    const hostsYaml = readFileSync(join(t.aboxHome, 'config', 'hosts.yaml'), 'utf8');
+    expect(hostsYaml).toMatch(/limits:/);
+    expect(hostsYaml).toMatch(/sandboxes: 4/);
+    expect(hostsYaml).toMatch(/memory: 16g/);
+    const ls = await run(t, ['host', 'ls', '--json']);
+    expect(ls.json.data.hosts.find((h: { id: string }) => h.id === 'lab1').limits).toMatchObject({
+      sandboxes: 4,
+    });
+
+    for (const [flag, value, message] of [
+      ['--max-sandboxes', '-1', /--max-sandboxes: expected a whole number/],
+      ['--max-sandboxes', '2.5', /--max-sandboxes: expected a whole number/],
+      ['--max-sandboxes', '10001', /--max-sandboxes: expected a whole number/],
+      ['--cpus', '0', /--cpus: expected a positive number/],
+      ['--cpus', 'many', /--cpus: expected a positive number/],
+      ['--cpus', '2000', /--cpus: at most 1024/],
+      ['--memory', 'lots', /--memory: invalid size/],
+      ['--memory', '0', /--memory: invalid size/],
+    ] as const) {
+      const r = await run(t, [
+        'host',
+        'add',
+        'lab2',
+        '--hostname',
+        'lab2.example.org',
+        flag,
+        value,
+        '--json',
+      ]);
+      expect(r.code, `${flag} ${value}`).toBe(2);
+      expect(r.json.code).toBe('invalid_input');
+      expect(r.json.message).toMatch(message);
+    }
+    expect(
+      (await run(t, ['host', 'ls', '--json'])).json.data.hosts.map((h: { id: string }) => h.id),
+    ).toEqual(['local', 'lab1']);
   });
 
   it('imports from an ssh config (dry run first, imported hosts start in zone shared)', async () => {

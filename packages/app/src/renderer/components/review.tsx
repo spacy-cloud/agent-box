@@ -73,12 +73,63 @@ export function TemplateReviewPanel(props: { review: TemplateReview }) {
           </ul>
         </>
       ) : null}
+      {r.buildContext ? (
+        <BuildContextBlock ctx={r.buildContext} full={r.against.kind === 'previous'} />
+      ) : null}
       <h4 className="h-small">{t('review.diff')}</h4>
       {r.diff === '' ? (
         <p className="muted">{t('review.noDifference')}</p>
       ) : (
         <UnifiedDiff text={r.diff} label={t('review.diffLabel')} />
       )}
+    </div>
+  );
+}
+
+/**
+ * The Dockerfile of a template and what else is sent to the engine with it: the files of the build
+ * context with their sizes. The Dockerfile is part of the diff below; against a trusted version the
+ * diff shows only the changes, so it is listed in full as well.
+ */
+function BuildContextBlock(props: {
+  ctx: NonNullable<TemplateReview['buildContext']>;
+  full: boolean;
+}) {
+  const { t } = useApp();
+  const c = props.ctx;
+  return (
+    <div className="build-context" data-testid="build-context">
+      <h4 className="h-small">{t('review.buildContext')}</h4>
+      <p className="muted small plain">
+        <code className="plain">{safeText(c.dir)}</code> &middot;{' '}
+        {t('review.buildContextSummary', { files: c.fileCount, bytes: c.totalBytes })}
+      </p>
+      <ul className="plain-list" aria-label={t('review.buildContextFiles')}>
+        {c.files.map((f) => (
+          <li key={f.path} className="plain">
+            <code className="plain">{safeText(f.path)}</code>
+            {f.type === 'symlink' ? (
+              <> &rarr; {safeText(f.target ?? '')}</>
+            ) : (
+              <> &middot; {t('review.bytes', { bytes: f.size })}</>
+            )}
+            {f.path === c.dockerfile ? <> &middot; Dockerfile</> : null}
+          </li>
+        ))}
+        {c.filesTruncated ? (
+          <li className="muted">{t('review.moreFiles', { n: c.fileCount - c.files.length })}</li>
+        ) : null}
+      </ul>
+      {props.full ? (
+        <>
+          <h4 className="h-small">
+            {t('review.dockerfileFull', { name: safeText(c.dockerfile) })}
+          </h4>
+          <pre className="plain" tabIndex={0} aria-label={t('review.dockerfileLabel')}>
+            {safeText(c.dockerfileText)}
+          </pre>
+        </>
+      ) : null}
     </div>
   );
 }

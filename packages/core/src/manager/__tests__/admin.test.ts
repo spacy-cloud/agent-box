@@ -69,11 +69,43 @@ describe('policy', () => {
     expect(abox.policyHash).not.toBe(good);
     expect((await abox.showPolicy(A)).profile.limits.sandboxes).toBe(1);
     const edited = abox.policyHash;
+    // The edit is in the audit chain too, with the old and new revision and hash (no content).
+    const ext = await abox.queryAudit(HUMAN, { action: 'policy.external_edit' });
+    expect(ext).toHaveLength(1);
+    expect(ext[0]).toMatchObject({
+      actor: 'system',
+      decision: 'info',
+      details: { oldHash: good, newHash: edited, oldRevision: 1, revision: 2, detected: 'reload' },
+    });
+    expect(JSON.stringify(ext[0]!.details)).not.toContain('sandboxes');
+    expect((await abox.listPolicyRevisions(HUMAN)).map((r) => [r.rev, r.actor])).toEqual([
+      [2, 'external-edit'],
+      [1, 'system'],
+    ]);
+    expect((await abox.verifyAudit(HUMAN)).ok).toBe(true);
     await sleep(520);
     writeFileSync(abox.paths.policyFile, 'profiles: [not, a, map]');
     await abox.listSandboxes(A);
     expect(abox.policyHash).toBe(edited);
     expect(await abox.queryAudit(HUMAN, { action: 'policy.reload_failed' })).toHaveLength(1);
+  });
+
+  it('an edit made while no manager ran is audited as policy.external_edit when abox opens', async () => {
+    const before = abox.policyHash;
+    abox.close();
+    writeFileSync(abox.paths.policyFile, testPolicy(env) + '\n# edited offline\n');
+    abox = await openAbox(env, { bare: true });
+    expect(abox.policyHash).not.toBe(before);
+    const ext = await abox.queryAudit(HUMAN, { action: 'policy.external_edit' });
+    expect(ext).toHaveLength(1);
+    expect(ext[0]).toMatchObject({
+      details: { oldHash: before, newHash: abox.policyHash, detected: 'startup' },
+    });
+    // Opening again without a change adds nothing.
+    abox.close();
+    abox = await openAbox(env, { bare: true });
+    expect(await abox.queryAudit(HUMAN, { action: 'policy.external_edit' })).toHaveLength(1);
+    expect((await abox.verifyAudit(HUMAN)).ok).toBe(true);
   });
 
   it('every policy revision is stored', async () => {

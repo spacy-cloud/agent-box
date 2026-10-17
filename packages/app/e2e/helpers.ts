@@ -18,15 +18,15 @@ export interface TestHome {
   cleanup(): void;
 }
 
-/** Policy for the agent context `sim`: may use host-shell (isolation none) so every create needs an approval. */
-export function simPolicy(project: string, templates: string[] = ['host-shell']): string {
+/** Policy for the agent context `sim` (workspaces below `root`): may use host-shell (isolation none) so every create needs an approval. */
+export function simPolicy(root: string, templates: string[] = ['host-shell']): string {
   return `version: 1
 profiles:
   agent:
     approval: medium
     templates: [${templates.join(', ')}]
     limits: { sandboxes: 5, cpus: 4, memory: 8g, ttl: 4h }
-    workspace: { roots: ['${project}'], modes: [copy, empty] }
+    workspace: { roots: ['${root}'], modes: [copy, empty] }
     network: { modes: [none, allowlist, open], allow_presets: [npm], allow: [] }
     mounts: deny
     secrets: { allowed: [], inject: [proxy] }
@@ -50,11 +50,13 @@ export const DOCKER = process.env['ABOX_TEST_DOCKER'] === '1';
 export function makeHome(opts: HomeOptions = {}): TestHome {
   const base = mkdtempSync(join(tmpdir(), 'abox-gui-e2e-'));
   const home = join(base, 'home');
-  const project = join(base, 'project');
+  // Agents may only use a directory *below* a workspace root, never the root itself.
+  const projects = join(base, 'projects');
+  const project = join(projects, 'project');
   mkdirSync(join(home, 'config'), { recursive: true, mode: 0o700 });
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, 'README.md'), '# demo project\n');
-  writeFileSync(join(home, 'config', 'policy.yaml'), simPolicy(project, opts.templates), {
+  writeFileSync(join(home, 'config', 'policy.yaml'), simPolicy(projects, opts.templates), {
     mode: 0o600,
   });
   const env = {

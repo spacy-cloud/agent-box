@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import type { Readable } from 'node:stream';
 import { PassThrough, Readable as ReadableCtor, pipeline } from 'node:stream';
 import Docker from 'dockerode';
-import { AboxError, parseSandboxId } from '@abox/core';
+import { AboxError, collectBuildContext, parseSandboxId } from '@abox/core';
 import type {
   BackendKind,
   BackendStatus,
@@ -35,7 +35,15 @@ import { effectiveExpiresAt, hasMovableExpiry, toEpochSeconds, writeExpiryFile }
 import { effectiveFromInspect, infoFromLabels } from './info.js';
 import { isAbortError, mapEngineError, statusOf } from './errors.js';
 import { Demux, openTty, runExec, simpleExec, streamExec } from './exec.js';
-import { getFile, mkdirP, putArchiveStream, putFile, reownDir, sandboxPath } from './files.js';
+import {
+  assertWritablePath,
+  getFile,
+  mkdirP,
+  putArchiveStream,
+  putFile,
+  reownDir,
+  sandboxPath,
+} from './files.js';
 import { buildHostConfig, checkBindSource, checkMountTarget, ttlEntrypoint } from './hostconfig.js';
 import {
   CA_BUNDLE_PATH,
@@ -318,6 +326,7 @@ export class DockerProvider implements SandboxProvider {
       snapshots: true,
       tty: true,
       extendExpiry: true,
+      updateResources: true,
       limits: { cpus: true, memory: true, pids: true, disk: this.facts?.diskQuota ?? false },
       nonRootUser: true,
       secretInjection: ['proxy', 'env', 'file'],
@@ -581,6 +590,25 @@ export class DockerProvider implements SandboxProvider {
     const dockerfilePath = this.dockerfilePath(template) as string;
     const contextDir = path.dirname(dockerfilePath);
     const baseTag = `abox/${imageRepoName(template.name)}-base:${cacheKey}`;
+    // What was reviewed and approved is the context with this digest: build nothing else. Checked
+    // right before the pack and again once the engine has the files, so a file swapped in between
+    // (the context is the user's or a project's directory) never ends up in an image.
+    const approved = template.buildContext?.digest;
+    const assertUnchanged = async (): Promise<void> => {
+      if (approved === undefined) return;
+      const now = await collectBuildContext(dockerfilePath);
+      if (now.digest !== approved) {
+        throw new AboxError(
+          'conflict',
+          `The build context of template "${template.name}" changed since it was approved; review again`,
+          {
+            hint: 'Review the template again (`abox template show` / the approval) and retry.',
+            details: { approved, current: now.digest },
+          },
+        );
+      }
+    };
+    await assertUnchanged();
     await buildImage(this.docker, packHostPath(contextDir, '', { uid: 0, gid: 0 }), {
       tag: baseTag,
       dockerfile: path.basename(dockerfilePath),
@@ -594,6 +622,15 @@ export class DockerProvider implements SandboxProvider {
       ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
+    try {
+      await assertUnchanged();
+    } catch (e) {
+      await this.docker
+        .getImage(baseTag)
+        .remove()
+        .catch(() => undefined);
+      throw e;
+    }
     return baseTag;
   }
 
@@ -1129,6 +1166,10 @@ export class DockerProvider implements SandboxProvider {
     for (const f of spec.files) {
       const p = sandboxPath(f.sandboxPath, 'file path');
       if (p === '/tmp') throw new AboxError('invalid_input', 'Cannot place a file at /tmp itself');
+      // Only `extendExpiry` writes the deadline: a spec file there would be a deadline nobody approved.
+      if (p === EXPIRY_FILE) {
+        throw new AboxError('invalid_input', `${p} is managed by abox and cannot be a spec file`);
+      }
       if (
         ro &&
         !(
@@ -1671,6 +1712,49 @@ export class DockerProvider implements SandboxProvider {
     });
   }
 
+  /**
+   * Change the cpu and/or memory limit of the container with the engine's live update, running or
+   * stopped. The limits stay across restarts, and `inspect` reports them. Memory and swap move
+   * together (the sandbox has no swap, `MemorySwap` equals `Memory`), because the engine refuses a
+   * memory limit above the swap limit that is still set. The engine rejects a new memory limit
+   * below what the container uses right now; that error is passed on and the old limits stay.
+   * Only the sandbox container is touched: the egress proxy sidecar keeps its own limits.
+   */
+  async updateResources(
+    id: SandboxId,
+    limits: { cpus?: number; memoryBytes?: number },
+  ): Promise<void> {
+    return this.guard(async () => {
+      const { cpus, memoryBytes } = limits;
+      if (cpus === undefined && memoryBytes === undefined)
+        throw new AboxError('invalid_input', 'Nothing to change: name cpus and/or memory');
+      if (cpus !== undefined && !(Number.isFinite(cpus) && cpus > 0))
+        throw new AboxError('invalid_input', `Invalid cpus ${String(cpus)}`);
+      if (memoryBytes !== undefined && !(Number.isSafeInteger(memoryBytes) && memoryBytes > 0))
+        throw new AboxError('invalid_input', `Invalid memory ${String(memoryBytes)}`);
+      const c = await this.load(id);
+      const update: Record<string, number> = {};
+      if (cpus !== undefined) update['NanoCpus'] = Math.round(cpus * 1e9);
+      if (memoryBytes !== undefined) {
+        update['Memory'] = memoryBytes;
+        update['MemorySwap'] = memoryBytes;
+      }
+      try {
+        await this.docker.getContainer(c.Id).update(update);
+      } catch (e) {
+        // An engine without the update endpoint (older Podman) answers 404 / 405 / 501 for a container that exists.
+        if ([404, 405, 501].includes(statusOf(e) ?? 0)) {
+          throw new AboxError(
+            'unsupported',
+            'The container engine cannot change the limits of an existing sandbox',
+            { hint: 'Create a new sandbox with overrides.cpus / overrides.memory.', cause: e },
+          );
+        }
+        throw e;
+      }
+    });
+  }
+
   /** Copy the spec files destined for the /tmp tmpfs into it (it is empty after every start). */
   private async restoreTmpFiles(containerId: string): Promise<void> {
     // Entry by entry: `cp -pR dir/. /tmp/` also tries to set the times of /tmp itself, which GNU cp
@@ -1876,6 +1960,7 @@ export class DockerProvider implements SandboxProvider {
       const c = await this.load(id);
       const dest = sandboxPath(sandboxDest, 'destination');
       if (dest === '/') throw new AboxError('invalid_input', 'Cannot copy onto /');
+      assertWritablePath(dest, 'Destination');
       const { uid, gid } = userIds(c);
       const dir = path.posix.dirname(dest);
       const tmpfs = tmpfsRootOf(c, dest);
@@ -2012,7 +2097,8 @@ export class DockerProvider implements SandboxProvider {
       const p = sandboxPath(sandboxFile, 'file');
       // /tmp is a tmpfs: the archive API only sees the (hidden) image directory behind it.
       if (c.State.Running && tmpfsRootOf(c, p)) return this.readTmpFile(c.Id, p, maxBytes);
-      return getFile(this.docker.getContainer(c.Id), p, maxBytes);
+      const { data, truncated, size } = await getFile(this.docker.getContainer(c.Id), p, maxBytes);
+      return { data, truncated, size };
     });
   }
 
@@ -2021,17 +2107,14 @@ export class DockerProvider implements SandboxProvider {
       const c = await this.load(id);
       const p = sandboxPath(sandboxFile, 'file');
       if (p === '/') throw new AboxError('invalid_input', 'Invalid file path');
+      // Abox-internal files (the deadline, the CA) are root's: never through this API, whatever the mode.
+      assertWritablePath(p, 'File');
       if (c.State.Running && tmpfsRootOf(c, p)) {
         await this.writeTmpFile(c.Id, p, data, mode & 0o777);
         return;
       }
       const { uid, gid } = userIds(c);
-      const root = p.startsWith(`${CA_DIR}/`);
-      await putFile(this.docker.getContainer(c.Id), p, data, {
-        mode: mode & 0o777,
-        uid: root ? 0 : uid,
-        gid: root ? 0 : gid,
-      });
+      await putFile(this.docker.getContainer(c.Id), p, data, { mode: mode & 0o777, uid, gid });
     });
   }
 

@@ -89,6 +89,16 @@ test('hosts: add (no secret field), validation error, favourite, edit, remove; h
     expect(yaml).toContain('server.example.org');
     expect(yaml.replace(/^#.*$/gm, '')).not.toMatch(/passw|passphrase|private/i);
 
+    // "new sandbox on this host" opens the wizard with the host preselected (no sandbox is created)
+    await row.getByRole('button', { name: /^Neue Sandbox/ }).click();
+    const wizard = page.getByRole('dialog', { name: 'Neue Sandbox' });
+    await wizard.locator('label.template-card', { hasText: 'host-shell' }).click();
+    await wizard.getByRole('button', { name: 'Weiter' }).click();
+    await expect(wizard.getByLabel('Host', { exact: true })).toHaveValue('srv');
+    await wizard.getByRole('button', { name: 'Abbrechen' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Hosts und SSH', level: 1 })).toBeVisible();
+
     // remove needs a confirmation
     await row.getByRole('button', { name: /^Entfernen/ }).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Entfernen' }).click();

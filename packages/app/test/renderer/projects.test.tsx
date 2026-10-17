@@ -26,6 +26,7 @@ function entry(over: Partial<TemplateListEntry> & { name: string }): TemplateLis
     trusted: true,
     allowed: true,
     backendAvailable: true,
+    ready: true,
     contentHash: `c-${over.name}`,
     hash: `h-${over.name}`,
     ...over,

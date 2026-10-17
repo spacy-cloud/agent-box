@@ -78,10 +78,18 @@ export function buildCreateInput(f: Form): IpcInput<'sandboxes:create'> {
   };
 }
 
-export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string): void }) {
+export function NewSandboxDialog(props: {
+  onClose(): void;
+  onCreated(id: string): void;
+  /** Host profile id to preselect (the Hosts view's "new sandbox here"); default: this computer. */
+  host?: string;
+}) {
   const { t, notify } = useApp();
   const [step, setStep] = useState<Step>('template');
-  const [form, setForm] = useState<Form>(EMPTY_FORM);
+  const [form, setForm] = useState<Form>({
+    ...EMPTY_FORM,
+    host: props.host && props.host !== 'local' ? props.host : '',
+  });
   const projectDir = form.projectDir ?? '';
   const templates = useQuery('templates:list', projectDir ? { projectDir } : undefined, {
     live: false,
@@ -338,12 +346,19 @@ export function NewSandboxDialog(props: { onClose(): void; onCreated(id: string)
               <select id={id} value={form.host ?? ''} onChange={(e) => set('host', e.target.value)}>
                 <option value="">{t('hosts.thisComputer')}</option>
                 {(hosts.data ?? [])
-                  .filter((r) => r.profile.kind === 'ssh' && r.profile.backends.length > 0)
+                  .filter(
+                    (r) =>
+                      r.profile.kind === 'ssh' &&
+                      (r.profile.backends.length > 0 || r.profile.id === form.host),
+                  )
                   .map((r) => (
                     <option key={r.profile.id} value={r.profile.id}>
                       {r.profile.id} ({t(`hosts.zone.${r.profile.zone}`)})
                     </option>
                   ))}
+                {form.host && !(hosts.data ?? []).some((r) => r.profile.id === form.host) ? (
+                  <option value={form.host}>{form.host}</option>
+                ) : null}
               </select>
             )}
           </Field>

@@ -41,6 +41,41 @@ describe('ReviewDialog (templates view)', () => {
     expect(calls).toEqual([{ channel: 'templates:review', input: { name: 'proj-tpl' } }]);
   });
 
+  it('lists the files of a Dockerfile build context and the Dockerfile in full against a trusted version', async () => {
+    installBridge(() => ({
+      ...REVIEW,
+      against: { kind: 'previous', label: 'the version trusted on 2026-01-01' },
+      diff: '--- a\n+++ b\n-RUN true\n+RUN echo EVIL2 > /etc/marker',
+      buildContext: {
+        dir: '/p/.sandbox',
+        dockerfile: 'Dockerfile',
+        digest: 'd'.repeat(64),
+        dockerfileText: 'FROM ubuntu:24.04\nRUN echo EVIL2 > /etc/marker\n',
+        files: [
+          { path: 'Dockerfile', type: 'file', size: 48, sha256: 'a'.repeat(64) },
+          { path: 'seed.sh', type: 'file', size: 10, sha256: 'b'.repeat(64) },
+          { path: 'link', type: 'symlink', size: 0, sha256: 'c'.repeat(64), target: '/etc/passwd' },
+        ],
+        fileCount: 5,
+        totalBytes: 58,
+        filesTruncated: true,
+      },
+    }));
+    renderApp(<ReviewDialog name="proj-tpl" onClose={vi.fn()} />, { locale: 'en' });
+    const block = await screen.findByTestId('build-context');
+    expect(block.textContent).toContain('/p/.sandbox');
+    expect(block.textContent).toContain('5 file(s), 58 bytes');
+    const files = within(block).getByLabelText('Files of the build context');
+    expect(files.textContent).toContain('Dockerfile');
+    expect(files.textContent).toContain('48 bytes');
+    expect(files.textContent).toContain('seed.sh');
+    expect(files.textContent).toContain('10 bytes');
+    expect(files.textContent).toContain('→ /etc/passwd');
+    expect(files.textContent).toContain('2 more file(s)');
+    const text = within(block).getByLabelText('Content of the Dockerfile');
+    expect(text.textContent).toContain('RUN echo EVIL2 > /etc/marker');
+  });
+
   it('says so when there is no difference and shows a manager error as an alert', async () => {
     installBridge(() => ({ ...REVIEW, diff: '', risks: [], trusted: true }));
     const { unmount } = renderApp(<ReviewDialog name="proj-tpl" onClose={vi.fn()} />, {

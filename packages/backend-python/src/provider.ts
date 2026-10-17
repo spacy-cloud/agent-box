@@ -615,6 +615,16 @@ export class PythonProvider implements SandboxProvider {
     await provider.updateNetwork(id, network);
   }
 
+  async updateResources(
+    id: SandboxId,
+    limits: { cpus?: number; memoryBytes?: number },
+  ): Promise<void> {
+    const { provider } = await this.route(id);
+    if (!provider.updateResources)
+      throw unsupported('changing the resource limits of this sandbox is not supported');
+    await provider.updateResources(id, limits);
+  }
+
   async extendExpiry(id: SandboxId, expiresAt: number): Promise<void> {
     const { provider } = await this.route(id);
     if (!provider.extendExpiry)

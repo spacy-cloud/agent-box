@@ -8,6 +8,10 @@ import { EXPIRY_FILE, LABEL } from './labels.js';
  * The deadline of a sandbox container. Labels are immutable, so the creation-time `abox.expires`
  * is only the lower bound: `extendExpiry` writes the later deadline into `EXPIRY_FILE` inside the
  * container, where the entrypoint (see `ttlEntrypoint`) and `start` read it.
+ *
+ * That file is a convenience that lets the container end itself on time, not the authority: a
+ * process with root inside the container can write any file there. The deadline the manager
+ * enforces is the one in its registry (`Internals.sweepTtl` stops the sandbox from the host).
  */
 
 /** Epoch seconds the deadline is stored with. */
@@ -18,10 +22,20 @@ export function hasMovableExpiry(labels: Record<string, string> | null | undefin
   return labels?.[LABEL.expiryFile] === '1';
 }
 
-/** The deadline stored in the container in epoch seconds, or `undefined` when there is none. */
+/** Owned by root and writable by nobody else: only the backend (running as root) could have written it. */
+export function isTrustedExpiryFile(uid: number, mode: number): boolean {
+  return uid === 0 && (mode & 0o022) === 0;
+}
+
+/**
+ * The deadline stored in the container in epoch seconds, or `undefined` when there is none. A file
+ * that is not owned by root or that anyone but root can write is not the backend's and is ignored
+ * (the entrypoint applies the same rule).
+ */
 async function readExpiryFile(c: Docker.Container): Promise<number | undefined> {
   try {
-    const { data } = await getFile(c, EXPIRY_FILE, 64);
+    const { data, uid, mode } = await getFile(c, EXPIRY_FILE, 64);
+    if (!isTrustedExpiryFile(uid, mode)) return undefined;
     const text = data.toString('utf8').trim();
     return /^\d{1,15}$/.test(text) ? Number(text) : undefined;
   } catch (e) {

@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 Create an abox sandbox. Arguments: `$ARGUMENTS` (template name, optional workspace mode).
 
-1. If no template was given, call `template_list`, show the names with their one-line descriptions, and ask which one to use. Stop until the user answers.
+1. If no template was given, call `template_list` (with `workspace_path` set to the project path if the project may have its own templates), show the names with their one-line descriptions, and ask which one to use. Stop until the user answers.
 2. If a template was given, optionally call `template_show` to confirm it exists and see its limits.
 3. Pick the workspace mode: the second argument if present, otherwise `worktree` when the current directory is a git repository, otherwise `copy`. Use `mount` only if the user asked for it explicitly (it gives no file isolation). Workspace path is the current project directory.
 4. Call `sandbox_create` with `template`, `workspace` (`mode`, `path`, and `ref: "HEAD"` for worktree/clone) and a fresh `request_id`.

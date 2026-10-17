@@ -34,6 +34,10 @@ import { cleanupSandbox, makeTestSpec, randomId, sleep, waitFor } from './helper
  *   original `expiresAt` keeps running, can be stopped and started again, and reports `t`.
  *   It never shortens (`invalid_input`); without the capability the method is absent or rejects
  *   with `unsupported`.
+ * - `updateResources(id, limits)` (only with `capabilities().updateResources`) changes the cpu and/or
+ *   memory limit of a running or stopped sandbox and keeps it across a restart; an empty or
+ *   invalid request is `invalid_input`; without the capability the method is absent or rejects
+ *   with `unsupported`.
  * - `copyIn(host, p)` / `copyOut(p, host)`: the entry at the source *becomes* the entry at the
  *   destination path (like `cp -a src dst` with a non-existing `dst`); the destination's parent
  *   must exist. Directories are copied recursively.
@@ -261,6 +265,8 @@ export function defineProviderContract(opts: ContractOptions): void {
         if (caps.remote) expect(caps.workspaceDelivery).not.toContain('bind');
         // `extendExpiry` is present exactly when the capability is claimed.
         expect(typeof provider.extendExpiry === 'function').toBe(caps.extendExpiry === true);
+        // A backend that claims `updateResources` provides it (the python wrapper always has the method).
+        if (caps.updateResources) expect(typeof provider.updateResources).toBe('function');
         // Snapshot methods are present exactly when snapshots are supported.
         if (caps.snapshots) {
           expect(typeof provider.snapshot).toBe('function');
@@ -1286,6 +1292,67 @@ export function defineProviderContract(opts: ContractOptions): void {
           expect((await provider.inspect(spec.id)).state).toBe('expired');
         } finally {
           await finish(spec.id);
+        }
+      });
+    });
+
+    // -- resource limits -------------------------------------------------------------------
+
+    describe('updateResources', () => {
+      test('without the capability the call is absent or rejects with unsupported', async (ctx) => {
+        if (caps.updateResources) return ctx.skip();
+        const id = await startSandbox();
+        try {
+          if (provider.updateResources)
+            await expectRejects(provider.updateResources(id, { cpus: 1 }), 'unsupported');
+        } finally {
+          await finish(id);
+        }
+      });
+
+      test('changes the limits of a running sandbox and keeps them across a restart', async (ctx) => {
+        if (!caps.updateResources || !provider.updateResources) return ctx.skip();
+        const id = await startSandbox();
+        try {
+          const memory = 384 * 1024 * 1024;
+          await provider.updateResources(id, { cpus: 0.5, memoryBytes: memory });
+          expect((await sh(id, 'echo still-here')).stdout).toBe('still-here\n');
+          // Backends that report their limits report the new ones.
+          const check = async (): Promise<void> => {
+            const eff = (await provider.inspect(id)).effective ?? {};
+            if (typeof eff['cpus'] === 'number') expect(eff['cpus']).toBeCloseTo(0.5, 5);
+            if (typeof eff['memoryBytes'] === 'number') expect(eff['memoryBytes']).toBe(memory);
+          };
+          await check();
+          // Only the named field changes.
+          await provider.updateResources(id, { cpus: 1 });
+          const eff = (await provider.inspect(id)).effective ?? {};
+          if (typeof eff['cpus'] === 'number') expect(eff['cpus']).toBeCloseTo(1, 5);
+          if (typeof eff['memoryBytes'] === 'number') expect(eff['memoryBytes']).toBe(memory);
+          await provider.stop(id);
+          await provider.updateResources(id, { cpus: 0.5 });
+          await provider.start(id);
+          expect((await provider.inspect(id)).state).toBe('running');
+          await check();
+        } finally {
+          await finish(id);
+        }
+      });
+
+      test('rejects an empty or invalid request, and unknown ids', async (ctx) => {
+        if (!caps.updateResources || !provider.updateResources) return ctx.skip();
+        const id = await startSandbox();
+        try {
+          await expectRejects(provider.updateResources(id, {}), 'invalid_input');
+          await expectRejects(provider.updateResources(id, { cpus: -1 }), 'invalid_input');
+          await expectRejects(provider.updateResources(id, { memoryBytes: 0 }), 'invalid_input');
+          await expectRejects(provider.updateResources(id, { cpus: Number.NaN }), 'invalid_input');
+          await expectRejects(
+            provider.updateResources(`${provider.host.host}/ct${randomId('', 6)}`, { cpus: 1 }),
+            'not_found',
+          );
+        } finally {
+          await finish(id);
         }
       });
     });

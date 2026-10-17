@@ -178,8 +178,6 @@ Observations that are **not** failing tests but worth knowing:
 - **Disk exhaustion is not contained on this engine** (overlayfs on containerd snapshotter: no `StorageOpt size`).
   `capabilities().limits.disk` says `false` and a template with `resources.disk` is rejected as `unsupported`
   (tested), so this is reported, not silent.
-- **`/usr`, `/bin`, `/lib` are valid mount targets** for approved read-only datasets (only `/`, `/proc`, `/sys`, `/dev`,
-  `/etc`, `/run`, `/var/run`, `/boot` are reserved). Harmless inside the agent's own sandbox, noted for completeness.
 - **Template builds and the first proxy-image build depend on package mirrors** (`apk add openssl`, flaky here).
   The harness retries (`warmProxy`) and avoids installs in test templates.
 - Running the e2e files in parallel is supported: upstream aliases and manager instances are unique per run;

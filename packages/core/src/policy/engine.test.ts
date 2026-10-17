@@ -365,6 +365,16 @@ describe('workspace: built-in default policy (agents)', () => {
     expect(create(later).decision).toBe('allow');
     expect(create(join(env.home, 'src', 'x')).decision).toBe('allow');
   });
+  it('does not allow a workspace root itself for agents, but does for humans', () => {
+    const r = create(env.projects);
+    expectDeny(r, 'root itself');
+    if (r.decision === 'deny') expect(r.hint).toContain('inside the root');
+    expectDeny(create(env.projects, 'worktree'), 'root itself');
+    const human = evaluateCreate(
+      mkReq(env, humanContext(env), { workspace: { mode: 'copy', hostPath: env.projects } }),
+    );
+    expect(human.decision).not.toBe('deny');
+  });
   it('does not allow the home directory as a whole nor ordinary home folders', () => {
     expectDeny(create(env.home), 'protected path the home directory');
     expectDeny(create(env.datasets), 'outside the allowed workspace roots');
