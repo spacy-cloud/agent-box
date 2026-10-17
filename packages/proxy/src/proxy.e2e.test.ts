@@ -302,12 +302,25 @@ describe('CONNECT tunnelling', () => {
   });
 
   it('returns 502 and logs when the allowed upstream is unreachable', async () => {
-    const closed = await new Promise<number>((resolve) => {
-      const s = net.createServer().listen(0, '127.0.0.1', () => {
-        const port = (s.address() as net.AddressInfo).port;
-        s.close(() => resolve(port));
+    // A freed ephemeral port can be taken again by another process before the proxy dials it (seen
+    // on CI), so use a low port that nothing listens on and check that right before the request.
+    const refused = (port: number) =>
+      new Promise<boolean>((resolve) => {
+        const c = net.connect(port, '127.0.0.1');
+        c.once('connect', () => {
+          c.destroy();
+          resolve(false);
+        });
+        c.once('error', (e: NodeJS.ErrnoException) => resolve(e.code === 'ECONNREFUSED'));
       });
-    });
+    let closed = 0;
+    for (const port of [1, 3, 5, 7, 9]) {
+      if (await refused(port)) {
+        closed = port;
+        break;
+      }
+    }
+    expect(closed, 'no refused low port on 127.0.0.1').toBeGreaterThan(0);
     const p = await proxy({
       allow: ['upstream.test:' + closed],
       privateExceptions: ['127.0.0.1/32'],
