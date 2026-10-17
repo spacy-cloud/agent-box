@@ -262,6 +262,8 @@ into the sandbox …` lines through `onProgress` (stderr of `abox create`; the G
 
 ### Fixed
 
+- GUI diagnostics: the lines behind a "Details" disclosure (for example of an optional backend that
+  is not running) use the full width instead of wrapping after every few characters.
 - **Copying a huge folder no longer fails minutes later with the wrong message.** The create used to
   walk and pack the tree until the 64 GiB cap was hit (about 2.5 minutes with an empty progress bar)
   and then reported the export-direction text "the sandbox produced an unusually large tree".
