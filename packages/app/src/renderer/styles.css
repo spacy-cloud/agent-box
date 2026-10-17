@@ -874,6 +874,16 @@ dialog.modal h2 {
   gap: 0.2rem;
   margin: 0.15rem 0;
 }
+.notes li > span:last-child,
+.detail-lines li {
+  overflow-wrap: anywhere;
+}
+.detail-lines {
+  margin: 0.2rem 0 0.2rem 0.4rem;
+}
+.detail-lines li {
+  margin: 0.15rem 0;
+}
 .crumbs {
   margin: 0.3rem 0 0.6rem;
 }

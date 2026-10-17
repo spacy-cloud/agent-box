@@ -305,7 +305,7 @@ function NoteList(props: { notes: NonNullable<DoctorCheck['notes']> }) {
 
 function DetailLines(props: { lines: string[] }) {
   return (
-    <ul className="plain-list notes">
+    <ul className="plain-list detail-lines">
       {props.lines.map((l, i) => (
         <li key={i} className="plain muted small">
           {safeText(l)}

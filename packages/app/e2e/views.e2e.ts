@@ -396,6 +396,19 @@ for (const scheme of ['light', 'dark'] as const) {
         for (const el of els) (el.parentElement as HTMLDetailsElement).open = true;
       });
       expect(await page.locator('details.disclosure[open]').count()).toBeGreaterThan(0);
+      // every line in an open disclosure gets the full width (a detail line once landed in the
+      // narrow marker column of the notes grid and wrapped after every few characters)
+      const cramped = await page.locator('details.disclosure[open] li').evaluateAll((els) =>
+        els
+          .map((el) => {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            return range.getBoundingClientRect();
+          })
+          .filter((r) => r.width > 0 && r.width < 150 && r.height > 60)
+          .map((r) => `${Math.round(r.width)}x${Math.round(r.height)}`),
+      );
+      expect(cramped).toEqual([]);
       await check('settings, disclosures open');
       await page.getByRole('button', { name: /Hosts und SSH/ }).click();
       await expect(page.getByRole('table', { name: 'Hostprofile' })).toBeVisible();
