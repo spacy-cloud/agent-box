@@ -8,6 +8,7 @@ export {
   loadPolicy,
   parsePolicy,
   defaultPolicy,
+  restrictivePolicy,
   defaultPolicyPath,
   policyContentHash,
   mergeProfiles,

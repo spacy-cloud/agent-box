@@ -155,23 +155,30 @@ Containers carrying abox labels that the registry does not know, for example aft
 `~/.local/share/abox`. abox only ever acts on objects of its own installation; use
 `abox reconcile` to see them and `abox reconcile --apply --remove-orphans` only after checking.
 
-### `policy.yaml` is invalid, but abox keeps working with the old rules
+### `policy.yaml` is invalid: abox refuses to create and every agent call fails
 
 ```text
-warning: policy.yaml is invalid (invalid policy in .../policy.yaml: 1 problem(s), first: ...); this older policy stays in force until the file is fixed
+policy_denied: policy.yaml is invalid, so creating sandboxes is refused until it is fixed: invalid policy in .../policy.yaml: 1 problem(s), first: ...
 ```
 
-A running abox process (an MCP server, the GUI) that finds an invalid `policy.yaml` on disk does
-**not** drop its rules and does not fall back to the built-in policy: it keeps the last valid
-policy, records a `policy.reload_failed` entry in the audit log (`abox audit --action
-policy.reload_failed`), prints a warning on the stderr of `abox mcp serve` and shows it in
-`abox policy show`. Sandboxes keep being created under the old rules until the file is valid
-again, so a typo does not silently widen or remove a limit, and your edit does not take effect
-either. Find the problem with `abox policy validate`
-(field path and line number; it works without a running manager), fix the file, and the next call
-of the running process picks it up (checked at most every 500 ms). A process that is **started**
-while the file is invalid refuses to start with the same message; edit the file with a text editor
-then (`abox policy edit` needs a working manager too).
+abox fails closed on a broken `policy.yaml`: it never falls back to the built-in policy and does
+not keep granting under the old rules either. While the file is invalid:
+
+- **Refused** (exit 3): `create`, `extend` and other access requests, `approvals approve`,
+  `template build`, `token create`, and **every call of an agent** (`abox mcp serve` does not start,
+  a running one answers every tool with `policy_denied` and the problems). Sandboxes keep running
+  until their TTL.
+- **Still works for you:** `ls`, `inspect`, `stop`, `rm`, `logs`, `exec`, `doctor` (the policy is a
+  failed check with the problems), `audit`, `approvals ls/deny`, `template ls/show/validate`,
+  `policy show/validate/edit`. They use the last valid policy; `abox policy show` says which one
+  (`last_valid`, or `built_in`, the restrictive policy with only your human context, when no valid
+  one was ever recorded).
+
+A process that notices the broken file records a `policy.reload_failed` entry in the audit log
+(`abox audit --action policy.reload_failed`), the MCP server prints a warning on its stderr, and
+`abox doctor` and `abox policy show` show the problem. Find it with `abox policy validate` (field
+path and line number; it works without a running manager), then repair it with `abox policy edit`
+(or any text editor). A running process picks up a valid file within 500 ms.
 
 ### `sandbox_write_file`: "content is too large" / the MCP connection closed on a big file
 
@@ -194,8 +201,9 @@ when a session starts. Install abox (`command -v abox` must print a path), or st
 
 ### An agent gets `conflict: paused: a human is working in sandbox ...`
 
-You (or the GUI) have a terminal open in the agent's sandbox; abox pauses the agent's commands,
-background processes and file writes meanwhile. Close the terminal and the agent can continue. If
+You (or the GUI) have a terminal open in the agent's sandbox; abox pauses everything the agent
+could change meanwhile: commands, background processes, file writes, snapshots, restore, start,
+stop, delete and access requests. Close the terminal and the agent can continue. If
 the pause outlives a closed or crashed GUI, it ends on its own about 20 seconds later. See [GUI:
 taking over a sandbox](gui.md#taking-over-an-agents-sandbox).
 

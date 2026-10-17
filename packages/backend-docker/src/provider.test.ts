@@ -12,6 +12,7 @@ import {
   TEST_INSTANCE,
   TEST_LABEL,
   TEST_RUN,
+  TEST_SOCKET,
   dockerEnabled,
   newProvider,
   sweepTestObjects,
@@ -20,7 +21,7 @@ import {
 import { defaultProxyAssets } from './proxy.js';
 import { existsSync } from 'node:fs';
 
-const SOCK = '/var/run/docker.sock';
+const SOCK = TEST_SOCKET;
 const raw = new Docker({ socketPath: SOCK });
 
 describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
@@ -691,6 +692,95 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect(ca2).not.toBe(ca);
     }, 120_000);
 
+    it('at expiry the proxy sidecar, its secret config and the internal network go; the sandbox stays for export', async () => {
+      const now = Date.now();
+      const s = await sb(
+        {
+          createdAt: now,
+          expiresAt: now + 10_000,
+          network: {
+            mode: 'allowlist',
+            allow: ['example.com'],
+            blockPrivate: true,
+            privateExceptions: [],
+            injections: [
+              { host: 'example.com', header: 'Authorization', value: 'Bearer EXPIRY-SECRET' },
+            ],
+          },
+        },
+        true,
+      );
+      const short = s.id.split('/')[1];
+      await run(s, 'echo exported > /workspace/result.txt');
+      // the deadline is moved to a time that is not a whole second (it is stored rounded up)
+      const deadline = now + 11_500;
+      await provider.extendExpiry!(s.id, deadline);
+      await provider.extendExpiry!(s.id, deadline); // idempotent
+      const proxy = await raw.getContainer(`abox-proxy-${short}`).inspect();
+      const volume = proxy.Mounts.find((m) => m.Destination === '/etc/abox-proxy')?.Name ?? '';
+      expect(volume).not.toBe('');
+      // a stop before the deadline is an ordinary stop: everything stays and can be started again
+      await provider.stop(s.id);
+      expect((await raw.getContainer(`abox-proxy-${short}`).inspect()).State.Running).toBe(false);
+      await provider.start(s.id);
+      expect((await run(s, 'cat /workspace/result.txt')).stdout).toBe('exported\n');
+      // ... after it, the stop also removes the sidecar, its volume and the internal network
+      while (Date.now() < deadline + 50) await new Promise((r) => setTimeout(r, 100));
+      await provider.stop(s.id);
+      await expect(raw.getContainer(`abox-proxy-${short}`).inspect()).rejects.toMatchObject({
+        statusCode: 404,
+      });
+      await expect(raw.getVolume(volume).inspect()).rejects.toMatchObject({ statusCode: 404 });
+      await expect(raw.getNetwork(`abox-int-${short}`).inspect()).rejects.toMatchObject({
+        statusCode: 404,
+      });
+      // nothing of the secret is left on the engine
+      const all = JSON.stringify(await raw.listContainers({ all: true }));
+      expect(all).not.toContain('EXPIRY-SECRET');
+      // the sandbox itself is kept, stopped, expired, and its workspace can be read and copied out
+      expect((await inspectRaw(s)).State.Running).toBe(false);
+      await new Promise((r) => setTimeout(r, 1100)); // (the stored deadline is rounded up to a second)
+      expect((await provider.inspect(s.id)).state).toBe('expired');
+      expect((await provider.readFile(s.id, '/workspace/result.txt', 100)).data.toString()).toBe(
+        'exported\n',
+      );
+      const out = path.join(tmp, `expired-out-${short}`);
+      await provider.copyOut(s.id, '/workspace', out);
+      expect(await fs.readFile(path.join(out, 'result.txt'), 'utf8')).toBe('exported\n');
+      expect(await provider.networkEvents!(s.id)).toEqual([]);
+      // stopping again, starting and removing stay fine
+      await provider.stop(s.id);
+      await expect(provider.start(s.id)).rejects.toMatchObject({ code: 'conflict' });
+      await provider.remove(s.id);
+    }, 120_000);
+
+    it('start refuses an expired allowlist sandbox and removes its leftover sidecar', async () => {
+      const now = Date.now();
+      const s = await sb(
+        {
+          createdAt: now,
+          expiresAt: now + 4000,
+          network: {
+            mode: 'allowlist',
+            allow: ['example.com'],
+            blockPrivate: true,
+            privateExceptions: [],
+            injections: [],
+          },
+        },
+        true,
+      );
+      const short = s.id.split('/')[1];
+      await new Promise((r) => setTimeout(r, 5500));
+      // the container ended itself at its deadline; nobody called stop
+      expect((await raw.getContainer(`abox-proxy-${short}`).inspect()).State.Running).toBe(true);
+      await expect(provider.start(s.id)).rejects.toMatchObject({ code: 'conflict' });
+      await expect(raw.getContainer(`abox-proxy-${short}`).inspect()).rejects.toMatchObject({
+        statusCode: 404,
+      });
+      await provider.remove(s.id);
+    }, 60_000);
+
     it('injections without allowlist are rejected', async () => {
       const s = spec({
         network: {
@@ -815,6 +905,62 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect(r.timedOut).toBe(true);
       expect((await run(s, 'ps -o args | grep -c "[s]leep 300"; true')).stdout.trim()).toBe('0');
     });
+
+    it('the PATH an agent sets applies to its command, not to the exec wrapper', async () => {
+      const s = await sb();
+      for (const PATH of ['/nonexistent', '', '/nonexistent:/also/missing']) {
+        const t0 = Date.now();
+        // a PATH without the system directories: the wrapper's own helpers must still work, so the
+        // command runs (by absolute path) and finishes normally instead of being "killed after 0s"
+        const ok = await provider.exec(s.id, {
+          argv: ['/bin/echo', 'still works'],
+          env: { PATH },
+          timeoutMs: 30_000,
+        });
+        expect(ok, PATH).toMatchObject({ stdout: 'still works\n', exitCode: 0, timedOut: false });
+        expect(Date.now() - t0, PATH).toBeLessThan(5000);
+        // the command sees exactly the PATH it was given
+        const seen = await provider.exec(s.id, {
+          argv: ['/bin/sh', '-c', 'echo "[$PATH]"'],
+          env: { PATH },
+          timeoutMs: 30_000,
+        });
+        expect(seen.stdout, PATH).toBe(`[${PATH}]\n`);
+        // and finds nothing it should not: the user's PATH, not the wrapper's, is used for lookup
+        const lookup = await provider.exec(s.id, {
+          command: 'ls /',
+          env: { PATH },
+          timeoutMs: 30_000,
+        });
+        expect(lookup, PATH).toMatchObject({ exitCode: 127, timedOut: false });
+        // the watchdog still kills what runs too long with such a PATH
+        const slow = await provider.exec(s.id, {
+          argv: ['/bin/sleep', '300'],
+          env: { PATH },
+          timeoutMs: 1000,
+        });
+        expect(slow, PATH).toMatchObject({ timedOut: true, exitCode: 137 });
+      }
+      // a PATH that includes the system directories finds commands as usual
+      const found = await provider.exec(s.id, {
+        command: 'ls / > /dev/null && echo found',
+        env: { PATH: '/nonexistent:/bin:/usr/bin' },
+        timeoutMs: 30_000,
+      });
+      expect(found).toMatchObject({ stdout: 'found\n', exitCode: 0 });
+      expect((await run(s, 'ps -o args | grep -c "[s]leep 300"; true')).stdout.trim()).toBe('0');
+      expect((await run(s, 'ls /tmp/.abox-exec-* 2>/dev/null | wc -l')).stdout.trim()).toBe('0');
+      // abort (kill script) also works with such a PATH
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 700);
+      await expect(
+        provider.exec(s.id, {
+          argv: ['/bin/sleep', '300'],
+          env: { PATH: '/nonexistent' },
+          signal: ac.signal,
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+    }, 90_000);
 
     it('abort signal kills the command and rejects', async () => {
       const s = await sb();

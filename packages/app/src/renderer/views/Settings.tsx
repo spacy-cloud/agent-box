@@ -10,12 +10,14 @@ import {
   Dialog,
   ErrorBox,
   Field,
+  IsolationBadge,
   Loading,
+  Safe,
 } from '../components/ui';
 import { LOCALES } from '../../shared/constants';
 import type { Locale } from '../../shared/ipc';
 import type { DoctorReport, ReconcileReport } from '../../shared/types';
-import { formatTimestamp } from '../../shared/format';
+import { formatTimestamp, safeInline, safeText } from '../../shared/format';
 
 export function SettingsView() {
   const { t, locale, setLocale, info, notify } = useApp();
@@ -81,6 +83,7 @@ export function SettingsView() {
         ) : null}
       </dl>
       <DiagnosticsSection />
+      <McpStatusSection />
       <McpSection />
       <TokensSection />
     </section>
@@ -180,7 +183,12 @@ function DiagnosticsSection() {
                       ))}
                       {b.capabilities ? (
                         <div className="muted">
-                          {t('settings.backend.isolation', { level: b.capabilities.isolation })}
+                          {t('settings.backend.isolation', {
+                            level: t(`isolation.${b.capabilities.isolation}`),
+                          })}{' '}
+                          {b.capabilities.isolation === 'none' ? (
+                            <IsolationBadge level="none" />
+                          ) : null}
                         </div>
                       ) : null}
                     </td>
@@ -197,7 +205,7 @@ function DiagnosticsSection() {
                   {t(`settings.level.${c.level}`)}
                 </Badge>{' '}
                 <strong className="plain">{c.title}</strong>
-                {c.detail ? <div className="plain muted small">{c.detail}</div> : null}
+                {c.detail ? <div className="plain muted small">{safeText(c.detail)}</div> : null}
                 {c.hint && c.level !== 'ok' ? <div className="plain small">{c.hint}</div> : null}
               </li>
             ))}
@@ -224,7 +232,8 @@ function DiagnosticsSection() {
             <ul className="plain-list">
               {[...rec.orphans, ...rec.ghosts, ...rec.interrupted].map((e) => (
                 <li key={`${e.id}`} className="plain">
-                  <code>{e.id}</code> ({e.backend}): {e.detail}
+                  <code>{safeInline(e.id, 80)}</code> ({safeInline(e.backend, 30)}):{' '}
+                  {safeText(e.detail)}
                 </li>
               ))}
             </ul>
@@ -248,6 +257,108 @@ function DiagnosticsSection() {
         >
           <p>{t('settings.reconcile.confirm')}</p>
         </ConfirmDialog>
+      ) : null}
+    </>
+  );
+}
+
+// -- MCP status -------------------------------------------------------------------------------------------------
+
+/**
+ * Which agent contexts are configured, which HTTP tokens exist and when each agent last acted. The MCP server is
+ * a separate process (stdio per agent or HTTP with tokens) that keeps no "running" flag in the shared state, so
+ * the status shows what can be observed: the configuration, the tokens and the audit log.
+ */
+function McpStatusSection() {
+  const { t, navigate } = useApp();
+  const st = useQuery('mcp:status', undefined, { pollMs: 10000 });
+  const s = st.data;
+  return (
+    <>
+      <h2>{t('settings.mcpStatus')}</h2>
+      <p className="muted">{t('settings.mcpStatus.hint')}</p>
+      {st.error ? <ErrorBox error={st.error} /> : null}
+      {!s && st.loading ? <Loading /> : null}
+      {s ? (
+        <>
+          <dl className="kv-list" data-testid="mcp-summary">
+            <dt>{t('settings.mcpStatus.contexts')}</dt>
+            <dd>{s.contexts.length}</dd>
+            <dt>{t('settings.mcpStatus.http')}</dt>
+            <dd>
+              {t('settings.mcpStatus.tokens', {
+                active: s.tokens.active,
+                revoked: s.tokens.revoked,
+              })}
+              {s.tokens.lastUsedAt
+                ? ` · ${t('settings.mcpStatus.lastTokenUse', { time: formatTimestamp(s.tokens.lastUsedAt) })}`
+                : ` · ${t('settings.mcpStatus.neverUsed')}`}
+            </dd>
+            <dt>{t('settings.mcpStatus.lastActivity')}</dt>
+            <dd>
+              {s.lastActivityAt ? formatTimestamp(s.lastActivityAt) : t('settings.mcpStatus.none')}
+            </dd>
+          </dl>
+          {s.contexts.length === 0 ? (
+            <p className="muted">{t('settings.mcpStatus.noContexts')}</p>
+          ) : (
+            <div className="table-wrap">
+              <table>
+                <caption className="sr-only">{t('settings.mcpStatus')}</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">{t('policy.context')}</th>
+                    <th scope="col">{t('policy.profile')}</th>
+                    <th scope="col">{t('settings.mcpStatus.lastActivity')}</th>
+                    <th scope="col">{t('settings.mcpStatus.activeTokens')}</th>
+                    <th scope="col">{t('settings.tokens.lastUsed')}</th>
+                    <th scope="col">{t('sandboxes.col.actions')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {s.contexts.map((c) => (
+                    <tr key={c.id}>
+                      <th scope="row">
+                        <Safe text={c.id} max={80} />
+                      </th>
+                      <td>
+                        <Safe text={c.profile} max={80} />
+                      </td>
+                      <td>
+                        {c.lastActivityAt ? (
+                          <>
+                            <span className="mono">{formatTimestamp(c.lastActivityAt)}</span>
+                            <div className="muted small">
+                              <code>{safeInline(c.lastAction ?? '', 80)}</code>
+                            </div>
+                          </>
+                        ) : (
+                          t('settings.mcpStatus.none')
+                        )}
+                      </td>
+                      <td>{c.activeTokens}</td>
+                      <td className="mono">
+                        {c.lastTokenUseAt ? formatTimestamp(c.lastTokenUseAt) : '—'}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          disabled={!c.lastActivityAt}
+                          aria-label={t('settings.mcpStatus.showAuditNamed', {
+                            name: safeInline(c.id, 60),
+                          })}
+                          onClick={() => navigate({ view: 'audit', actor: `agent:${c.id}` })}
+                        >
+                          {t('settings.mcpStatus.showAudit')}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       ) : null}
     </>
   );
@@ -363,10 +474,12 @@ function TokensSection() {
             <tbody>
               {tokens.data.map((k) => (
                 <tr key={k.id}>
-                  <th scope="row" className="plain">
-                    {k.label}
+                  <th scope="row">
+                    <Safe text={k.label} max={80} />
                   </th>
-                  <td className="plain">{k.contextId}</td>
+                  <td>
+                    <Safe text={k.contextId} max={80} />
+                  </td>
                   <td className="mono">{formatTimestamp(k.createdAt)}</td>
                   <td className="mono">{k.lastUsedAt ? formatTimestamp(k.lastUsedAt) : '—'}</td>
                   <td>
@@ -381,7 +494,9 @@ function TokensSection() {
                       <button
                         type="button"
                         className="danger"
-                        aria-label={t('settings.tokens.revokeNamed', { label: k.label })}
+                        aria-label={t('settings.tokens.revokeNamed', {
+                          label: safeInline(k.label, 60),
+                        })}
                         onClick={() => setRevoke(k.id)}
                       >
                         {t('settings.tokens.revoke')}

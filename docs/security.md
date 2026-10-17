@@ -48,12 +48,17 @@ Plain statements:
 - A `container` sandbox is **not** a security boundary against a determined attacker with a kernel
   exploit. It is good protection against accidents, careless agents and most untrusted scripts.
 - `none` provides no protection at all. It exists for trusted code and as a reference backend.
-- **Isolation minimums are an agent rule.** `isolation.min`, `network_open`, `mounts` and
-  `secrets_env` of a profile (and the host zone minimums) are enforced against agent contexts as a
-  denial. The built-in `human` profile, i.e. you in the CLI or GUI, does **not** enforce them: you
-  may run a `container` or a `none` sandbox for anything you confirm. What stays for you are
-  confirmations for the risky cases (isolation `none`, untrusted templates, shared hosts, secrets
-  as environment variables or files) and one rule that follows the concept above: **network mode
+- **Isolation minimums of a profile are an agent rule.** `isolation.min`, `network_open`, `mounts`
+  and `secrets_env` of a profile are enforced against agent contexts as a denial. The built-in
+  `human` profile, i.e. you in the CLI or GUI, does **not** enforce them: you may run a `container`
+  or a `none` sandbox on your workstation for anything you confirm. **Host zone minimums are
+  not a profile rule but a property of the machine, so they bind you too:** a `shared` host
+  refuses a sandbox below `hardened` and a `restricted` host one below `vm` (and a host's
+  `min_isolation` raises that), whoever asks and whatever you confirm. A denied create names the host
+  and the missing level; the way out is a stronger backend or runtime, another host, or an honest
+  change of the host profile (`abox host`). What stays for you are confirmations for the risky cases
+  (isolation `none`, untrusted templates, `shared`/`restricted` hosts that do meet their minimum,
+  secrets as environment variables or files) and one rule that follows the concept above: **network mode
   `open` below `hardened` is never silent.** `abox create --net open` (or a template that asks
   for `open`) on a `container` shows the risk (unrestricted internet access without a hardened
   sandbox) and needs `y` on the prompt or `--yes`, in every approval mode; the GUI asks the same
@@ -92,7 +97,7 @@ Mount checks happen in the core, not in the backend.
   inside a hidden directory directly below the home directory (`~/.claude`, `~/.codex`, `~/.cache`,
   ...), because those hold credentials and tool configuration. **Humans are not limited by roots.**
   The built-in `human` profile has no roots check, so a project reached through a symlink to another
-  disk (`~/Projekte` -> `/data/Projekte`) works; only the forbidden-path list (checked on the
+  disk (`~/projects` -> `/mnt/data/projects`) works; only the forbidden-path list (checked on the
   resolved path) and abox's own directories apply, to everyone. If a `human` profile in
   `policy.yaml` sets `workspace.roots` (or `mounts.roots`), those roots are honoured, and the path
   as typed as well as the resolved path are compared with the resolved roots. Agents are always
@@ -246,12 +251,26 @@ Properties:
   revision and content hashes (never the content), so it shows in the hash chain. Attempts are logged, including calls of agents to MCP tools that do not
   exist (`policy_set`, `approve`, `ssh_exec`, ...): the audit log gets `mcp.unknown_tool` with the
   tool name and the agent context (rate limited; argument values are never recorded).
-- **A broken edit never drops the rules.** A running abox process (MCP server, GUI) that finds an
-  invalid `policy.yaml` keeps the last valid policy in force, writes a `policy.reload_failed`
-  audit entry (with the first problems and their lines, once per changed file), emits a
-  `policy.reload_failed` event (the MCP server prints it on its stderr) and shows the problem in
-  `abox policy show` until the file is valid again; it never falls back to the built-in default or to "allow". A process that is
-  _started_ while the file is invalid refuses to start instead. Check with `abox policy validate`.
+- **A broken `policy.yaml` fails closed (degraded mode).** Any abox process that finds an invalid
+  (or unreadable) `policy.yaml` - one that is started with it, or a running one (MCP server, GUI)
+  after an edit - never falls back to the built-in default or to "allow", and does not keep granting
+  under the old rules either. It writes a `policy.reload_failed` audit entry (with the first
+  problems and their lines, once per changed file), emits a `policy.reload_failed` event (the MCP
+  server prints it on its stderr) and goes into degraded mode until the file is valid again:
+  - **Refused** (`policy_denied`, exit 3, with the problems and a hint): everything that creates
+    or grants - `create`, `extend` and other access requests, `approvals approve`, `template build`,
+    `token create` - for you as well, and **every request of an agent context**, reads included
+    (without a valid policy nothing says what an agent may do; its sandboxes keep running until
+    their TTL, which is still enforced). An MCP server that is started now refuses to start with
+    the same message.
+  - **Still possible for you:** look and clean up - `ls`, `inspect`, `stop`, `rm`, `logs`, `exec`,
+    `doctor` (the policy is a failed check with the issues), `audit` / `audit verify`, `approvals
+ls` and `approvals deny`, `template ls/show/validate`, `policy show/validate/edit`. These
+    resolve your context with the last valid policy (the latest revision in the state database, or
+    the restrictive built-in one with the human context only when none was ever recorded; `abox
+policy show` says which). The broken file is not stored as a revision.
+  - A valid file ends it (a running process notices within 500 ms; `abox policy edit` does it at
+    once). Check with `abox policy validate`.
 - **Fail closed.** If nobody decides before the timeout, the request is denied.
 
 ## Project template trust
@@ -306,6 +325,16 @@ see [hosts and SSH](hosts-ssh.md) for setup and the list of what has been verifi
 - **Strict host-key checking.** The fingerprint must be confirmed, and a changed key blocks the
   connection.
 - **No agent forwarding.** The SSH agent is not reachable from within a sandbox.
+- **Nothing of your local session reaches the server.** No agent, X11 or `LocalCommand`; no
+  environment variables (`SendEnv` from your ssh config is cleared, last in the generated config);
+  no forwards but the engine socket (the tunnel is refused when your ssh config adds a
+  `LocalForward`/`RemoteForward`/`DynamicForward`, checked with `ssh -G`).
+- **The host key is read along the real route.** Behind a `ProxyJump` or `ProxyCommand` the key is
+  scanned through the same route (not directly), so the fingerprint you confirm is that of the
+  machine abox logs in to.
+- **A tunnel does not outlive abox.** A supervisor stops the forwarded socket within about a second
+  after the abox process was killed; the next run cleans up leftovers (never those of another live
+  abox process).
 - **Host zones** express trust and drive policy instead of host names:
 
 | Zone          | Meaning                                 | Default rule for agents                                        |
@@ -316,10 +345,17 @@ see [hosts and SSH](hosts-ssh.md) for setup and the list of what has been verifi
 | `restricted`  | Holds sensitive data                    | Sandboxes only as `vm`, or not at all                          |
 
 - A host can also set its own `min_isolation`; the stricter of host profile and template applies.
+- `hardened` is a property of the host's engine: a remote host reports it only when its profile
+  names a runtime (`runtimes: { docker: runsc }`) **and** the engine lists it (`/info`). The local
+  `config.yaml` runtime is never assumed on a remote machine.
 - Sandboxes must never run in the container engine that serves production services, and never with
   that engine's socket. Use a dedicated unprivileged user with a rootless engine, a separate
   network and hard quotas. Note that membership in the `docker` group is effectively root on the
-  host.
+  host. **abox enforces this for `shared` and `restricted` hosts:** a system-wide engine socket
+  (`/var/run/docker.sock`, `/run/podman/podman.sock`, ...) and an engine that is not rootless (or
+  does not say) are refused with `policy_denied` (`engine_rootful`) and the connection is closed;
+  `allow_rootful: true` in the host profile is the explicit opt-in. For `lab` and `workstation`
+  hosts a rootful engine is a warning in `abox host test` and `abox doctor`.
 - The proxy blocks private address ranges by default, so a sandbox on a host in a home or office
   network cannot reach routers or other machines there.
 
@@ -347,9 +383,20 @@ Docker backend through the real manager and checks, among others:
   through them, however the path is spelled (`/proc/self/root/...`, a symlink the sandbox planted).
   Writes into `/proc`, `/sys`, `/dev` and `/usr/local/share/abox` (also when the path resolves into
   them) are refused outright. A stopped sandbox has no process to ask: there the directory chain is checked
-  statically (no symlinks, a directory the sandbox user may write) before the engine writes.
+  statically (no symlinks, a directory the sandbox user may write) before the engine writes, and
+  reads (`sandbox_read_file`, `sandbox_list_dir`) resolve the path themselves (symlinks included) and
+  require the sandbox user's search permission on every directory and read permission on the target,
+  so `/etc/shadow`, a link to it, or a file in a root-only directory is refused after `sandbox_stop` as
+  well as while running (`policy_denied`); the workspace stays readable.
   Writing a path whose last component is a symlink replaces the link; it never writes through it.
   Reading a device, pipe, socket or directory answers `invalid_input` (not a regular file).
+- A sandbox past its TTL keeps its stopped container for export, but its egress proxy sidecar (with the
+  injected secret values) and internal network are removed at once, not at `abox gc`.
+- The archive coming out of a sandbox is hostile input: the extractor refuses absolute names and `..`,
+  never writes through a link, and checks every symlink again against the finished tree, so a chain of
+  links such as `d/sub -> ..`, `s -> d/sub`, `t -> s/..` cannot lead out of the destination;
+  hardlinks are stored once and limited in total size (1 GiB); for the export, a file name with a
+  backslash is left out and flagged instead of failing the export (`abox cp` refuses such a tree).
 - Agent context A can neither see nor influence sandboxes of context B.
 - `policy.yaml` cannot be changed through the agent path, and the attempt is audited.
 - Path canonicalization: `..`, symlinks, case, Unicode tricks.
@@ -366,12 +413,12 @@ default `pnpm test`. A failing test there is a finding, not noise.
 **What CI runs** (`.github/workflows/ci.yml`, on Linux with Node 24, for every push and pull request
 to `main` and `dev`):
 
-| Job                      | Runs                                                                                                                                                                                             | Not covered                                                 |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
-| Lint, Build              | ESLint, Prettier check, `tsc -b`                                                                                                                                                                 |                                                             |
-| Test                     | `pnpm test`: unit and process-backend contract tests, no container engine; plus the GUI's typecheck and unit tests (`pnpm --filter @abox/app typecheck` and `test`, which the root run excludes) | everything that is guarded below                            |
-| Docker integration tests | `pnpm test:docker` (`ABOX_TEST_DOCKER=1`): Docker backend, proxy, `packages/e2e` security suite against the runner's rootful Docker engine                                                       | Podman, rootless Docker, remote engines                     |
-| GUI end-to-end tests     | The Electron app with Playwright under `xvfb`, without `ABOX_TEST_DOCKER`: 24 of 28 tests run; the 4 that need Docker (terminal, template build, ssh against a throwaway sshd) skip themselves   | the Docker-guarded GUI specs, AppImage build and smoke test |
+| Job                      | Runs                                                                                                                                                                                                                     | Not covered                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| Lint, Build              | ESLint, Prettier check, `tsc -b`                                                                                                                                                                                         |                                                             |
+| Test                     | `pnpm test`: unit and process-backend contract tests, no container engine; plus the GUI's typecheck and unit tests (`pnpm --filter @abox/app typecheck` and `test`, which the root run excludes)                         | everything that is guarded below                            |
+| Docker integration tests | `pnpm test:docker` (`ABOX_TEST_DOCKER=1`): Docker backend, proxy, `packages/e2e` security suite against the runner's rootful Docker engine                                                                               | Podman, rootless Docker, remote engines                     |
+| GUI end-to-end tests     | The Electron app with Playwright under `xvfb`, without `ABOX_TEST_DOCKER`: 32 of 37 tests run; the 5 that need Docker (terminal, template build, ssh against a throwaway sshd, takeover with live usage) skip themselves | the Docker-guarded GUI specs, AppImage build and smoke test |
 
 Not run in CI: the VM backend (`ABOX_TEST_VM=1`, needs KVM), the real-keyring test
 (`ABOX_TEST_KEYRING=1`), Podman, the AppImage, other distributions, and anything that needs a real
@@ -388,8 +435,11 @@ of this documentation; it will be published per release alongside the changelog.
 - **Container isolation shares the host kernel.** A kernel or runtime vulnerability can defeat it.
   Only the `vm` level helps against that, and then only as far as QEMU/KVM does.
 - **Podman and rootless engines are not verified.** The Podman provider differs from the Docker
-  one only in the default socket; its tests are skipped without a Podman socket. With a rootless
-  engine, writable bind mounts may be read-only for the sandbox user (use `copy` workspaces).
+  one only in the default socket; its tests are skipped without a Podman socket (the suite can be
+  pointed at one, `ABOX_TEST_ENGINE_SOCKET`; it has never been run). [Which Docker-backend features are
+  expected to work on Podman, and which are unverified or known to differ](backends.md#podman-what-is-expected-to-work)
+  is listed in the backend docs. With a rootless engine, writable bind mounts may be read-only for the
+  sandbox user (use `copy` workspaces).
 - **Hardened runtimes (gVisor, Kata) are not verified.** `backends.docker.runtime` /
   `backends.podman.runtime` in `config.yaml` select one, and without it in the engine the
   backend stays at `container`, but no stronger runtime has been installed and tested with abox.
@@ -455,8 +505,10 @@ of this documentation; it will be published per release alongside the changelog.
 ### Remote hosts
 
 - Remote hosts are **only verified against a local `sshd` container with a fake engine socket**
-  (host-key handling, tunnel, ControlMaster, zone and quota rules with a provider stub). Real
-  sandboxes on a real remote rootless Docker or Podman engine have not been exercised.
+  (host-key handling, tunnel, ControlMaster, zone and quota rules with a provider stub). The
+  rootless check and the hardened-runtime check read a _fake_ engine's `/info`; no real `runsc` or
+  `kata` runtime has been run on a remote engine. Real sandboxes on a real remote rootless Docker
+  or Podman engine have not been exercised.
 - DNS rebinding resistance of the proxy is covered by unit tests of the resolve-then-connect
   logic, not by an end-to-end test with a flipping DNS server.
 
@@ -474,7 +526,7 @@ of this documentation; it will be published per release alongside the changelog.
   slash commands (`/abox:new`, `/abox:list`, ...) have not been run at all**; they need an
   interactive session. Details in `packages/agent-kit/README.md`.
 - The desktop app is unreleased (no published package). Its end-to-end tests run under a virtual
-  display (`xvfb`; 28 tests, including the Docker-guarded terminal, template and ssh ones, which
+  display (`xvfb`; 37 tests, including the Docker-guarded terminal, template, ssh and takeover ones, which
   pass locally); CI runs them without the Docker-guarded ones; they are not part of the default
   `pnpm test`. An AppImage builds and starts
   (`pnpm --filter @abox/app dist` and `smoke`), but it is neither signed nor published, and it has

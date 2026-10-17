@@ -32,6 +32,14 @@ export interface CopyOutOptions {
    * a link, and a backend that copies links verbatim anyway may ignore the option.
    */
   symlinks?: 'refuse' | 'preserve';
+  /**
+   * Called for every archive entry the backend leaves out instead of copying (a name that cannot
+   * be written safely to the host, a link that does not stay inside the copy, …); `path` is
+   * relative to the copied tree. A backend that leaves entries out must report them here (when
+   * given) rather than fail the whole copy for them in `'preserve'` mode, where the export needs a
+   * tree even when a hostile sandbox plants awkward names.
+   */
+  onSkip?: (path: string, reason: string) => void;
 }
 
 /**

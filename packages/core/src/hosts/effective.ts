@@ -10,6 +10,8 @@ export interface EffectiveSshConfig {
   port: number;
   user?: string;
   proxyJump?: string;
+  /** `ProxyCommand` as ssh prints it (tokens like `%h` unexpanded). */
+  proxyCommand?: string;
   identityFiles: string[];
   raw: Record<string, string[]>;
 }
@@ -26,11 +28,13 @@ export function parseSshG(
   }
   const first = (k: string) => raw[k]?.[0];
   const proxyJump = first('proxyjump');
+  const proxyCommand = first('proxycommand');
   return {
     hostname: first('hostname') ?? '',
     port: Number(first('port') ?? 22),
     ...(first('user') ? { user: first('user')! } : {}),
     ...(proxyJump && proxyJump !== 'none' ? { proxyJump } : {}),
+    ...(proxyCommand && proxyCommand !== 'none' ? { proxyCommand } : {}),
     identityFiles: (raw['identityfile'] ?? []).filter((f) => !defaultIdentities.includes(f)),
     raw,
   };

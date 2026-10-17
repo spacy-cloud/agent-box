@@ -8,6 +8,7 @@ import {
   ISOLATION_LEVELS,
   auditSession,
   checkHostKey,
+  closeSshConnection,
   forgetHostKey,
   importSshConfig,
   sshBinary,
@@ -18,6 +19,7 @@ import {
   type HostLimits,
   type HostProfile,
   type HostProfileInput,
+  type HostRuntimes,
   type IsolationLevel,
 } from '@abox/core';
 import type { Cli } from '../cli.js';
@@ -50,6 +52,23 @@ export function parseHostLimits(o: {
     limits.memory = o.memory.trim();
   }
   return Object.keys(limits).length > 0 ? limits : undefined;
+}
+
+/** `--runtime docker=runsc` (repeatable) -> the `runtimes` of the host profile. */
+export function parseHostRuntimes(values: string[] | undefined): HostRuntimes | undefined {
+  if (!values?.length) return undefined;
+  const out: HostRuntimes = {};
+  for (const v of values.flatMap((x) => x.split(','))) {
+    const m = /^(docker|podman)=(.+)$/.exec(v.trim());
+    if (!m) {
+      throw invalid(
+        `--runtime: expected <engine>=<runtime>, got "${safe(v)}"`,
+        'Example: --runtime docker=runsc (engine: docker or podman; the runtime must be installed in that engine).',
+      );
+    }
+    out[m[1] as 'docker' | 'podman'] = m[2]!.trim();
+  }
+  return out;
 }
 
 function address(p: HostProfile): string {
@@ -126,6 +145,15 @@ export function registerHost(program: Command, cli: Cli): void {
       collect,
     )
     .option('--engine-socket <path>', 'engine socket path ON THE HOST (rootless docker/podman)')
+    .option(
+      '--runtime <engine=runtime>',
+      'hardened OCI runtime of that engine on the host, e.g. docker=runsc (repeatable); needed for min isolation "hardened"',
+      collect,
+    )
+    .option(
+      '--allow-rootful',
+      'accept a rootful engine on a shared/restricted host (root-equivalent access; default: refused)',
+    )
     .option('--identity-file <path>', 'private key path (never its contents)')
     .option('--ssh-alias <alias>', 'use this Host alias from ~/.ssh/config')
     .option('--proxy-jump <hops>', 'jump hosts, [user@]host[:port], comma separated')
@@ -149,6 +177,8 @@ export function registerHost(program: Command, cli: Cli): void {
           zone?: HostProfile['zone'];
           backend?: string[];
           engineSocket?: string;
+          runtime?: string[];
+          allowRootful?: boolean;
           identityFile?: string;
           sshAlias?: string;
           proxyJump?: string;
@@ -173,6 +203,7 @@ export function registerHost(program: Command, cli: Cli): void {
         if (o.port !== undefined && !/^\d{1,5}$/.test(o.port))
           throw invalid(`--port: expected a port number, got "${safe(o.port)}"`);
         const limits = parseHostLimits(o);
+        const runtimes = parseHostRuntimes(o.runtime);
         const input: HostProfileInput = {
           id,
           ...(o.hostname ? { hostname: o.hostname } : {}),
@@ -181,6 +212,8 @@ export function registerHost(program: Command, cli: Cli): void {
           ...(o.zone ? { zone: o.zone } : {}),
           ...(backends.length ? { backends: backends as HostBackendKind[] } : {}),
           ...(o.engineSocket ? { engineSocket: o.engineSocket } : {}),
+          ...(runtimes ? { runtimes } : {}),
+          ...(o.allowRootful ? { allowRootful: true } : {}),
           ...(o.identityFile ? { identityFile: o.identityFile } : {}),
           ...(o.sshAlias ? { sshConfigAlias: o.sshAlias } : {}),
           ...(o.proxyJump ? { proxyJump: o.proxyJump } : {}),
@@ -195,6 +228,8 @@ export function registerHost(program: Command, cli: Cli): void {
           zone: p.zone,
           backends: p.backends,
           ...(p.limits ? { limits: p.limits } : {}),
+          ...(p.runtimes ? { runtimes: p.runtimes } : {}),
+          ...(p.allowRootful ? { allowRootful: true } : {}),
         });
         cli.success(
           p,
@@ -212,9 +247,12 @@ export function registerHost(program: Command, cli: Cli): void {
     .argument('<id>', 'host id')
     .action(async (id: string) => {
       const rt = await open();
+      const profile = rt.hostRegistry.get(id);
       const removed = rt.hostRegistry.remove(id);
-      if (!removed) throw new AboxError('not_found', `unknown host "${safe(id)}"`);
+      if (!removed || !profile) throw new AboxError('not_found', `unknown host "${safe(id)}"`);
       await rt.tunnels.close(id);
+      // a live ssh master (ControlPersist) would keep the connection to the removed host usable
+      if (profile.kind === 'ssh') await closeSshConnection(profile, rt.hostsEnv).catch(() => false);
       rt.audit('host.remove', { host: id });
       cli.success({ id, removed }, () => `removed host ${id}`);
     });
@@ -319,7 +357,11 @@ export function registerHost(program: Command, cli: Cli): void {
     .argument('<id>', 'host id')
     .action(async (id: string) => {
       const rt = await open();
-      const removed = await forgetHostKey(rt.hostRegistry.require(id), rt.hostsEnv);
+      const profile = rt.hostRegistry.require(id);
+      const removed = await forgetHostKey(profile, rt.hostsEnv);
+      // a live ssh master skips the host key check of new connections: end it with the old key
+      await rt.tunnels.close(id);
+      await closeSshConnection(profile, rt.hostsEnv).catch(() => false);
       cli.success({ host: id, removed }, () =>
         removed ? `forgot the host key of ${id}` : `${id}: no stored key`,
       );
@@ -389,15 +431,13 @@ export function registerHost(program: Command, cli: Cli): void {
     )
     .argument('<host>', 'host id')
     .argument('[command...]', 'remote command (put "--" before it)')
-    .action(async (id: string, _cmd: string[]) => {
+    .action(async (id: string, command: string[]) => {
       const rt = await open();
       const profile = rt.hostRegistry.require(id);
       if (profile.kind !== 'ssh')
         throw invalid('"local" is this machine; there is nothing to ssh to');
-      const args = [
-        ...sshSessionArgs(profile, rt.hostsEnv),
-        ...(_cmd.length ? ['--', ..._cmd] : []),
-      ];
+      // the command follows the destination as it is; a second `--` would reach the remote shell
+      const args = sshSessionArgs(profile, rt.hostsEnv, { command });
       const session = auditSession(profile, rt.hostsEnv);
       const code = await new Promise<number>((resolve, reject) => {
         const child = spawn(sshBinary(rt.hostsEnv), args, { stdio: 'inherit', env: cli.env });
@@ -453,6 +493,20 @@ function describeHostTest(cli: Cli, r: Awaited<ReturnType<typeof testHost>>): st
           : undefined,
       ],
       ['candidates', r.engineSocketCandidates.join(', ') || undefined],
+      [
+        'engine',
+        r.engine
+          ? `${r.engine.rootless ? 'rootless' : 'ROOTFUL'}; runtimes: ${r.engine.runtimes.join(', ') || 'none reported'}`
+          : undefined,
+      ],
+      [
+        'hardened runtime',
+        r.runtimes.length
+          ? r.runtimes
+              .map((x) => `${x.engine}: ${x.runtime} (${x.available ? 'available' : 'MISSING'})`)
+              .join('; ')
+          : undefined,
+      ],
     ]),
   ];
   for (const w of r.warnings) lines.push(`${cli.style('yellow', 'warning:')} ${safe(w)}`);

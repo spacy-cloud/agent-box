@@ -6,7 +6,8 @@ import type { ApprovalView } from '@abox/core';
 import type { EventPayloads, EventChannel, Locale } from '../shared/ipc';
 import { registerIpc } from './ipc';
 import type { IpcHandle } from './ipc';
-import { openSshPty } from './ssh-pty';
+import { Askpass } from './askpass';
+import { openSshPty, sshLabel } from './ssh-pty';
 import { TtyManager, backendFromTtySession } from './tty';
 import { drawIcon } from './icons';
 import { Monitor } from './monitor';
@@ -54,6 +55,18 @@ const requireRuntime = (): AboxRuntime => {
   return runtime;
 };
 
+/**
+ * Passphrase / PIN prompts of ssh sessions are answered in a dialog of the window (see `askpass.ts`), so they
+ * never happen unseen in the background nor inside a terminal.
+ */
+const askpass = new Askpass({
+  onRequest: (ev) => {
+    showWindow();
+    send('evt:askpass', ev);
+  },
+  onEnd: (id) => send('evt:askpass-end', { id }),
+});
+
 /** Terminals: sandbox shells through the manager, ssh through the system `ssh` in a pty. */
 const tty = new TtyManager({
   send: (channel, payload) => send(channel, payload),
@@ -67,7 +80,9 @@ const tty = new TtyManager({
     if (profile.kind !== 'ssh') {
       throw new AboxError('invalid_input', `"${hostId}" is the local host, not an ssh host`);
     }
-    return openSshPty({ profile, env: rt.hostsEnv, size });
+    // Per session: its own token for the helper, revoked when ssh ends.
+    const session = askpass.forSession(sshLabel(profile));
+    return openSshPty({ profile, env: rt.hostsEnv, size, askpass: session });
   },
 });
 
@@ -129,8 +144,12 @@ function createWindow(): void {
     }
   });
   // A reload or closing the window ends every terminal session that belongs to it.
-  win.webContents.on('did-start-loading', () => tty.closeAll());
+  win.webContents.on('did-start-loading', () => {
+    askpass.cancelAll();
+    tty.closeAll();
+  });
   win.on('closed', () => {
+    askpass.cancelAll();
     tty.closeAll();
     if (mainWindow === win) mainWindow = null;
   });
@@ -161,8 +180,18 @@ async function boot(): Promise<void> {
     quit: () => app.quit(),
   });
 
+  try {
+    await askpass.start();
+  } catch (e) {
+    // Without the helper ssh asks in the terminal as before; nothing else depends on it.
+    console.error(
+      `ssh passphrase dialog unavailable: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
   ipc = registerIpc({
     tty,
+    askpass,
     getWindow: () => mainWindow,
     allowedOrigins,
     getRuntime: () => runtime,
@@ -217,6 +246,7 @@ if (!app.requestSingleInstanceLock()) {
     monitor?.stop();
     stopTtlWatch?.();
     tty.closeAll();
+    askpass.dispose();
     tray?.destroy();
     void ipc?.shutdown().catch(() => undefined);
     void runtime?.close().catch(() => undefined);

@@ -117,14 +117,15 @@ export function startTtlWatch(abox: Abox, ms?: number): () => void {
 
 /**
  * Tells the human (stderr of the server) when policy.yaml on disk turns invalid while this server runs:
- * the last valid policy stays in force, which would otherwise go unnoticed. Returns the stop function.
+ * every agent tool is refused from then on (fail closed), which would otherwise go unnoticed.
+ * Returns the stop function.
  */
 export function warnOnPolicyProblems(abox: Abox): () => void {
   return abox.onEvent((e) => {
     if (e.type !== 'policy.reload_failed') return;
     const message = typeof e.data?.['message'] === 'string' ? e.data['message'] : 'unknown problem';
     process.stderr.write(
-      `abox-mcp: warning: policy.yaml is invalid, keeping the last valid policy until it is fixed (abox policy validate): ${message.slice(0, 500)}\n`,
+      `abox-mcp: warning: policy.yaml is invalid, so every agent tool is refused until it is fixed (abox policy validate): ${message.slice(0, 500)}\n`,
     );
   });
 }

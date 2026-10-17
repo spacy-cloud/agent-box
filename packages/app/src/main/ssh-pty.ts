@@ -54,6 +54,11 @@ export interface SshPtyDeps {
   pty?: PtyModule;
   /** Environment of the ssh process (default: this process's environment). */
   processEnv?: NodeJS.ProcessEnv;
+  /**
+   * Passphrase prompts as a dialog (see `askpass.ts`): extra environment for this session (the helper program
+   * and its private socket) and the call that revokes its token once ssh has ended.
+   */
+  askpass?: { env: Record<string, string>; release(): void };
 }
 
 /** `user@host:port` for labels. Never contains anything secret (profiles hold no secrets). */
@@ -63,8 +68,8 @@ export function sshLabel(p: HostProfile): string {
 }
 
 /**
- * Starts the system `ssh` for a host profile in a pty. Passphrase and FIDO prompts therefore happen inside
- * the terminal. The Hosts view checks the host key and asks for the explicit confirmation before it opens a tab.
+ * Starts the system `ssh` for a host profile in a pty. Passphrase and PIN prompts go to the app's own dialog when
+ * `askpass` is given (otherwise they happen inside the terminal). The Hosts view checks the host key and asks for the explicit confirmation before it opens a tab.
  * No scan happens here (servers with PerSourcePenalties throttle repeated scans): `sshSessionArgs` makes ssh itself
  * strict (`StrictHostKeyChecking=yes` against abox's own known_hosts, no agent forwarding), so an unknown or changed
  * key can never connect silently, not even on a reconnect.
@@ -79,6 +84,7 @@ export async function openSshPty(d: SshPtyDeps): Promise<TerminalBackend> {
   }
   penv['TERM'] = 'xterm-256color';
   penv['COLORTERM'] = 'truecolor';
+  if (d.askpass) Object.assign(penv, d.askpass.env);
 
   const proc = pty.spawn(sshBinary(env), args, {
     name: 'xterm-256color',
@@ -93,6 +99,7 @@ export async function openSshPty(d: SshPtyDeps): Promise<TerminalBackend> {
   let result: number | null | undefined;
   let closed = false;
   proc.onExit(({ exitCode }) => {
+    d.askpass?.release();
     audit.end();
     result = closed ? null : exitCode;
     exitCb?.(result);
@@ -120,6 +127,7 @@ export async function openSshPty(d: SshPtyDeps): Promise<TerminalBackend> {
       } catch {
         /* already gone */
       }
+      d.askpass?.release();
       audit.end();
     },
     onData: (cb) => {

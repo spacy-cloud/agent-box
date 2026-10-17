@@ -5,6 +5,10 @@ Ground truth for `plugin/orca-plugin.json` and for everything the plugin does. D
 `package.json` version `1.4.224`), not from memory. The asar was extracted read-only into a scratch
 directory; nothing was installed into Orca and `~/.config/orca` was only listed, never written.
 
+> **Later check:** the manifest was also accepted by the plugin validator of Orca **1.4.227**, and
+> the CLI adapter was run. The notes below still cite 1.4.224 line numbers; installing the plugin
+> into a running Orca and the agent MCP-token expansion remain untested.
+
 **How to read the references.** Paths are relative to the extracted asar (`out/...`). The files under
 `out/shared/plugins/` are readable CommonJS with real line numbers. `out/main/index.js` is one
 minified bundle: the installer, plugin IPC and worker host sit on a few giant lines (4891, 7186,

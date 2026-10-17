@@ -640,6 +640,7 @@ export async function buildTemplate(
   o: BuildTemplateOptions = {},
 ): Promise<BuildResult> {
   const ctx = await I.context(caller);
+  I.requirePolicyValid(ctx, 'template.build', 'building images');
   if (typeof name !== 'string' || name.length === 0 || name.length > 64)
     throw new AboxError('invalid_input', 'template name required');
   const { template } = await loadTemplate(

@@ -38,6 +38,16 @@ import {
 export const DOCKER = process.env['ABOX_TEST_DOCKER'] === '1';
 export const MiB = 1024 * 1024;
 
+/**
+ * Engine socket of the suite: `ABOX_TEST_ENGINE_SOCKET` (e.g. a Podman socket), else the Docker provider's
+ * default (`DOCKER_HOST`, `/var/run/docker.sock`). The `docker` CLI helpers below talk to the same socket.
+ */
+export const ENGINE_SOCKET: string | undefined =
+  process.env['ABOX_TEST_ENGINE_SOCKET'] || undefined;
+/** `DockerProviderOptions.socketPath` for the engine of the suite (nothing when it is the default one). */
+export const engineSocketOpts = (): { socketPath?: string } =>
+  ENGINE_SOCKET ? { socketPath: ENGINE_SOCKET } : {};
+
 /** Unique per test file / process: everything labelled with it is removed by `sweepE2E`. */
 export const RUN = `e2e${randomBytes(4).toString('hex')}`;
 /**
@@ -77,7 +87,14 @@ export function docker(
     const child = execFile(
       'docker',
       args,
-      { timeout: opts.timeoutMs ?? 120_000, maxBuffer: 64 * MiB, encoding: 'utf8' },
+      {
+        timeout: opts.timeoutMs ?? 120_000,
+        maxBuffer: 64 * MiB,
+        encoding: 'utf8',
+        ...(ENGINE_SOCKET
+          ? { env: { ...process.env, DOCKER_HOST: `unix://${ENGINE_SOCKET}` } }
+          : {}),
+      },
       (err, stdout, stderr) => {
         const code = err
           ? typeof (err as { code?: unknown }).code === 'number'
@@ -334,6 +351,7 @@ export function dockerProvider(
   const { instance, extraLabels, host, ...rest } = opts;
   return createDockerProvider(host ?? { host: 'local', kind: 'local' }, {
     stopTimeoutSec: 1,
+    ...engineSocketOpts(),
     ...(instance ? { instanceId: instanceIdOf(instance) } : {}),
     ...rest,
     extraLabels: {
@@ -364,6 +382,7 @@ export async function openAbox(env: Env, o: OpenOpts = {}): Promise<Ctx> {
         h.host === 'local'
           ? shared
           : createDockerProvider(h, {
+              ...engineSocketOpts(),
               extraLabels: E2E_LABELS,
               ...(o.unscoped ? {} : { instanceId: instanceIdOf(instance) }),
               ...o.providerOpts,

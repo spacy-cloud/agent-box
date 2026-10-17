@@ -10,6 +10,18 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Remote hosts: a hardened runtime is configured per host (`runtimes: { docker: runsc }` in
+  hosts.yaml, `abox host add --runtime docker=runsc`) and checked against the remote engine, so
+  `shared` and `restricted` hosts can be used; `abox host test` shows rootless mode and runtimes.
+- GUI: "Allow permanently" opens a dialog with the proposed policy change as a diff; ssh passphrase
+  prompts are asked in a dialog (SSH_ASKPASS over a private socket, nothing stored); the Sandboxes
+  list shows "as of hh:mm:ss" and a Shell action; Settings shows MCP status (contexts, tokens, last
+  agent activity); the Policy view has a profile and limits form next to the YAML, revision history,
+  full de/en labels and isolation `none` in red; the Files tab is a lazy-loading tree; Hosts show
+  utilisation against the host limits, groups (`group.<name>` tags), engine mode and runtimes.
+- The engine tests can be pointed at a Podman socket (`ABOX_TEST_ENGINE_SOCKET`,
+  `ABOX_TEST_ENGINE=podman`); `docs/backends.md` lists which Docker features are expected to work
+  on Podman and which are unverified.
 - Live CPU, memory and process counts for running Docker/Podman sandboxes in the GUI table and
   detail view (polled every 5 s for visible running sandboxes only) and in `abox ls --stats`; new
   provider capability `stats`.
@@ -95,12 +107,24 @@ release. Nothing has been released yet.
 - **CI:** a `GUI end-to-end tests` job runs the Playwright suite of the Electron app on
   `ubuntu-24.04` with Node 24 under `xvfb` (builds node-pty, allows unprivileged user namespaces for
   Chromium's sandbox, uploads traces on failure). The specs that need Docker skip themselves there
-  (24 of 28 tests run). `docs/security.md` and `CONTRIBUTING.md` now list which test levels CI runs and
+  (32 of 37 tests run). `docs/security.md` and `CONTRIBUTING.md` now list which test levels CI runs and
   the opt-in switches (`ABOX_TEST_DOCKER`, `ABOX_TEST_DOCKER_FULL`, `ABOX_TEST_KEYRING`,
   `ABOX_TEST_VM`).
 
 ### Changed
 
+- Host limits `cpus`, `memory` and `sandboxes` are budgets of the whole host: a create or a resource
+  `access_request` is refused when the sandboxes that can still run there (running and stopped)
+  would together exceed them; the check is repeated inside the registry claim transaction.
+- Human takeover also pauses `sandbox_start`, `sandbox_stop`, `sandbox_delete`, `sandbox_snapshot`
+  and `access_request`.
+- A broken `policy.yaml` puts the manager in a fail-closed degraded mode: the human can still list,
+  inspect, stop, remove, read logs and audit, run `doctor` (which reports the problem) and fix the
+  policy; creates, access requests, approvals, template builds, token creation and every agent
+  call are refused (exit 3). This replaces "keeps the last valid policy in force".
+- `abox init --agent codex` prints the `codex mcp add` command and the TOML for
+  `~/.codex/config.toml`.
+- Host zone minimums and a host's `min_isolation` bind the human as well as agents (docs corrected).
 - The review of a project template that shadows a built-in or user template of the same name
   compares against that template; listings and MCP results mark it with `shadows`.
 - `sandbox_write_file` accepts up to 8 MiB per call (was documented as 16 MiB); an oversized call
@@ -155,6 +179,26 @@ release. Nothing has been released yet.
 
 ### Security
 
+- Reads and listings of a stopped Docker sandbox use the sandbox user's permissions:
+  `/etc/shadow`, links to it and files in root-only directories are refused instead of being read
+  as root.
+- When a sandbox expires, its egress proxy sidecar (with injected secrets) and internal network are
+  removed immediately; only the stopped container remains for export until `gc`.
+- Archive extraction (Docker and VM) re-checks every symlink against the finished tree, so link
+  chains cannot leave the destination; Docker hardlinks are stored once and capped at 1 GiB.
+- `shared` and `restricted` hosts require a rootless engine: system sockets and rootful or
+  unverifiable engines are refused (`engine_rootful`); `allow_rootful` / `--allow-rootful` is the
+  explicit opt-in.
+- ssh hardening: no local environment is sent (`SendEnv` cleared behind the user's ssh config); the
+  engine tunnel refuses LocalForward/RemoteForward/DynamicForward from the ssh config; the host-key
+  scan follows a ProxyCommand as well as a ProxyJump and no longer guesses a direct route when
+  `ssh -G` fails; `abox host rm` and `forget-key` end a live ssh ControlMaster; a killed abox no
+  longer leaves its engine tunnel running.
+- GUI: agent-written text (reasons, names, commands, logs, audit details, file names) is neutralised
+  everywhere (control, bidi and zero-width characters shown as visible escapes) and long text is
+  capped in scrollable boxes.
+- MCP tool inputs are strict: unknown parameters, nested ones too, are rejected with `invalid_input`
+  naming the key and the closest valid one, instead of being silently dropped.
 - The sandbox file APIs (`sandbox_write_file`, `sandbox_read_file`, `sandbox_list_dir`, copy in)
   act as the sandbox user. They can no longer replace root-owned files such as the proxy CA,
   `/etc/hosts` or the deadline file, even via `/proc/self/root/...` or planted symlinks. Writes into
@@ -184,6 +228,14 @@ release. Nothing has been released yet.
 
 ### Fixed
 
+- A `mount` workspace directory is claimed atomically: of several parallel creates for one
+  directory, exactly one succeeds.
+- `abox ssh <host> -- <command>` no longer sends a second `--` to the remote shell; a refused
+  `mount`/`worktree` on a remote host names the remote host and suggests `copy` or `clone`.
+- A file name with a backslash no longer blocks exports (left out, flagged, listed as skipped).
+- An agent-set `env.PATH` no longer breaks the exec wrapper; reads of procfs-like files report the
+  returned length; `listDir` tolerates entries that vanish while listing.
+- GUI: editing a policy through the form no longer reformats unrelated lines.
 - Humans are no longer limited by workspace or mount roots, so a project reached through a symlink
   that leaves `$HOME` works; explicit `human` roots in `policy.yaml` are honoured against the typed
   and the resolved path. Agents are unchanged; the forbidden-path list applies to everyone.
@@ -226,6 +278,10 @@ release. Nothing has been released yet.
   `abox policy validate`; the internal docs no longer mention the non-existent `abox policy init`
   (`abox policy edit` starts from the built-in text).
 - Status texts: the desktop app's end-to-end tests do run, and the AppImage builds.
+
+### Removed
+
+- The unused `paths.agentsFile` (contexts live in `policy.yaml`, tokens in the state database).
 
 ### Known limitations
 

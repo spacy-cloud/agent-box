@@ -131,7 +131,13 @@ describe('pending approval flow (process backend always needs approval)', () => 
       contextId: 'human',
       caller: { contextId: 'human', humanConfirmed: true },
     });
-    expect(r.s['status']).toBe('pending_approval');
+    // unknown parameters are rejected (strict input), so the flags never reach the manager
+    expect(r.s).toMatchObject({ ok: false, code: 'invalid_input' });
+    expect(String(r.s['message'])).toContain('unknown parameter "humanConfirmed"');
+    expect(await abox.listSandboxes(HUMAN)).toMatchObject({ sandboxes: [] });
+    // and without them the agent still needs the human's approval
+    const clean = await a.call('sandbox_create', args(env.project));
+    expect(clean.s['status']).toBe('pending_approval');
     expect(await abox.listSandboxes(HUMAN)).toMatchObject({ sandboxes: [] });
   });
 });
@@ -303,8 +309,11 @@ describe('security', () => {
       set: true,
       contextId: 'human',
     });
-    expect(r.s).toMatchObject({ ok: true, context_id: 'agent-a', kind: 'agent' });
+    expect(r.s).toMatchObject({ ok: false, code: 'invalid_input' });
     expect(abox.policyHash).toBe(before);
+    expect(await a.call('policy_show')).toMatchObject({
+      s: { ok: true, context_id: 'agent-a', kind: 'agent' },
+    });
   });
 
   it('writing abox policy/config through sandbox_write_file never changes the real files', async () => {

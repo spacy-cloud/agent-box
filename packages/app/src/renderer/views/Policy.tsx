@@ -3,9 +3,12 @@ import type { ResolvedProfile } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
 import { useQuery } from '../hooks';
-import { Banner, Dialog, ErrorBox, Loading, Badge } from '../components/ui';
-import { diffLines, hasChanges } from '../../shared/line-diff';
-import { formatTimestamp } from '../../shared/format';
+import { Banner, Dialog, ErrorBox, Loading, Badge, IsolationBadge, Safe } from '../components/ui';
+import { YamlEditor } from '../components/CodeEditor';
+import { PolicyForm } from '../components/PolicyForm';
+import { PolicyDiff, diffLines, hasChanges } from '../components/PolicyDiff';
+import { formatTimestamp, safeInline } from '../../shared/format';
+import { newIsolationNone } from '../../shared/policy-form';
 import type { PolicyValidation } from '../../shared/types';
 
 type Mode = 'view' | 'edit' | 'review';
@@ -13,7 +16,7 @@ type Mode = 'view' | 'edit' | 'review';
 const KNOWN_ACTORS = ['human', 'external-edit', 'system'];
 
 export function PolicyView() {
-  const { t, route, notify } = useApp();
+  const { t, notify } = useApp();
   const doc = useQuery('policy:get', undefined, { pollMs: 5000 });
   const revs = useQuery('policy:revisions', undefined, { pollMs: 8000 });
   const [mode, setMode] = useState<Mode>('view');
@@ -43,6 +46,7 @@ export function PolicyView() {
 
   const diff = useMemo(() => diffLines(baseText, draft), [baseText, draft]);
   const changed = hasChanges(diff);
+  const noneIntroduced = useMemo(() => newIsolationNone(baseText, draft), [baseText, draft]);
   const externallyChanged =
     mode !== 'view' && doc.data && doc.data.view.policy.contentHash !== baseHash;
 
@@ -90,12 +94,6 @@ export function PolicyView() {
         </div>
       </header>
 
-      {route.hint === 'permanent-allow' ? (
-        <Banner tone="info">
-          <strong>{t('policy.permanent.title')}</strong>
-          <p>{t('policy.permanent.text')}</p>
-        </Banner>
-      ) : null}
       {doc.error ? <ErrorBox error={doc.error} /> : null}
       {!doc.data && doc.loading ? <Loading /> : null}
 
@@ -143,18 +141,22 @@ export function PolicyView() {
                     <tbody>
                       {Object.entries(view.contexts ?? {}).map(([id, c]) => (
                         <tr key={id}>
-                          <th scope="row" className="plain">
-                            {id}
+                          <th scope="row">
+                            <Safe text={id} max={80} />
                           </th>
-                          <td className="plain">{c.profile}</td>
-                          <td className="plain">{(c.hosts ?? []).join(', ') || '—'}</td>
+                          <td>
+                            <Safe text={c.profile} max={80} />
+                          </td>
+                          <td>
+                            <Safe text={(c.hosts ?? []).join(', ') || '—'} max={160} />
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
               )}
-              <h2>YAML</h2>
+              <h2>{t('policy.yaml')}</h2>
               <pre className="code plain" tabIndex={0} aria-label={t('policy.yamlLabel')}>
                 {doc.data.text}
               </pre>
@@ -166,17 +168,20 @@ export function PolicyView() {
               <h2>{t('policy.editing')}</h2>
               <p className="muted">{t('policy.editHint')}</p>
               {externallyChanged ? <Banner tone="warn">{t('policy.externalChange')}</Banner> : null}
-              <label htmlFor="policy-editor" className="sr-only">
-                {t('policy.yamlLabel')}
-              </label>
-              <textarea
-                id="policy-editor"
-                className="code editor"
-                spellCheck={false}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                aria-describedby="policy-validation"
-              />
+              <div className="tpl-columns">
+                <div className="tpl-form">
+                  <PolicyForm text={draft} onText={setDraft} resolved={view.profiles ?? {}} />
+                </div>
+                <div className="tpl-yaml">
+                  <h3 className="h-small">YAML</h3>
+                  <YamlEditor
+                    value={draft}
+                    onChange={setDraft}
+                    label={t('policy.yamlLabel')}
+                    issues={validation?.issues ?? []}
+                  />
+                </div>
+              </div>
               <div id="policy-validation" aria-live="polite">
                 {validation?.ok ? <Banner tone="ok">{t('policy.valid')}</Banner> : null}
                 {validation && !validation.ok ? (
@@ -190,7 +195,8 @@ export function PolicyView() {
                               {i.line}:{i.column ?? 1}
                             </code>
                           ) : null}{' '}
-                          {i.path ? <code>{i.path}</code> : null} {i.message}
+                          {i.path ? <code>{safeInline(i.path, 120)}</code> : null}{' '}
+                          {safeInline(i.message, 300)}
                         </li>
                       ))}
                     </ul>
@@ -217,21 +223,15 @@ export function PolicyView() {
             <>
               <h2>{t('policy.reviewTitle')}</h2>
               <Banner tone="warn">{t('policy.reviewWarning')}</Banner>
-              <pre className="diff plain" tabIndex={0} aria-label={t('policy.diffLabel')}>
-                {diff
-                  .map((l, i) => ({ l, i }))
-                  .filter(({ l, i }) => l.kind !== 'same' || nearChange(diff, i, 2))
-                  .map(({ l, i }) => (
-                    <span
-                      key={i}
-                      className={l.kind === 'add' ? 'diff-add' : l.kind === 'del' ? 'diff-del' : ''}
-                    >
-                      {l.kind === 'add' ? '+ ' : l.kind === 'del' ? '- ' : '  '}
-                      {l.text}
-                      {'\n'}
-                    </span>
-                  ))}
-              </pre>
+              {noneIntroduced.length > 0 ? (
+                <Banner tone="danger" role="alert">
+                  <strong>{t('policy.isolationNone.title')}</strong>{' '}
+                  {t('policy.isolationNone.text', {
+                    keys: safeInline(noneIntroduced.join(', '), 200),
+                  })}
+                </Banner>
+              ) : null}
+              <PolicyDiff lines={diff} label={t('policy.diffLabel')} />
               {externallyChanged ? <Banner tone="warn">{t('policy.externalChange')}</Banner> : null}
               {saveError ? <ErrorBox error={saveError} /> : null}
               <div className="actions">
@@ -264,7 +264,7 @@ export function PolicyView() {
                     <th scope="col">{t('policy.rev')}</th>
                     <th scope="col">{t('audit.col.time')}</th>
                     <th scope="col">{t('audit.col.actor')}</th>
-                    <th scope="col">Hash</th>
+                    <th scope="col">{t('policy.hash')}</th>
                     <th scope="col">{t('sandboxes.col.actions')}</th>
                   </tr>
                 </thead>
@@ -282,7 +282,11 @@ export function PolicyView() {
                       </td>
                       <td className="mono">{formatTimestamp(r.ts)}</td>
                       <td className="plain">
-                        {KNOWN_ACTORS.includes(r.actor) ? t(`policy.actor.${r.actor}`) : r.actor}
+                        {KNOWN_ACTORS.includes(r.actor) ? (
+                          t(`policy.actor.${r.actor}`)
+                        ) : (
+                          <Safe text={r.actor} max={60} />
+                        )}
                       </td>
                       <td className="mono" title={r.contentHash}>
                         {r.contentHash.slice(0, 12)}
@@ -354,28 +358,12 @@ function RevisionDialog(props: {
       {q.data ? (
         <>
           <p className="muted plain">
-            {formatTimestamp(q.data.ts)} · {q.data.actor} ·{' '}
+            {formatTimestamp(q.data.ts)} · {safeInline(q.data.actor, 60)} ·{' '}
             <code title={q.data.contentHash}>{q.data.contentHash.slice(0, 12)}</code>
           </p>
           <p className="muted">{t('policy.rev.useHint')}</p>
           <h3 className="h-small">{differs ? t('policy.rev.diff') : t('policy.rev.same')}</h3>
-          {differs ? (
-            <pre className="diff plain" tabIndex={0} aria-label={t('policy.rev.diffLabel')}>
-              {diff
-                .map((l, i) => ({ l, i }))
-                .filter(({ l, i }) => l.kind !== 'same' || nearChange(diff, i, 2))
-                .map(({ l, i }) => (
-                  <span
-                    key={i}
-                    className={l.kind === 'add' ? 'diff-add' : l.kind === 'del' ? 'diff-del' : ''}
-                  >
-                    {l.kind === 'add' ? '+ ' : l.kind === 'del' ? '- ' : '  '}
-                    {l.text}
-                    {'\n'}
-                  </span>
-                ))}
-            </pre>
-          ) : null}
+          {differs ? <PolicyDiff lines={diff} label={t('policy.rev.diffLabel')} /> : null}
           <h3 className="h-small">{t('policy.rev.content')}</h3>
           <pre
             className="code plain"
@@ -390,64 +378,79 @@ function RevisionDialog(props: {
   );
 }
 
-function nearChange(diff: Array<{ kind: string }>, i: number, ctx: number): boolean {
-  for (let d = -ctx; d <= ctx; d++) {
-    const x = diff[i + d];
-    if (x && x.kind !== 'same') return true;
-  }
-  return false;
-}
-
 function ProfileCard(props: { name: string; profile: ResolvedProfile; contexts: string[] }) {
   const { t } = useApp();
   const p = props.profile;
+  const isolation: Array<[string, ResolvedProfile['isolation']['min']]> = [
+    ['min', p.isolation.min],
+    ['network_open', p.isolation.network_open],
+    ['mounts', p.isolation.mounts],
+    ['secrets_env', p.isolation.secrets_env],
+  ];
   return (
     <article className="card" aria-labelledby={`prof-${props.name}`}>
       <h3 id={`prof-${props.name}`} className="plain">
-        {props.name}{' '}
+        {safeInline(props.name, 60)}{' '}
         <Badge tone={p.approval === 'strict' ? 'warn' : p.approval === 'open' ? 'info' : 'neutral'}>
           {t(`policy.approval.${p.approval}`)}
         </Badge>
       </h3>
       {props.contexts.length > 0 ? (
         <p className="muted small plain">
-          {t('policy.usedBy', { contexts: props.contexts.join(', ') })}
+          {t('policy.usedBy', { contexts: safeInline(props.contexts.join(', '), 200) })}
         </p>
       ) : null}
       <dl className="kv-list">
         <dt>{t('policy.templates')}</dt>
-        <dd className="plain">{p.templates.join(', ')}</dd>
+        <dd className="plain">{safeInline(p.templates.join(', '), 300)}</dd>
         <dt>{t('policy.limits')}</dt>
         <dd className="plain">
-          {p.limits.sandboxes} {t('policy.sandboxes')}, {p.limits.cpus} CPU, {p.limits.memory}, TTL{' '}
-          {p.limits.ttl}
+          {t('policy.limitsValue', {
+            sandboxes: p.limits.sandboxes,
+            cpus: p.limits.cpus,
+            memory: p.limits.memory,
+            ttl: p.limits.ttl,
+          })}
         </dd>
         <dt>{t('policy.workspace')}</dt>
         <dd className="plain">
-          {p.workspace.modes.join(', ')} ({p.workspace.roots.join(', ')})
+          {p.workspace.modes.join(', ')} ({safeInline(p.workspace.roots.join(', '), 300)})
         </dd>
         <dt>{t('policy.network')}</dt>
         <dd className="plain">
           {p.network.modes.map((m) => t(`network.${m}`)).join(', ')}
           {p.network.allow_presets.length > 0 ? ` · ${p.network.allow_presets.join(', ')}` : ''}
+          {p.network.allow.length > 0 ? ` · ${safeInline(p.network.allow.join(', '), 300)}` : ''}
+        </dd>
+        <dt>{t('policy.images')}</dt>
+        <dd className="plain">
+          {safeInline(p.images.registries.join(', '), 300) || t('common.none')}
         </dd>
         <dt>{t('policy.mounts')}</dt>
         <dd className="plain">
           {p.mounts === null
             ? t('policy.denied')
-            : `${p.mounts.roots.join(', ')} (${p.mounts.access.join('/')})`}
+            : `${safeInline(p.mounts.roots.join(', '), 300)} (${p.mounts.access.join('/')})`}
         </dd>
         <dt>{t('policy.secrets')}</dt>
         <dd className="plain">
-          {p.secrets.allowed.join(', ') || t('common.none')} ({p.secrets.inject.join('/')})
+          {safeInline(p.secrets.allowed.join(', '), 300) || t('common.none')} (
+          {p.secrets.inject.join('/')})
         </dd>
         <dt>{t('policy.isolation')}</dt>
-        <dd className="plain">
-          min {p.isolation.min}, open network {p.isolation.network_open}, mounts{' '}
-          {p.isolation.mounts}
+        <dd>
+          <ul className="plain-list">
+            {isolation.map(([key, level]) => (
+              <li key={key}>
+                {t(`policy.isolation.${key}`)} <IsolationBadge level={level} />
+              </li>
+            ))}
+          </ul>
         </dd>
+        <dt>{t('policy.execApproval')}</dt>
+        <dd>{p.exec.approval ? t('common.yes') : t('common.no')}</dd>
         <dt>{t('policy.hosts')}</dt>
-        <dd className="plain">{p.hosts.join(', ')}</dd>
+        <dd className="plain">{safeInline(p.hosts.join(', '), 300)}</dd>
       </dl>
     </article>
   );

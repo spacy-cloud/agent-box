@@ -257,4 +257,133 @@ describe.skipIf(!dockerEnabled)('sandbox file APIs act as the sandbox user (real
       (x: Error & { code?: string }) => x.code === 'not_found' || x.code === 'invalid_input',
     );
   });
+  it('a stopped sandbox is read with the permissions of the sandbox user, like a running one', async () => {
+    const s = await sb();
+    await run(
+      s,
+      'mkdir -p /workspace/d /workspace/sub && echo ok > /workspace/d/f.txt && ' +
+        'ln -s /etc/shadow /workspace/shadow-link && ln -s /etc /workspace/etc-link && ' +
+        'ln -s d/f.txt /workspace/rel-link && ln -s /workspace/d /workspace/dir-link && ' +
+        'ln -s ../../etc/shadow /workspace/sub/up-link && ln -s /workspace/sub/up-link /workspace/chain && ' +
+        'ln -s /root /workspace/root-link && echo mine > /tmp/tmp-file',
+    );
+    // a root-only directory holding a world-readable file, and a root-only file in a world-readable one
+    await provider.exec(s.id, {
+      command:
+        'mkdir -m 700 /opt/locked && echo secret > /opt/locked/f && chmod 644 /opt/locked/f && ' +
+        'echo hidden > /opt/hidden && chmod 600 /opt/hidden',
+      user: 'root',
+    });
+    const refused = [
+      '/etc/shadow',
+      '/workspace/shadow-link',
+      '/workspace/etc-link/shadow',
+      '/workspace/chain', // a chain of links ending at /etc/shadow
+      '/workspace/sub/../etc-link/shadow',
+      '/opt/locked/f', // no search permission on the directory
+      '/opt/hidden',
+      '/workspace/root-link/.profile',
+      '/etc/../etc/shadow',
+    ];
+    const readable: Array<[string, string]> = [
+      ['/workspace/d/f.txt', 'ok\n'],
+      ['/workspace/rel-link', 'ok\n'],
+      ['/workspace/dir-link/f.txt', 'ok\n'],
+      ['/workspace/sub/../d/f.txt', 'ok\n'],
+      ['/workspace/d/../d/./f.txt', 'ok\n'],
+      ['/etc/hostname', ''], // world-readable (content differs per container)
+    ];
+    const probe = async (): Promise<void> => {
+      for (const p of refused) {
+        await expect(provider.readFile(s.id, p, 100), p).rejects.toMatchObject(denied);
+      }
+      for (const [p, content] of readable) {
+        const r = await provider.readFile(s.id, p, 100);
+        if (content) expect(r.data.toString(), p).toBe(content);
+      }
+      await expect(provider.listDir(s.id, '/opt/locked'), '/opt/locked').rejects.toMatchObject(
+        denied,
+      );
+      await expect(provider.listDir(s.id, '/root'), '/root').rejects.toMatchObject(denied);
+      await expect(provider.listDir(s.id, '/workspace/root-link')).rejects.toMatchObject(denied);
+      expect((await provider.listDir(s.id, '/workspace/dir-link')).map((e) => e.name)).toEqual([
+        'f.txt',
+      ]);
+      expect((await provider.listDir(s.id, '/workspace/sub/../d')).map((e) => e.name)).toEqual([
+        'f.txt',
+      ]);
+      await expect(provider.readFile(s.id, '/workspace/d', 100)).rejects.toMatchObject({
+        code: 'invalid_input',
+      });
+      await expect(provider.listDir(s.id, '/workspace/d/f.txt')).rejects.toMatchObject({
+        code: 'invalid_input',
+      });
+      await expect(provider.readFile(s.id, '/workspace/none', 100)).rejects.toMatchObject({
+        code: 'not_found',
+      });
+      await expect(provider.listDir(s.id, '/workspace/none')).rejects.toMatchObject({
+        code: 'not_found',
+      });
+    };
+    await probe(); // running: the kernel decides
+    await provider.stop(s.id);
+    await probe(); // stopped: the same answers
+    // a link loop is an error, not a hang
+    await provider.start(s.id);
+    await run(s, 'ln -s loop-b /workspace/loop-a; ln -s loop-a /workspace/loop-b');
+    await provider.stop(s.id);
+    await expect(provider.readFile(s.id, '/workspace/loop-a', 100)).rejects.toMatchObject({
+      code: 'not_found',
+    });
+    await provider.start(s.id);
+    await expect(provider.readFile(s.id, '/workspace/loop-a', 100)).rejects.toMatchObject({
+      code: 'not_found',
+    });
+  });
+
+  it('a stopped sandbox: the workspace stays readable, a symlink to /etc/shadow does not', async () => {
+    const s = await sb();
+    await provider.writeFile(s.id, '/workspace/notes.txt', Buffer.from('keep me'));
+    await run(s, 'ln -s /etc/shadow /workspace/s');
+    await provider.stop(s.id);
+    expect((await provider.readFile(s.id, '/workspace/notes.txt', 100)).data.toString()).toBe(
+      'keep me',
+    );
+    await expect(provider.readFile(s.id, '/etc/shadow', 100)).rejects.toMatchObject(denied);
+    await expect(provider.readFile(s.id, '/workspace/s', 100)).rejects.toMatchObject(denied);
+  });
+
+  it('procfs files report the length that was returned, and listing /proc/self/fd survives vanishing entries', async () => {
+    const s = await sb();
+    const all = await provider.readFile(s.id, '/proc/self/environ', 1_000_000);
+    expect(all.data.length).toBeGreaterThan(0);
+    expect(all).toMatchObject({ size: all.data.length, truncated: false });
+    const part = await provider.readFile(s.id, '/proc/self/environ', 6);
+    expect(part.data.length).toBe(6);
+    expect(part.truncated).toBe(true);
+    expect(part.size).toBeGreaterThan(6);
+    // an ordinary file keeps its stated size
+    await provider.writeFile(s.id, '/workspace/five', Buffer.from('12345'));
+    expect(await provider.readFile(s.id, '/workspace/five', 3)).toMatchObject({
+      size: 5,
+      truncated: true,
+    });
+    expect(await provider.readFile(s.id, '/workspace/five', 10)).toMatchObject({
+      size: 5,
+      truncated: false,
+    });
+    await provider.writeFile(s.id, '/workspace/empty', Buffer.alloc(0));
+    expect(await provider.readFile(s.id, '/workspace/empty', 10)).toMatchObject({
+      size: 0,
+      truncated: false,
+    });
+    // the fd directory of the listing process changes while it is listed
+    for (let i = 0; i < 15; i++) {
+      const entries = await provider.listDir(s.id, '/proc/self/fd');
+      expect(entries.length).toBeGreaterThan(0);
+    }
+    for (let i = 0; i < 5; i++) await provider.listDir(s.id, '/proc/self/task');
+    // a real error of the listing is still one
+    await expect(provider.listDir(s.id, '/root')).rejects.toMatchObject(denied);
+  });
 });

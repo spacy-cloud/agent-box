@@ -747,6 +747,45 @@ describe.skipIf(!DOCKER)('security: hardening checks (real Docker through the ma
   });
 
   // =================================================================================================================
+  describe('a stopped sandbox is read with the permissions of the sandbox user', () => {
+    it('/etc/shadow and links to it are refused after sandbox_stop, just like while running; the workspace stays readable', async () => {
+      const id = (
+        await ctx.create(A, {
+          template: 'alpine-min',
+          workspace: { mode: 'copy', path: env.app },
+        })
+      ).sandbox.id;
+      try {
+        await sh(ctx, A, id, 'ln -s /etc/shadow /workspace/shadow-link; ln -s /etc /workspace/etc');
+        const probe = async (): Promise<void> => {
+          for (const p of ['/etc/shadow', '/workspace/shadow-link', '/workspace/etc/shadow']) {
+            expect(await errorOf(ctx.abox.readFile(A, id, p)), p).toMatchObject({
+              code: 'policy_denied',
+            });
+          }
+          expect(await errorOf(ctx.abox.listDir(A, id, '/root'))).toMatchObject({
+            code: 'policy_denied',
+          });
+          expect(
+            (await ctx.abox.readFile(A, id, '/workspace/README.md')).content.length,
+          ).toBeGreaterThan(0);
+          expect((await ctx.abox.listDir(A, id, '/workspace')).map((e) => e.name)).toContain(
+            'README.md',
+          );
+        };
+        await probe();
+        await ctx.abox.stopSandbox(A, id);
+        expect((await ctx.abox.inspectSandbox(A, id)).state).toBe('stopped');
+        await probe();
+      } finally {
+        await ctx.abox.removeSandbox(HUMAN, id).catch(() => undefined);
+        const i = ctx.created.indexOf(id);
+        if (i >= 0) ctx.created.splice(i, 1);
+      }
+    }, 120_000);
+  });
+
+  // =================================================================================================================
   describe('agent context A cannot see or influence the sandboxes of context B', () => {
     let a = '';
     let b = '';

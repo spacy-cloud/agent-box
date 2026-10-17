@@ -30,7 +30,17 @@ abox.close();
 `providers` is the only place a backend is wired in (core never imports a backend package). Open loads
 `config.yaml`, `policy.yaml` (built-in default policy without a file), the SQLite state (WAL, shared with
 other processes) and runs the light reconcile. `policy.yaml` is re-read when it changes on disk
-(checked at most every 500 ms); a broken edit keeps the last good policy and writes `policy.reload_failed`. A valid
+(checked at most every 500 ms). A broken `policy.yaml` does not stop `open`: the manager runs in **degraded mode**
+(`Internals.policyProblem`, shown as `showPolicy().policy.reloadError` with `issues` and `fallback`, audited as
+`policy.reload_failed` once per changed file, never stored as a revision). The in-force policy is then only the
+basis for the human's view and cleanup: the last valid one (in memory, or at startup the latest `policy_revisions`
+row), or `restrictivePolicy()` (the human context only) when no valid revision exists. Fail closed: `context()`
+refuses every agent context (`policy_denied`, `details.reason: 'policy_invalid'`, the issues), and
+`requirePolicyValid()` refuses what creates or grants, for the human too: `createSandbox`, `accessRequest` /
+`extendTtl`, `approve`, `applyApprovedAccess`, `buildTemplate`, `createAgentToken`. Everything else for the human
+keeps working (list/inspect/start/stop/remove/exec/logs, `doctor` with a `policy.invalid` check, audit, approvals
+list/deny, templates list/show/validate, `showPolicy`/`validatePolicy`/`setPolicy`). A valid file, or `setPolicy`,
+ends it. (Policy text handed in through `policyText` is not a file: an invalid one still throws.) A valid
 edit made outside abox (by hand, or while no manager ran: detected when the file is opened) is stored as a revision with
 actor `external-edit` and audited as `policy.external_edit` (`oldRevision`, `oldHash`, `revision`, `newHash`, `bytes`,
 `detected` = `reload` | `startup`; never the content), so every policy change is in the hash chain. Changes through
@@ -152,7 +162,13 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
   key + different request -> `conflict`; concurrent calls in any number of processes -> one sandbox) ->
   host (agents: allowed hosts only) -> template (project templates untrusted until approved) -> backend
   capabilities -> canonicalize paths (forbidden: abox config/data/cache/run dirs, every sandbox dir, `~/.ssh`
-  ... ) -> `evaluateCreate` -> approval gate -> **registry row `preparing`** (quota re-checked atomically) ->
+  ... ) -> `evaluateCreate` (advisory: it sees a snapshot) -> approval gate -> **registry row `preparing`**
+  (`SandboxRegistry.claim`: the owner quota, the host quotas `limits.sandboxes/cpus/memory` summed over the live
+  sandboxes of the host (`Internals.hostUsage`: preparing/created/running/stopped, not stale; every sandbox
+  reserves its configured cpus and memory) and the exclusive use of a `mount` workspace directory are decided
+  _inside_ the claim's write transaction, so parallel creates in any number of processes cannot overshoot; a
+  `mount` workspace is held from the claim on (`workspace: {mode: 'mount', claim: <path>}`, replaced by the
+  prepared record), and failed/removed rows release it) ->
   image prepare (own audit step `image.build` when not cached) -> workspace -> secrets -> `provider.create`+`start`
   -> registry `running` -> audit. Any failure removes everything created so far and marks the row `failed`
   (the `requestId` is released for a retry). IDs are `<host>/<8 hex>`.
@@ -354,13 +370,26 @@ unknown/revoked tokens or contexts no longer in the policy), `revokeAgentToken(c
 - SQLite (`state.db`): sandboxes, approvals, audit (hash chain), template_trust, policy_revisions, processes,
   host_cache, agent_tokens, **template_pins** (migration 2), **snapshots** and the per-sandbox egress cursor
   (`net_cursor_ts`, `net_cursor_seen` on `sandboxes`; migration 3), the approved snapshot of a trusted
-  template (migration 4) and the policy items of an approval (`approvals.items`, migration 5). A sandbox row is claimed (`preparing`) _before_ anything
+  template (migration 4), the policy items of an approval (`approvals.items`, migration 5) and
+  **`human_sessions`** (migration 6: the interactive terminals a human holds in a sandbox, one row each with
+  `heartbeat_at`; a row without a heartbeat for 20 s is dead; see "Human takeover" below). A sandbox row is claimed (`preparing`) _before_ anything
   is created; `effective.creator` (pid/host) lets other processes recognise a dead creator.
 - Registry rows never contain secret values: only refs (`effective.keyringRefs`), injection kinds, hosts.
 - `<dataDir>/sandboxes/<short>/` workspace staging per sandbox; `<dataDir>/exports/`; `<logsDir>/<short>/exec-*.log`.
 - Secret values live in the keyring; the manager re-reads them to mask output of existing sandboxes.
 
 ## Decisions / things to know
+
+- **Human takeover.** While a live `human_sessions` row exists for an agent-owned sandbox, the manager answers
+  every agent call that runs code in it or changes it with `conflict` ("paused: a human is working in sandbox
+  ..."; `details.reason: 'human_attached'`; audited once per ten seconds and action as a `deny`): `exec`,
+  `startProcess`, `stopProcess`, `writeFile`, `snapshot`, `restore`, `startSandbox`, `stopSandbox`,
+  `removeSandbox`, `accessRequest` (and `extendTtl`). Reads (inspect, list, logs, files, export) and the
+  human's own calls are never paused (`requireNotTakenOver`).
+- **Resource limits of a host are a budget.** `accessRequest` kind `resources` is checked against the other
+  sandboxes of the host (`SandboxRef.hostUsage`) and applied by reserving `max(old, new)` in one registry
+  transaction (`SandboxRegistry.atomic`) before the backend is asked; the reservation is cut back to the applied
+  values, or restored when the backend refuses.
 
 - Every public operation takes a caller, including the operator functions the concept sketched without one
   (`doctor`, `reconcile`, `gc`, `verifyAudit`, `exportAudit`, `applyApprovedAccess`); they are human only so a

@@ -137,7 +137,10 @@ Things to know:
   folders such as `~/.ssh`. For agents see [MCP identity](mcp.md#identity-and-contexts).
 - `worktree` and `mount` are not available on remote hosts, see [hosts and SSH](hosts-ssh.md).
 - A directory that a `mount` sandbox works on directly cannot be given to another sandbox (in any
-  mode) until the first one is removed: `abox create` answers `conflict` and names that sandbox.
+  mode) until the first one is removed: `abox create` answers `conflict` and names that sandbox. The
+  directory is held from the moment the sandbox is registered, and that is decided in one database
+  transaction, so several `abox create --mode mount` for one directory started at the same time give
+  it to exactly one of them (a parent or child directory counts as the same).
 
 An end-to-end example with a git repository:
 

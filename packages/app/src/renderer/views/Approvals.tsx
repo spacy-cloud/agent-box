@@ -12,8 +12,11 @@ import {
   ErrorBox,
   Loading,
   OwnerBadge,
+  ScrollText,
+  Safe,
 } from '../components/ui';
 import { ImageUseBlock, TemplateReviewPanel } from '../components/review';
+import { PolicyChangeDialog } from '../components/PolicyChangeDialog';
 import {
   approvalRows,
   kindHintKey,
@@ -22,11 +25,17 @@ import {
   riskHints,
 } from '../../shared/approval-diff';
 import type { ApprovalRow } from '../../shared/approval-diff';
-import { formatDuration, formatTimestamp, remainingMs, safeText } from '../../shared/format';
+import {
+  formatDuration,
+  formatTimestamp,
+  remainingMs,
+  safeInline,
+  safeText,
+} from '../../shared/format';
 import type { TFn } from '../i18n';
 
 export function ApprovalsView() {
-  const { t, route, navigate, notify } = useApp();
+  const { t, route, notify } = useApp();
   const [showHistory, setShowHistory] = useState(false);
   const pending = useQuery('approvals:list', { status: 'pending' }, { pollMs: 3000 });
   const history = useQuery('approvals:list', { limit: 30 }, { enabled: showHistory, pollMs: 5000 });
@@ -64,7 +73,7 @@ export function ApprovalsView() {
   }
 
   async function afterDecision(msgKey: string, a: ApprovalView) {
-    notify('ok', t(msgKey, { agent: a.requester.replace(/^agent:/, '') }));
+    notify('ok', t(msgKey, { agent: safeInline(a.requester.replace(/^agent:/, ''), 60) }));
     await Promise.all([pending.reload(), showHistory ? history.reload() : Promise.resolve()]);
     // back to the queue: the next request must not be answerable with a stray key press
     queueRef.current?.querySelector<HTMLButtonElement>('button[data-approval]')?.focus();
@@ -113,11 +122,13 @@ export function ApprovalsView() {
                     }}
                   >
                     <span className="plain">
-                      <strong>{a.requester.replace(/^agent:/, '')}</strong> &middot;{' '}
-                      {kindLabel(t, a.kind)}
+                      <strong>
+                        <Safe text={a.requester.replace(/^agent:/, '')} max={60} />
+                      </strong>{' '}
+                      &middot; {kindLabel(t, a.kind)}
                     </span>
                     <span className="muted small plain">
-                      {requestTemplateName(a.request) ?? a.sandboxId ?? ''}
+                      {safeInline(requestTemplateName(a.request) ?? a.sandboxId ?? '', 60)}
                       {a.status === 'pending'
                         ? ` · ${t('approvals.expiresIn', { time: formatDuration(remainingMs(a.expiresAt, now)) })}`
                         : ` · ${t(`approvals.status.${a.status}`)}`}
@@ -135,7 +146,7 @@ export function ApprovalsView() {
               now={now}
               onApproved={(a) => void afterDecision('approvals.approvedToast', a)}
               onDenied={(a) => void afterDecision('approvals.deniedToast', a)}
-              onPermanent={() => navigate({ view: 'policy', hint: 'permanent-allow' })}
+              onPolicyChanged={() => void pending.reload()}
             />
           ) : null}
         </div>
@@ -150,7 +161,8 @@ export function ApprovalDialog(props: {
   now: number;
   onApproved(a: ApprovalView): void;
   onDenied(a: ApprovalView): void;
-  onPermanent(): void;
+  /** The policy was changed through "allow permanently"; the request itself is still pending. */
+  onPolicyChanged?(): void;
 }) {
   const { t } = useApp();
   const a = props.approval;
@@ -159,6 +171,7 @@ export function ApprovalDialog(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
   const [showSame, setShowSame] = useState(false);
+  const [permanent, setPermanent] = useState(false);
   const isPending = a.status === 'pending';
   // What the approver needs to judge a template: the review (the file may be foreign) and the base image.
   const review = useQuery(
@@ -195,7 +208,7 @@ export function ApprovalDialog(props: {
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLElement>) {
-    if (!isPending) return;
+    if (!isPending || !e.currentTarget.contains(e.target as Node)) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       void decide('deny');
@@ -207,199 +220,220 @@ export function ApprovalDialog(props: {
   }
 
   return (
-    <section
-      className="approval-dialog"
-      role="dialog"
-      aria-modal="false"
-      aria-labelledby={titleId}
-      aria-describedby={descId}
-      tabIndex={0}
-      ref={props.dialogRef as React.RefObject<HTMLElement>}
-      onKeyDown={onKeyDown}
-      data-approval-id={a.id}
-    >
-      <h2 id={titleId}>{kindLabel(t, a.kind)}</h2>
-      <p id={descId} className="meta">
-        <OwnerBadge owner={a.requester} />
-        {a.sandboxId ? <span className="plain"> &middot; {a.sandboxId}</span> : null}
-        {' · '}
-        {t('approvals.requestedAt', { time: formatTimestamp(a.createdAt) })}
-        {isPending
-          ? ` · ${t('approvals.expiresIn', { time: formatDuration(remainingMs(a.expiresAt, props.now)) })}`
-          : null}
-      </p>
+    <>
+      <section
+        className="approval-dialog"
+        role="dialog"
+        aria-modal="false"
+        aria-labelledby={titleId}
+        aria-describedby={descId}
+        tabIndex={0}
+        ref={props.dialogRef as React.RefObject<HTMLElement>}
+        onKeyDown={onKeyDown}
+        data-approval-id={a.id}
+      >
+        <h2 id={titleId}>{kindLabel(t, a.kind)}</h2>
+        <p id={descId} className="meta">
+          <OwnerBadge owner={a.requester} />
+          {a.sandboxId ? (
+            <>
+              {' '}
+              &middot; <Safe text={a.sandboxId} max={80} />
+            </>
+          ) : null}
+          {' · '}
+          {t('approvals.requestedAt', { time: formatTimestamp(a.createdAt) })}
+          {isPending
+            ? ` · ${t('approvals.expiresIn', { time: formatDuration(remainingMs(a.expiresAt, props.now)) })}`
+            : null}
+        </p>
 
-      {!isPending ? (
-        <Banner tone="info">
-          {t(`approvals.status.${a.status}`)}
-          {a.decidedBy ? ` · ${a.decidedBy}` : ''}
-          {a.decidedAt ? ` · ${formatTimestamp(a.decidedAt)}` : ''}
-        </Banner>
-      ) : null}
+        {!isPending ? (
+          <Banner tone="info">
+            {t(`approvals.status.${a.status}`)}
+            {a.decidedBy ? ` · ${safeInline(a.decidedBy, 80)}` : ''}
+            {a.decidedAt ? ` · ${formatTimestamp(a.decidedAt)}` : ''}
+          </Banner>
+        ) : null}
 
-      {hintKey === 'approvals.kind.unknown.hint' ? <Banner tone="warn">{t(hintKey)}</Banner> : null}
+        {hintKey === 'approvals.kind.unknown.hint' ? (
+          <Banner tone="warn">{t(hintKey)}</Banner>
+        ) : null}
 
-      <AgentText text={a.reason} label={t('approvals.agentReason')} />
+        <AgentText text={a.reason} label={t('approvals.agentReason')} />
 
-      {a.reasons.length > 0 ? (
-        <>
-          <h3>{t('approvals.why')}</h3>
-          <ul className="reason-list" aria-label={t('approvals.why')}>
-            {a.reasons.map((r, i) => (
-              <li key={i} className="plain">
-                {r}
+        {a.reasons.length > 0 ? (
+          <>
+            <h3>{t('approvals.why')}</h3>
+            <ul className="reason-list" aria-label={t('approvals.why')}>
+              {a.reasons.map((r, i) => (
+                <li key={i} className="plain">
+                  {safeText(r)}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+
+        <h3>{t('approvals.risks')}</h3>
+        {hints.length === 0 && a.risks.length === 0 ? (
+          <p className="muted">{t('approvals.noRisks')}</p>
+        ) : null}
+        {hints.length > 0 ? (
+          <ul className="chips" aria-label={t('approvals.riskHints')}>
+            {hints.map((h) => (
+              <li key={h}>
+                <Badge
+                  tone={h === 'isolation_none' || h === 'open_network' ? 'strong-danger' : 'warn'}
+                >
+                  {t(`approvals.hint.${h}`)}
+                </Badge>
               </li>
             ))}
           </ul>
-        </>
-      ) : null}
+        ) : null}
+        {a.risks.length > 0 ? (
+          <ul className="risk-list">
+            {a.risks.map((r, i) => (
+              <li key={i} className="plain">
+                {safeText(r)}
+              </li>
+            ))}
+          </ul>
+        ) : null}
 
-      <h3>{t('approvals.risks')}</h3>
-      {hints.length === 0 && a.risks.length === 0 ? (
-        <p className="muted">{t('approvals.noRisks')}</p>
-      ) : null}
-      {hints.length > 0 ? (
-        <ul className="chips" aria-label={t('approvals.riskHints')}>
-          {hints.map((h) => (
-            <li key={h}>
-              <Badge
-                tone={h === 'isolation_none' || h === 'open_network' ? 'strong-danger' : 'warn'}
+        {image.data ? (
+          <>
+            <h3>{t('approvals.image.title')}</h3>
+            <ImageUseBlock use={image.data} />
+          </>
+        ) : null}
+
+        {isPending && a.kind === 'template_trust' ? (
+          <>
+            <h3>{t('approvals.review.title')}</h3>
+            {review.loading && !review.data ? (
+              <p className="muted" role="status">
+                {t('approvals.review.loading')}
+              </p>
+            ) : null}
+            {review.error ? (
+              <Banner tone="warn">
+                <span className="plain">
+                  {t('approvals.review.unavailable', {
+                    message: safeInline(review.error.message, 300),
+                  })}
+                </span>
+              </Banner>
+            ) : null}
+            {review.data ? <TemplateReviewPanel review={review.data} /> : null}
+          </>
+        ) : null}
+
+        <h3>{t('approvals.options')}</h3>
+        <div className="table-wrap">
+          <table className="diff-table">
+            <caption className="sr-only">{t('approvals.optionsCaption')}</caption>
+            <thead>
+              <tr>
+                <th scope="col">{t('approvals.col.option')}</th>
+                <th scope="col">{t('approvals.col.standard')}</th>
+                <th scope="col">{t('approvals.col.requested')}</th>
+              </tr>
+            </thead>
+            {changed.length > 0 ? (
+              <tbody>
+                <tr className="group-head">
+                  <th scope="colgroup" colSpan={3}>
+                    {t('approvals.group.changed')}
+                  </th>
+                </tr>
+                {changed.map((r) => (
+                  <DiffRow key={r.path} row={r} />
+                ))}
+              </tbody>
+            ) : null}
+            {info.length > 0 ? (
+              <tbody>
+                <tr className="group-head">
+                  <th scope="colgroup" colSpan={3}>
+                    {t('approvals.group.info')}
+                  </th>
+                </tr>
+                {info.map((r) => (
+                  <DiffRow key={r.path} row={r} />
+                ))}
+              </tbody>
+            ) : null}
+            {showSame && same.length > 0 ? (
+              <tbody>
+                <tr className="group-head">
+                  <th scope="colgroup" colSpan={3}>
+                    {t('approvals.group.same')}
+                  </th>
+                </tr>
+                {same.map((r) => (
+                  <DiffRow key={r.path} row={r} />
+                ))}
+              </tbody>
+            ) : null}
+          </table>
+        </div>
+        {changed.length === 0 ? <p className="muted">{t('approvals.noDeviation')}</p> : null}
+        {same.length > 0 ? (
+          <button
+            type="button"
+            className="linklike"
+            onClick={() => setShowSame((v) => !v)}
+            aria-expanded={showSame}
+          >
+            {showSame ? t('approvals.hideSame') : t('approvals.showSame', { count: same.length })}
+          </button>
+        ) : null}
+
+        {hintKey && hintKey !== 'approvals.kind.unknown.hint' ? (
+          <p className="muted">{t(hintKey)}</p>
+        ) : null}
+        {error ? <ErrorBox error={error} /> : null}
+
+        {isPending ? (
+          <>
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="danger"
+                disabled={busy}
+                onClick={() => void decide('deny')}
               >
-                {t(`approvals.hint.${h}`)}
-              </Badge>
-            </li>
-          ))}
-        </ul>
+                {t('approvals.deny')}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy}
+                onClick={() => void decide('approve')}
+              >
+                {t('approvals.allowOnce')}
+              </button>
+              <button type="button" className="linklike" onClick={() => setPermanent(true)}>
+                {t('approvals.allowPermanent')}
+              </button>
+            </div>
+            <p className="muted small">{t('approvals.keys')}</p>
+          </>
+        ) : null}
+      </section>
+      {permanent ? (
+        <PolicyChangeDialog
+          approval={a}
+          onClose={() => setPermanent(false)}
+          onDone={() => {
+            setPermanent(false);
+            props.onPolicyChanged?.();
+          }}
+        />
       ) : null}
-      {a.risks.length > 0 ? (
-        <ul className="risk-list">
-          {a.risks.map((r, i) => (
-            <li key={i} className="plain">
-              {r}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      {image.data ? (
-        <>
-          <h3>{t('approvals.image.title')}</h3>
-          <ImageUseBlock use={image.data} />
-        </>
-      ) : null}
-
-      {isPending && a.kind === 'template_trust' ? (
-        <>
-          <h3>{t('approvals.review.title')}</h3>
-          {review.loading && !review.data ? (
-            <p className="muted" role="status">
-              {t('approvals.review.loading')}
-            </p>
-          ) : null}
-          {review.error ? (
-            <Banner tone="warn">
-              <span className="plain">
-                {t('approvals.review.unavailable', { message: review.error.message })}
-              </span>
-            </Banner>
-          ) : null}
-          {review.data ? <TemplateReviewPanel review={review.data} /> : null}
-        </>
-      ) : null}
-
-      <h3>{t('approvals.options')}</h3>
-      <div className="table-wrap">
-        <table className="diff-table">
-          <caption className="sr-only">{t('approvals.optionsCaption')}</caption>
-          <thead>
-            <tr>
-              <th scope="col">{t('approvals.col.option')}</th>
-              <th scope="col">{t('approvals.col.standard')}</th>
-              <th scope="col">{t('approvals.col.requested')}</th>
-            </tr>
-          </thead>
-          {changed.length > 0 ? (
-            <tbody>
-              <tr className="group-head">
-                <th scope="colgroup" colSpan={3}>
-                  {t('approvals.group.changed')}
-                </th>
-              </tr>
-              {changed.map((r) => (
-                <DiffRow key={r.path} row={r} />
-              ))}
-            </tbody>
-          ) : null}
-          {info.length > 0 ? (
-            <tbody>
-              <tr className="group-head">
-                <th scope="colgroup" colSpan={3}>
-                  {t('approvals.group.info')}
-                </th>
-              </tr>
-              {info.map((r) => (
-                <DiffRow key={r.path} row={r} />
-              ))}
-            </tbody>
-          ) : null}
-          {showSame && same.length > 0 ? (
-            <tbody>
-              <tr className="group-head">
-                <th scope="colgroup" colSpan={3}>
-                  {t('approvals.group.same')}
-                </th>
-              </tr>
-              {same.map((r) => (
-                <DiffRow key={r.path} row={r} />
-              ))}
-            </tbody>
-          ) : null}
-        </table>
-      </div>
-      {changed.length === 0 ? <p className="muted">{t('approvals.noDeviation')}</p> : null}
-      {same.length > 0 ? (
-        <button
-          type="button"
-          className="linklike"
-          onClick={() => setShowSame((v) => !v)}
-          aria-expanded={showSame}
-        >
-          {showSame ? t('approvals.hideSame') : t('approvals.showSame', { count: same.length })}
-        </button>
-      ) : null}
-
-      {hintKey && hintKey !== 'approvals.kind.unknown.hint' ? (
-        <p className="muted">{t(hintKey)}</p>
-      ) : null}
-      {error ? <ErrorBox error={error} /> : null}
-
-      {isPending ? (
-        <>
-          <div className="dialog-actions">
-            <button
-              type="button"
-              className="danger"
-              disabled={busy}
-              onClick={() => void decide('deny')}
-            >
-              {t('approvals.deny')}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              disabled={busy}
-              onClick={() => void decide('approve')}
-            >
-              {t('approvals.allowOnce')}
-            </button>
-            <button type="button" className="linklike" onClick={props.onPermanent}>
-              {t('approvals.allowPermanent')}
-            </button>
-          </div>
-          <p className="muted small">{t('approvals.keys')}</p>
-        </>
-      ) : null}
-    </section>
+    </>
   );
 }
 
@@ -419,14 +453,28 @@ function DiffRow(props: { row: ApprovalRow }) {
   return (
     <tr className={r.changed ? 'row-changed' : ''}>
       <th scope="row">
-        <code className="nowrap">{r.path}</code>
+        <code className="nowrap">{safeInline(r.path, 120)}</code>
       </th>
-      <td className="plain pre-line std-col">
-        {r.standard === null ? '\u2014' : r.standard || t('common.none')}
+      <td className="std-col">
+        {r.standard === null ? (
+          '\u2014'
+        ) : (
+          <ScrollText
+            text={r.standard}
+            label={t('approvals.col.standard')}
+            empty={t('common.none')}
+          />
+        )}
       </td>
-      <td className="plain pre-line">
-        {r.changed ? <span aria-label={t('approvals.changedMark')}>{'\u0394 '}</span> : null}
-        {r.requested || t('common.none')}
+      <td>
+        <ScrollText
+          text={r.requested}
+          label={t('approvals.col.requested')}
+          empty={t('common.none')}
+          prefix={
+            r.changed ? <span aria-label={t('approvals.changedMark')}>{'\u0394 '}</span> : null
+          }
+        />
       </td>
     </tr>
   );

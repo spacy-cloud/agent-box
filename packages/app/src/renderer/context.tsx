@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState } fro
 import type { ReactNode } from 'react';
 import type { Locale, ViewName } from '../shared/ipc';
 import type { AppInfo } from '../shared/types';
+import { safeInline } from '../shared/format';
 import { translate } from './i18n';
 import type { Params, TFn } from './i18n';
 
@@ -10,8 +11,8 @@ export interface Route {
   sandboxId?: string;
   tab?: string;
   approvalId?: string;
-  /** One-shot hint shown on the target view (e.g. coming from "allow permanently"). */
-  hint?: 'permanent-allow';
+  /** Audit view: start with this actor filter (e.g. coming from the MCP status). */
+  actor?: string;
 }
 
 export interface Toast {
@@ -67,7 +68,8 @@ export function AppProvider(props: {
   const notify = useCallback(
     (kind: Toast['kind'], text: string) => {
       const id = nextId.current++;
-      setToasts((l) => [...l.slice(-3), { id, kind, text }]);
+      // Toasts often carry names or messages an agent chose: neutralised and shortened here, once for every caller.
+      setToasts((l) => [...l.slice(-3), { id, kind, text: safeInline(text, 300) }]);
       if (kind !== 'error') setTimeout(() => dismissToast(id), 6000);
     },
     [dismissToast],

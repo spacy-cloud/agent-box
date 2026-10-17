@@ -20,6 +20,7 @@ import type { ManagerChannel, ManagerHandlers } from './service';
 import { createTemplateHandlers } from './templates';
 import type { TemplateChannel } from './templates';
 import type { TtyManager } from './tty';
+import type { Askpass } from './askpass';
 
 type Input<C extends IpcChannel> = z.output<(typeof IPC)[C]>;
 
@@ -36,6 +37,8 @@ export interface IpcDeps {
   rememberProject(dir: string): void;
   /** Terminal sessions (sandbox shells and ssh) of this window. */
   tty: TtyManager;
+  /** Answers to ssh passphrase prompts (`askpass:answer`). */
+  askpass: Pick<Askpass, 'answer'>;
   /** The GUI changed something itself: refresh now. */
   poke(): void;
   progress(key: string, line: string): void;
@@ -156,6 +159,9 @@ export function registerIpc(d: IpcDeps): IpcHandle {
       const target = join(dir, basename(i.sandboxPath.replace(/\/+$/, '')) || 'copy');
       await need().abox.copyOut({ contextId: 'human' }, i.id, i.sandboxPath, target);
       return { copied: target };
+    },
+    'askpass:answer': (i) => {
+      d.askpass.answer(i.id, i.value);
     },
     'tty:open': (i) => d.tty.open(i),
     'tty:input': (i) => d.tty.input(i.sessionId, i.data),

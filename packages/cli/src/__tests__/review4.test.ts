@@ -67,10 +67,15 @@ describe('open network in the human context', () => {
 describe('command names in messages', () => {
   it('an invalid policy.yaml points to "abox policy validate"', async () => {
     t.write('abox/config/policy.yaml', 'version: 1\nprofiles: nonsense\n');
+    // a broken file does not lock the human out: `policy show` opens and names the problem
     const r = await run(t, ['policy', 'show']);
-    expect(r.code).not.toBe(0);
+    expect(r.code).toBe(0);
     const text = r.stderr + r.stdout;
     expect(text).not.toContain('policy check');
     expect(text).toContain('abox policy validate');
+    // what creates still fails, with the same pointer
+    const c = await run(t, ['create', 'host-shell', '--yes']);
+    expect(c.code).toBe(3);
+    expect(c.stderr).toContain('abox policy validate');
   });
 });

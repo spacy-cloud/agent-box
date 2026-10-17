@@ -9,7 +9,7 @@ import { canonicalizePath, checkHostPath, lexicalPath } from './paths.js';
 import { GIB, HOUR, makeContext, mkReq, type TestEnv } from './__tests__/helpers.js';
 
 /**
- * A machine where `~/Projekte` is a symlink to another disk (`/data/Projekte`): the canonical path
+ * A machine where a project folder in home is a symlink to another disk (`/mnt/data/...`): the canonical path
  * of a project lies outside the home directory.
  */
 let root: string;

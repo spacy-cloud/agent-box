@@ -1,7 +1,7 @@
 import { describe } from 'vitest';
 import { createDockerProvider } from '@abox/backend-docker';
 import { defineProviderContract, makeTestTemplate } from '@abox/contract-tests';
-import { DOCKER, E2E_LABELS, MiB, instanceIdOf, sweepE2E } from './harness.js';
+import { DOCKER, E2E_LABELS, MiB, engineSocketOpts, instanceIdOf, sweepE2E } from './harness.js';
 
 /**
  * Roadmap Phase 1 criterion 7 (docker half): the shared provider contract suite against the real Docker
@@ -18,7 +18,12 @@ if (!DOCKER) {
     createProvider() {
       return createDockerProvider(
         { host: 'local', kind: 'local' },
-        { extraLabels: E2E_LABELS, instanceId: instanceIdOf('contract'), stopTimeoutSec: 1 },
+        {
+          ...engineSocketOpts(),
+          extraLabels: E2E_LABELS,
+          instanceId: instanceIdOf('contract'),
+          stopTimeoutSec: 1,
+        },
       );
     },
     template: () =>

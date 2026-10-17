@@ -90,7 +90,7 @@ test('detail tabs: activity, files (directory + diff export), logs, snapshots, t
 
     await page.getByRole('tab', { name: 'Dateien' }).click();
     await expect(
-      page.getByRole('tabpanel').getByRole('rowheader', { name: 'README.md' }),
+      page.getByRole('tabpanel').getByRole('treeitem', { name: /README\.md/ }),
     ).toBeVisible();
     // change a file inside the sandbox through the agent, then review the diff in the GUI
     if (done.status === 'created') {

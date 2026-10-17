@@ -7,6 +7,7 @@ import {
   evaluateAccessRequest,
   evaluateCreate,
   evaluateExec,
+  hostQuotaViolations,
   type AccessRequestSpec,
   type CreateEvaluation,
   type CreateRequest,
@@ -221,6 +222,81 @@ describe('limits', () => {
       run({}, { host: { id: 'local', zone: 'workstation', limits: { memory: 'lots' } } }),
       'invalid memory limit',
     );
+  });
+  describe('host limits are quotas of the whole host', () => {
+    const host = {
+      id: 'srv',
+      zone: 'lab' as const,
+      limits: { cpus: 4, memory: '8g', sandboxes: 5 },
+    };
+    const ctx = { hosts: ['srv'], approval: 'open' };
+    it('denies a request that fits on its own but not next to the sandboxes already there', () => {
+      const r = run(ctx, {
+        host,
+        hostUsage: { cpus: 3, memoryBytes: 6 * GIB },
+        currentHostSandboxCount: 2,
+        resources: { cpus: 2, memoryBytes: 4 * GIB },
+      });
+      expectDeny(
+        r,
+        'requested cpus 2 exceeds what is left of the host limit on "srv"',
+        'applies to all sandboxes there together and 3 are reserved by the others',
+        'requested memory 4g exceeds what is left of the host limit on "srv"',
+        '6g are reserved by the others',
+      );
+      expect(r.decision === 'deny' ? r.hint : '').toContain('Request at most 1 cpus now');
+      expect(r.effective.resources).toMatchObject({ cpus: 1, memoryBytes: 2 * GIB });
+      expect(r.effective.clamped).toEqual(['cpus', 'memory']);
+    });
+    it('allows exactly what is left', () => {
+      const r = run(ctx, {
+        host,
+        hostUsage: { cpus: 3, memoryBytes: 6 * GIB },
+        resources: { cpus: 1, memoryBytes: 2 * GIB },
+      });
+      expect(r.decision).toBe('allow');
+    });
+    it('a request above the limit on its own keeps the single-sandbox wording (once)', () => {
+      const r = run(ctx, {
+        host,
+        hostUsage: { cpus: 2, memoryBytes: 0 },
+        resources: { cpus: 6, memoryBytes: GIB },
+      });
+      expect(r.decision).toBe('deny');
+      if (r.decision === 'deny') {
+        expect(r.reasons.filter((x) => x.includes('on host "srv"'))).toHaveLength(1);
+        expect(r.reasons.join(' ')).not.toContain('what is left');
+      }
+    });
+    it('without host limits the usage does not matter', () => {
+      const r = run(ctx, {
+        host: { id: 'srv', zone: 'lab' },
+        hostUsage: { cpus: 100, memoryBytes: 100 * GIB },
+        resources: { cpus: 2, memoryBytes: GIB },
+      });
+      expect(r.decision).toBe('allow');
+    });
+    it('hostQuotaViolations is pure: the same numbers, the same answer', () => {
+      const others = { sandboxes: 2, cpus: 3, memoryBytes: 6 * GIB };
+      expect(
+        hostQuotaViolations(host, others, { sandbox: true, cpus: 1, memoryBytes: GIB }),
+      ).toEqual([]);
+      expect(
+        hostQuotaViolations(host, others, { sandbox: true, cpus: 1.5 }).map((v) => [
+          v.field,
+          v.max,
+        ]),
+      ).toEqual([['cpus', 1]]);
+      expect(
+        hostQuotaViolations(host, { ...others, sandboxes: 5 }, { sandbox: true }).map(
+          (v) => v.field,
+        ),
+      ).toEqual(['sandboxes']);
+      // fractions that add up to the limit are fine despite floating point
+      expect(
+        hostQuotaViolations(host, { sandboxes: 0, cpus: 0.1 + 0.2, memoryBytes: 0 }, { cpus: 3.7 }),
+      ).toEqual([]);
+    });
   });
   it('enforces the sandbox count per owner', () => {
     expectDeny(
@@ -939,6 +1015,42 @@ describe('isolation and host zones', () => {
     expectDeny(run({}, { host, providerIsolation: 'container' }), 'host zone "restricted"');
     expectInvariant({}, { host, providerIsolation: 'vm' }, 'host_zone');
   });
+  it('zone minimums and host min_isolation are properties of the host: they bind a human too', () => {
+    const human = humanContext(env);
+    const shared = { id: 'srv', zone: 'shared' as const };
+    // a container sandbox on a shared host is refused for the human as well, not only for agents
+    expectDeny(
+      evaluateCreate(mkReq(env, human, { host: shared, humanConfirmed: true })),
+      'below "hardened" required by host zone "shared"',
+    );
+    expectDeny(
+      evaluateCreate(
+        mkReq(env, human, {
+          host: { id: 'srv', zone: 'restricted' },
+          providerIsolation: 'hardened',
+          humanConfirmed: true,
+        }),
+      ),
+      'below "vm" required by host zone "restricted"',
+    );
+    expectDeny(
+      evaluateCreate(
+        mkReq(env, human, {
+          host: { id: 'srv', zone: 'lab', minIsolation: 'vm' },
+          humanConfirmed: true,
+        }),
+      ),
+      'below "vm" required by host "srv" (min_isolation)',
+    );
+    // ...with enough isolation the human confirms the zone like an invariant approval item
+    const ok = mkReq(env, human, { host: shared, providerIsolation: 'hardened' });
+    expect(approvalKinds(evaluateCreate(ok))).toEqual(['host_zone']);
+    expect(evaluateCreate({ ...ok, humanConfirmed: true }).decision).toBe('allow');
+    // while the profile minimums are an agent rule: the same container sandbox on a workstation is fine
+    expect(
+      evaluateCreate(mkReq(env, human, { host: { id: 'local', zone: 'workstation' } })).decision,
+    ).toBe('allow');
+  });
   it('workstation and lab zones need nothing extra', () => {
     expect(run({}, { host: { id: 'local', zone: 'workstation' } }).decision).toBe('allow');
     expect(run({ hosts: ['local'] }, { host: { id: 'local', zone: 'lab' } }).decision).toBe(
@@ -1468,6 +1580,29 @@ describe('evaluateAccessRequest', () => {
       );
       if (h.decision !== 'deny') throw new Error('expected deny');
       expect(h.reasons.join(' ')).toContain('limit of 2 on host "local"');
+    });
+    it('counts the other sandboxes of the host: the host limit is for all of them together', () => {
+      const host = {
+        id: 'srv',
+        zone: 'lab' as const,
+        limits: { cpus: 4, memory: '8g' },
+      };
+      const grow = (cpus: number, others: { cpus: number; memoryBytes: number }) =>
+        acc(
+          { hosts: ['srv'] },
+          { kind: 'resources', details: { cpus } },
+          sbx({ host, hostUsage: { sandboxes: 2, ...others } }),
+        );
+      expect(grow(2, { cpus: 2, memoryBytes: 0 }).decision).toBe('allow');
+      const r = grow(3, { cpus: 2, memoryBytes: 0 });
+      if (r.decision !== 'deny') throw new Error('expected deny');
+      expect(r.reasons.join(' ')).toContain('exceeds what is left of the host limit on "srv"');
+      const m = acc(
+        { hosts: ['srv'] },
+        { kind: 'resources', details: { memoryBytes: 4 * GIB } },
+        sbx({ host, hostUsage: { sandboxes: 2, cpus: 0, memoryBytes: 5 * GIB } }),
+      );
+      expect(m.decision).toBe('deny');
     });
     it('denies empty and invalid requests', () => {
       expect(acc({}, { kind: 'resources', details: {} }).decision).toBe('deny');

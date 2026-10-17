@@ -137,6 +137,15 @@ object:
   `backend_unavailable`, `host_unreachable`, `timeout`, `internal`. `hint` says what to do next.
   Unknown internal failures are logged on the server side and reported to the agent as `internal`
   without details.
+- **Unknown parameters are errors.** Every tool takes exactly the parameters listed below, in
+  nested objects too (`workspace`, `overrides`, `overrides.network`, `overrides.mounts[]`,
+  `details` of `access_request`). A parameter a tool does not have - `branch` instead of
+  `branch_name`, `overrides.project_dir` - is not dropped silently: the call does nothing and
+  answers `invalid_input`, naming the key (with its full path) and the closest valid one
+  (`unknown parameter "branch" (did you mean "branch_name"?)`), or listing the valid ones. The
+  advertised input schemas carry `additionalProperties: false`.
+- When `policy.yaml` is invalid every tool answers `policy_denied` (and `abox mcp serve` does not
+  start) until the human has fixed it; see [troubleshooting](troubleshooting.md).
 - A command that ran but failed (non-zero exit code) is a **successful** call: `ok: true`, look at
   `exit_code`. A command killed by its timeout is `ok: false`, `code: "timeout"` with the partial
   output and `exit_code` 137.
@@ -215,8 +224,9 @@ The `sandbox` object has `id`, `name`, `host`, `template`, `backend`, `isolation
 | `sandbox_process_stop`  | `process_id`                                            | TERM, then KILL, for the process group                                                                                                                                                                                                                                       |
 
 A sandbox that an agent owns is **paused** while a human has a terminal open in it (GUI or
-`abox shell`): `sandbox_exec`, `sandbox_process_start`, `sandbox_process_stop`, `sandbox_write_file`
-and `sandbox_restore` then return `ok: false`, `code: "conflict"`, message `paused: a human is working
+`abox shell`): `sandbox_exec`, `sandbox_process_start`, `sandbox_process_stop`, `sandbox_write_file`,
+`sandbox_snapshot`, `sandbox_restore`, `sandbox_start`, `sandbox_stop`, `sandbox_delete` and
+`access_request` (also for a TTL extension) then return `ok: false`, `code: "conflict"`, message `paused: a human is working
 in sandbox <id>` and `details: { reason: "human_attached", sessions, since }`. Nothing is queued.
 `sandbox_inspect` and `sandbox_list` carry `human_attached: { sessions, since, actor }` while it
 lasts. Retry later; the pause ends when the terminal closes, or 20 seconds after the person's

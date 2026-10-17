@@ -33,7 +33,13 @@ import type {
 } from '@abox/core';
 import { buildImage, pullImage } from './build.js';
 import { renderDockerfile } from './dockerfile.js';
-import { effectiveExpiresAt, hasMovableExpiry, toEpochSeconds, writeExpiryFile } from './expiry.js';
+import {
+  EXPIRY_STORAGE_RESOLUTION_MS,
+  effectiveExpiresAt,
+  hasMovableExpiry,
+  toEpochSeconds,
+  writeExpiryFile,
+} from './expiry.js';
 import { effectiveFromInspect, infoFromLabels } from './info.js';
 import { isAbortError, mapEngineError, statusOf } from './errors.js';
 import { Demux, openTty, runExec, simpleExec, streamExec } from './exec.js';
@@ -50,6 +56,7 @@ import {
   putArchiveStream,
   putFile,
   reownDir,
+  resolveStoppedReadable,
   sandboxPath,
 } from './files.js';
 import { buildHostConfig, checkBindSource, checkMountTarget, ttlEntrypoint } from './hostconfig.js';
@@ -1667,6 +1674,9 @@ export class DockerProvider implements SandboxProvider {
       // The deadline may have been moved after creation (`extendExpiry`): labels cannot say.
       const expires = await effectiveExpiresAt(this.docker.getContainer(c.Id), labels);
       if (expires > 0 && expires <= Date.now()) {
+        // (no sidecar and secrets for a sandbox that will never run again)
+        if (labels[LABEL.networkMode] === 'allowlist')
+          await this.removeProxyInfrastructure(id, this.parseId(id).short).catch(() => undefined);
         throw new AboxError('conflict', `Sandbox ${id} has expired and cannot be started`, {
           hint: 'Remove it (`abox gc` / `abox rm`) and create a new one.',
         });
@@ -1806,6 +1816,13 @@ export class DockerProvider implements SandboxProvider {
         if (statusOf(e) !== 304) throw e;
       }
       if (c.Config.Labels?.[LABEL.networkMode] === 'allowlist') {
+        // An expired sandbox is only kept (stopped) so that its workspace can be exported. Its egress
+        // proxy and internal network have no use any more, and the proxy holds the injected secrets:
+        // they go now, not with `gc`.
+        if (await this.hasExpired(c)) {
+          await this.removeProxyInfrastructure(id, short);
+          return;
+        }
         const pid = await this.proxyContainerId(short);
         if (pid) {
           try {
@@ -1816,6 +1833,46 @@ export class DockerProvider implements SandboxProvider {
         }
       }
     });
+  }
+
+  /**
+   * Is the sandbox past its deadline? A moved deadline is stored in whole seconds (rounded up), so
+   * the registry's millisecond deadline can be up to a second earlier than the stored one: that
+   * second counts as expired, otherwise a sweep right at the deadline would miss the cleanup.
+   */
+  private async hasExpired(c: Docker.ContainerInspectInfo): Promise<boolean> {
+    const labels = c.Config.Labels ?? {};
+    const expires = await effectiveExpiresAt(this.docker.getContainer(c.Id), labels);
+    return expires > 0 && expires - EXPIRY_STORAGE_RESOLUTION_MS <= Date.now();
+  }
+
+  /**
+   * Remove the egress proxy sidecar (with its config volume, which holds the injected header values)
+   * and the internal network of a sandbox, only if they are this instance's. Missing or busy
+   * objects are not an error: this is also the cleanup step of `remove`.
+   */
+  private async removeProxyInfrastructure(id: SandboxId, short: string): Promise<void> {
+    const ignore = (e: unknown): void => {
+      const s = statusOf(e);
+      if (s !== 404 && s !== 409) throw e;
+    };
+    try {
+      const p = await this.docker.getContainer(proxyName(short)).inspect();
+      const l = p.Config.Labels ?? {};
+      if (l[LABEL.managed] === '1' && l[LABEL.id] === id && this.ownsInstance(l)) {
+        await this.docker.getContainer(p.Id).remove({ force: true, v: true });
+      }
+    } catch (e) {
+      ignore(e);
+    }
+    try {
+      const n = this.docker.getNetwork(internalNetName(short));
+      const info = await n.inspect();
+      const l = info.Labels ?? {};
+      if (l[LABEL.managed] === '1' && l[LABEL.id] === id && this.ownsInstance(l)) await n.remove();
+    } catch (e) {
+      ignore(e);
+    }
   }
 
   async remove(id: SandboxId): Promise<void> {
@@ -1839,26 +1896,8 @@ export class DockerProvider implements SandboxProvider {
         if (e instanceof AboxError) throw e;
         ignore(e);
       }
-      // Proxy sidecar.
-      try {
-        const p = await this.docker.getContainer(proxyName(short)).inspect();
-        const l = p.Config.Labels ?? {};
-        if (l[LABEL.managed] === '1' && l[LABEL.id] === id && this.ownsInstance(l)) {
-          await this.docker.getContainer(p.Id).remove({ force: true, v: true });
-        }
-      } catch (e) {
-        ignore(e);
-      }
-      // Internal network.
-      try {
-        const n = this.docker.getNetwork(internalNetName(short));
-        const info = await n.inspect();
-        const l = info.Labels ?? {};
-        if (l[LABEL.managed] === '1' && l[LABEL.id] === id && this.ownsInstance(l))
-          await n.remove();
-      } catch (e) {
-        ignore(e);
-      }
+      // Proxy sidecar and internal network.
+      await this.removeProxyInfrastructure(id, short);
       // Snapshot images.
       try {
         const imgs = await this.docker.listImages({
@@ -2019,7 +2058,10 @@ export class DockerProvider implements SandboxProvider {
       const stream = (await this.docker
         .getContainer(c.Id)
         .getArchive({ path: src })) as unknown as Readable;
-      await extractArchiveSafe(stream, hostPath, { symlinks: opts?.symlinks ?? 'refuse' });
+      await extractArchiveSafe(stream, hostPath, {
+        symlinks: opts?.symlinks ?? 'refuse',
+        ...(opts?.onSkip ? { onSkip: opts.onSkip } : {}),
+      });
     });
   }
 
@@ -2107,7 +2149,10 @@ export class DockerProvider implements SandboxProvider {
     ]);
     try {
       // Same host-side rules as for the archive API: nothing is written or linked outside the destination.
-      await extractArchiveSafe(ex.stdout, hostPath, { symlinks: opts?.symlinks ?? 'refuse' });
+      await extractArchiveSafe(ex.stdout, hostPath, {
+        symlinks: opts?.symlinks ?? 'refuse',
+        ...(opts?.onSkip ? { onSkip: opts.onSkip } : {}),
+      });
     } catch (e) {
       ex.stdout.destroy();
       const r = await ex.result.catch(() => undefined);
@@ -2130,7 +2175,11 @@ export class DockerProvider implements SandboxProvider {
       // A running sandbox reads as its own user (it also sees the /tmp tmpfs, which the archive API
       // does not): root-only files stay unreadable and special files get an accurate error.
       if (c.State.Running) return this.readFileAsUser(c, p, maxBytes);
-      const { data, truncated, size } = await getFile(this.docker.getContainer(c.Id), p, maxBytes);
+      // A stopped one has no process to ask, and the archive API reads as root: the sandbox user's
+      // permissions are applied to the path first (symlinks resolved here, never by the engine).
+      const container = this.docker.getContainer(c.Id);
+      const real = await resolveStoppedReadable(container, p, userIds(c), 'file');
+      const { data, truncated, size } = await getFile(container, real, maxBytes);
       return { data, truncated, size };
     });
   }
@@ -2176,9 +2225,15 @@ export class DockerProvider implements SandboxProvider {
     );
     if (r.exitCode !== 0) throw fileScriptError('Reading', file, r);
     const nl = r.stdout.indexOf(0x0a);
-    const size = Number(r.stdout.subarray(0, nl).toString('utf8'));
-    const data = r.stdout.subarray(nl + 1);
-    return { data: Buffer.from(data), truncated: size > data.length, size };
+    const stated = Number(r.stdout.subarray(0, nl).toString('utf8'));
+    const body = r.stdout.subarray(nl + 1);
+    if (stated === 0 && body.length > 0) {
+      // A procfs-like file: it says it is empty but has content, so the size is what was returned
+      // (at least that much when more than `maxBytes` came back).
+      const data = Buffer.from(body.subarray(0, Math.max(0, Math.floor(maxBytes))));
+      return { data, truncated: body.length > data.length, size: body.length };
+    }
+    return { data: Buffer.from(body), truncated: stated > body.length, size: stated };
   }
 
   /** Write a file into a running sandbox as its user (content on stdin, never in argv). */
@@ -2202,7 +2257,15 @@ export class DockerProvider implements SandboxProvider {
     return this.guard(async () => {
       const c = await this.load(id);
       const p = sandboxPath(dir, 'directory');
-      if (!c.State.Running) return this.listDirArchive(c.Id, p);
+      if (!c.State.Running) {
+        const real = await resolveStoppedReadable(
+          this.docker.getContainer(c.Id),
+          p,
+          userIds(c),
+          'dir',
+        );
+        return this.listDirArchive(c.Id, real);
+      }
       const script = `[ -e "$1" ] || exit ${FILE_EXIT.missing}; [ -d "$1" ] || exit ${FILE_EXIT.notDir}; cd -- "$1" || exit ${FILE_EXIT.resolve}; find . -mindepth 1 -maxdepth 1 -exec stat -c "%Y %a %s %F %n" {} +`;
       const r = await simpleExec(this.docker, c.Id, ['/bin/sh', '-c', script, 'abox-ls', p], {
         user: execUser(c),
@@ -2211,8 +2274,16 @@ export class DockerProvider implements SandboxProvider {
         throw new AboxError('not_found', `No such directory: ${p}`);
       if (r.exitCode === FILE_EXIT.notDir)
         throw new AboxError('invalid_input', `Not a directory: ${p}`);
-      if (r.exitCode !== 0) {
-        const msg = r.stderr.toString('utf8').trim() || `cannot list ${p}`;
+      // Entries that vanish between the readdir and the stat (/proc/self/fd, a busy /tmp) are not an
+      // error of the listing: they are simply gone. Any other complaint still is one.
+      const complaints = r.stderr
+        .toString('utf8')
+        .split('\n')
+        .filter((l) => l.trim() !== '' && !/no such file or directory/i.test(l));
+      const onlyVanished = r.exitCode === 1 && r.stderr.length > 0 && complaints.length === 0;
+      if (r.exitCode !== 0 && !onlyVanished) {
+        const msg =
+          complaints.join('\n').trim() || r.stderr.toString('utf8').trim() || `cannot list ${p}`;
         throw new AboxError(
           /permission denied/i.test(msg) || r.exitCode === FILE_EXIT.resolve
             ? 'policy_denied'

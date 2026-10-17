@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { AboxError } from '../errors.js';
+import type { ErrorIssue } from '../errors.js';
 import type { AboxConfig } from '../config/config.js';
 import { loadConfig } from '../config/config.js';
 import { ensureDirs, resolvePaths } from '../config/paths.js';
@@ -8,11 +9,18 @@ import type { AboxPaths } from '../config/paths.js';
 import type { ProviderFactory, SandboxProvider } from '../provider.js';
 import { LibsecretStore } from '../secrets/libsecret.js';
 import type { SecretStore } from '../secrets/store.js';
+import { sha256Hex } from '../state/canonical.js';
 import { StateStore } from '../state/store.js';
-import type { SandboxRecord } from '../state/sandbox-registry.js';
+import type { SandboxRecord, SandboxRegistry } from '../state/sandbox-registry.js';
 import type { AuditAppendInput, AuditEntry } from '../state/audit-log.js';
-import { canonicalizePath, defaultPolicy, parsePolicy, resolveContext } from '../policy/index.js';
-import type { AgentContext, HostInfo, Policy } from '../policy/index.js';
+import {
+  canonicalizePath,
+  defaultPolicy,
+  parsePolicy,
+  resolveContext,
+  restrictivePolicy,
+} from '../policy/index.js';
+import type { AgentContext, HostInfo, HostUsage, Policy } from '../policy/index.js';
 import { DEFAULT_POLICY_YAML } from '../policy/load.js';
 import type { BackendKind, SandboxId, SandboxInfo, SandboxState } from '../types.js';
 import type { WorkspaceRecord } from '../workspace/index.js';
@@ -73,6 +81,20 @@ export interface StoredEffective {
   imageRef?: string;
 }
 
+/**
+ * Set while policy.yaml on disk is invalid (see `Internals.policyProblem`). `fallback` says which
+ * policy is in the manager meanwhile: `last_valid` = the last valid one (kept in memory, or the
+ * latest revision recorded in the state database when the process started with the file already
+ * broken), `built_in` = the restrictive built-in one (no agent context at all) because no valid
+ * revision exists.
+ */
+export interface PolicyProblem {
+  message: string;
+  detectedAt: number;
+  issues: ErrorIssue[];
+  fallback: 'last_valid' | 'built_in';
+}
+
 const PREPARING_MAX_AGE_MS = 30 * 60_000;
 const POLICY_POLL_MS = 500;
 
@@ -93,10 +115,14 @@ export class Internals {
   private readonly policyOverride: string | undefined;
   private policyStamp = '';
   /**
-   * Set while policy.yaml on disk is invalid and an older, valid policy stays in force (a running
-   * manager never drops its rules because of a broken edit); cleared by the next valid load.
+   * Set while policy.yaml on disk is invalid: the manager is in degraded mode (fail closed). A human
+   * can still look at everything and clean up (list, inspect, stop, remove, logs, doctor, audit,
+   * approvals list/deny, templates list/show/validate, policy show/validate/edit), using the last valid
+   * policy (or the restrictive built-in one) to resolve the human context. Nothing that creates or
+   * grants runs (`requirePolicyValid`), and every agent context is refused (`context`): without a
+   * valid policy there is nothing to say what an agent may do. Cleared by the next valid load.
    */
-  policyProblem: { message: string; detectedAt: number } | undefined;
+  policyProblem: PolicyProblem | undefined;
   private policyCheckedAt = 0;
   private readonly providerCache = new Map<string, SandboxProvider>();
   private readonly listeners = new Set<(e: AboxEvent) => void>();
@@ -139,7 +165,7 @@ export class Internals {
     this.hostResolverFn = opts.hostResolver;
     this.policyOverride = opts.policyText;
     this.ttlIntervalMs = Math.max(0, (opts.ttlCheckIntervalSec ?? 5) * 1000);
-    const loaded = this.readPolicy();
+    const loaded = this.loadPolicyOrDegrade();
     this.policy = loaded.policy;
     this.policyText = loaded.text;
     this.policyStamp = loaded.stamp;
@@ -162,7 +188,9 @@ export class Internals {
       state.close();
       throw e;
     }
-    self.recordPolicyRevision('system', 'startup');
+    // A broken policy.yaml must not be recorded as a revision (nor the fallback in force instead of it).
+    if (self.policyProblem) self.reportInvalidPolicy('startup');
+    else self.recordPolicyRevision('system', 'startup');
     return self;
   }
 
@@ -195,6 +223,90 @@ export class Internals {
         cause: e,
       });
     }
+  }
+
+  /**
+   * Startup load: an invalid or unreadable policy.yaml does not stop the manager from opening (that
+   * would lock the human out of `ls`, `rm`, `doctor`, `policy edit`, ...). The manager opens in
+   * degraded mode instead, see `policyProblem`. A policy handed in as text (tests) is not a file:
+   * its errors are thrown as before.
+   */
+  private loadPolicyOrDegrade(): { policy: Policy; text: string; stamp: string } {
+    try {
+      return this.readPolicy();
+    } catch (e) {
+      if (this.policyOverride !== undefined || !(e instanceof AboxError)) throw e;
+      const fallback = this.lastValidPolicy();
+      this.policyProblem = {
+        message: e.message,
+        detectedAt: this.now(),
+        issues: e.issues.map((i) => ({ ...i })),
+        fallback: fallback.kind,
+      };
+      return { policy: fallback.policy, text: fallback.text, stamp: this.fileStamp() };
+    }
+  }
+
+  /** The latest policy.yaml revision recorded in the state database, else the restrictive built-in policy. */
+  private lastValidPolicy(): { policy: Policy; text: string; kind: 'last_valid' | 'built_in' } {
+    try {
+      const latest = this.state.policyRevisions.latest();
+      if (latest) {
+        return {
+          policy: parsePolicy(latest.content, { kind: 'file', path: this.paths.policyFile }),
+          text: latest.content,
+          kind: 'last_valid',
+        };
+      }
+    } catch {
+      /* a stored revision that no longer parses (older abox) is as good as none */
+    }
+    return { policy: restrictivePolicy(), text: 'version: 1\n', kind: 'built_in' };
+  }
+
+  private fileStamp(): string {
+    try {
+      const st = statSync(this.paths.policyFile);
+      return `${st.mtimeMs}:${st.size}:${st.ino}`;
+    } catch {
+      return 'none';
+    }
+  }
+
+  /**
+   * Audit (and for a running manager announce) that policy.yaml is invalid. At startup the same broken
+   * file is reported once, not by every command that opens the manager.
+   */
+  private reportInvalidPolicy(detected: 'startup' | 'reload'): void {
+    const p = this.policyProblem;
+    if (!p) return;
+    let fileHash = 'unreadable';
+    try {
+      fileHash = sha256Hex(readFileSync(this.paths.policyFile));
+    } catch {
+      /* keep 'unreadable' */
+    }
+    if (detected === 'startup') {
+      const last = this.state.audit.query({
+        action: 'policy.reload_failed',
+        limit: 1,
+        order: 'desc',
+      })[0];
+      if (last?.details?.['fileHash'] === fileHash) return;
+    }
+    this.audit('system', 'policy.reload_failed', {
+      decision: 'error',
+      details: {
+        message: p.message,
+        detected,
+        fileHash,
+        note:
+          p.fallback === 'last_valid'
+            ? 'degraded mode until policy.yaml is valid again: the last valid policy is used to look at things and clean up; creating, granting and every agent are refused'
+            : 'degraded mode until policy.yaml is valid again: no valid policy was ever recorded, so only the human context exists; creating, granting and every agent are refused',
+        ...(p.issues.length > 0 ? { issues: p.issues.slice(0, 10) } : {}),
+      },
+    });
   }
 
   /**
@@ -255,20 +367,17 @@ export class Internals {
         this.emit('policy.changed', { data: { contentHash: loaded.policy.contentHash } });
       }
     } catch (e) {
-      // Keep the last good policy; a broken edit must not silently widen or drop the rules.
+      // Degraded mode: the last good policy only serves to look at things and clean up (see
+      // `policyProblem`); a broken edit must not silently widen or drop the rules, nor keep granting under them.
       this.policyStamp = stamp;
       const message = errMessage(e);
-      this.policyProblem = { message, detectedAt: this.now() };
-      this.audit('system', 'policy.reload_failed', {
-        decision: 'error',
-        details: {
-          message,
-          note: 'the last valid policy stays in force until policy.yaml is valid again',
-          ...(e instanceof AboxError && e.issues.length > 0
-            ? { issues: e.issues.slice(0, 10).map((i) => ({ ...i })) }
-            : {}),
-        },
-      });
+      this.policyProblem = {
+        message,
+        detectedAt: this.now(),
+        issues: e instanceof AboxError ? e.issues.map((i) => ({ ...i })) : [],
+        fallback: this.policyProblem?.fallback ?? 'last_valid',
+      };
+      this.reportInvalidPolicy('reload');
       this.emit('policy.reload_failed', { data: { message } });
     }
   }
@@ -296,6 +405,16 @@ export class Internals {
     if (typeof id !== 'string' || id.length === 0 || id.length > 128) {
       throw new AboxError('policy_denied', 'a caller with a context id is required');
     }
+    if (this.policyProblem && id !== 'human') {
+      // Degraded mode: without a valid policy there is nothing that says what this agent may do.
+      if (this.firstWithin(`policy-invalid|${id}`, 10_000)) {
+        this.audit('unknown', 'context.resolve', {
+          decision: 'deny',
+          details: { contextId: id.slice(0, 64), reason: 'policy_invalid' },
+        });
+      }
+      throw this.policyInvalidError(undefined);
+    }
     let ctx: AgentContext;
     try {
       ctx = resolveContext(this.policy, id, { home: this.home });
@@ -322,6 +441,36 @@ export class Internals {
       `${action.replace(/[._]/g, ' ')} is only available to a human`,
       {
         hint: 'Agents cannot change policy, approvals, tokens or the manager itself; ask the human to do it (CLI or GUI).',
+      },
+    );
+  }
+
+  /**
+   * Degraded mode (policy.yaml invalid, see `policyProblem`): refuses an operation that creates or
+   * grants something, for the human as well (fail closed). Audited once per burst.
+   */
+  requirePolicyValid(ctx: AgentContext, action: string, what: string): void {
+    if (!this.policyProblem) return;
+    if (this.firstWithin(`policy-invalid|${ctx.owner}|${action}`, 10_000)) {
+      this.audit(ctx.owner, action, {
+        decision: 'deny',
+        details: { reason: 'policy_invalid', message: this.policyProblem.message.slice(0, 500) },
+      });
+    }
+    throw this.policyInvalidError(what);
+  }
+
+  private policyInvalidError(what: string | undefined): AboxError {
+    const p = this.policyProblem;
+    return new AboxError(
+      'policy_denied',
+      `policy.yaml is invalid, so ${what ?? 'every agent request'} is refused until it is fixed${p ? `: ${p.message}` : ''}`,
+      {
+        hint: what
+          ? 'Fix policy.yaml: `abox policy validate` lists the problems, `abox policy edit` repairs it. Until then you can look at everything and clean up (ls, inspect, stop, rm, logs, doctor, audit, approvals ls/deny, template ls/show/validate, policy show/validate/edit).'
+          : 'Only the human can fix policy.yaml (`abox policy validate`). Your sandboxes keep running until their TTL; try again once it is valid.',
+        ...(p && p.issues.length > 0 ? { issues: p.issues.slice(0, 10) } : {}),
+        details: { reason: 'policy_invalid' },
       },
     );
   }
@@ -472,10 +621,28 @@ export class Internals {
   }
 
   countActiveOnHost(host: string): number {
+    return this.hostUsage(host).sandboxes;
+  }
+
+  /**
+   * What the sandboxes on `host` reserve together: their count and the cpu / memory limits they were
+   * created (or resized) with. Counted are the sandboxes that can still run, i.e. every one that is
+   * being created, created, running or stopped (a stopped one keeps its reservation, so starting it
+   * again can never exceed the host limits); not counted are expired, removed and failed ones and
+   * those the backend no longer reports. `exclude` leaves one sandbox out (the one being resized).
+   * Pass the `registry` handed to `SandboxRegistry.atomic` / `claim` to count inside that transaction.
+   */
+  hostUsage(host: string, o: { exclude?: SandboxId; registry?: SandboxRegistry } = {}): HostUsage {
     const states: SandboxState[] = ['preparing', 'created', 'running', 'stopped'];
-    return this.state.sandboxes
-      .list({ host, state: states })
-      .filter((r) => !r.stale && !this.isInterrupted(r)).length;
+    const usage: HostUsage = { sandboxes: 0, cpus: 0, memoryBytes: 0 };
+    for (const r of (o.registry ?? this.state.sandboxes).list({ host, state: states })) {
+      if (r.stale || this.isInterrupted(r) || r.id === o.exclude) continue;
+      const res = (r.effective as Partial<StoredEffective> | null)?.resources;
+      usage.sandboxes += 1;
+      usage.cpus += Number.isFinite(res?.cpus) ? res!.cpus : 0;
+      usage.memoryBytes += Number.isFinite(res?.memoryBytes) ? res!.memoryBytes : 0;
+    }
+    return usage;
   }
 
   /** A `preparing` row whose creator process is gone (or that has been preparing for far too long). */

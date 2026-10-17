@@ -14,10 +14,18 @@ import {
   OwnerBadge,
   StateBadge,
   Badge,
+  Safe,
 } from '../components/ui';
 import { distinct, EMPTY_FILTERS, filterSandboxes } from '../../shared/sandbox-filter';
 import type { SandboxFilters } from '../../shared/sandbox-filter';
-import { formatBytes, formatDuration, remainingMs } from '../../shared/format';
+import {
+  formatBytes,
+  formatClock,
+  formatDuration,
+  remainingMs,
+  safeInline,
+  safeText,
+} from '../../shared/format';
 import { UsageLines } from '../components/usage';
 import { NewSandboxDialog } from './NewSandbox';
 import { SANDBOX_STATES } from '../../shared/constants';
@@ -47,12 +55,15 @@ export function SandboxesView() {
   const staleCount = all.filter((s) => s.stale || s.missingInBackend).length;
   const orphans = list.data?.orphans ?? [];
   const unreachable = list.data?.unreachableHosts ?? [];
+  // Freshness of what the table shows: the time of the last successful answer of the manager.
+  const asOf = list.updatedAt;
+  const outdated = asOf !== undefined && (list.error !== undefined || now - asOf > 20_000);
 
   async function act(s: SandboxView, channel: 'sandboxes:start' | 'sandboxes:stop', okKey: string) {
     setBusyId(s.id);
     try {
       await call(channel, { id: s.id });
-      notify('ok', t(okKey, { name: s.name }));
+      notify('ok', t(okKey, { name: safeInline(s.name, 60) }));
       await list.reload();
     } catch (e) {
       notify('error', (e as Error).message);
@@ -65,7 +76,7 @@ export function SandboxesView() {
     setBusyId(s.id);
     try {
       await call('sandboxes:remove', { id: s.id });
-      notify('ok', t('sandboxes.removed', { name: s.name }));
+      notify('ok', t('sandboxes.removed', { name: safeInline(s.name, 60) }));
       setDeleteFor(null);
       await list.reload();
     } catch (e) {
@@ -78,7 +89,22 @@ export function SandboxesView() {
   return (
     <section aria-labelledby="h-sandboxes">
       <header className="page-head">
-        <h1 id="h-sandboxes">{t('sandboxes.title')}</h1>
+        <div>
+          <h1 id="h-sandboxes">{t('sandboxes.title')}</h1>
+          {asOf !== undefined ? (
+            <p className="muted small" data-testid="as-of">
+              {t('sandboxes.asOf', { time: formatClock(asOf) })}
+              {outdated ? (
+                <>
+                  {' '}
+                  <Badge tone="warn" title={t('sandboxes.outdated.hint')}>
+                    {t('sandboxes.outdated')}
+                  </Badge>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+        </div>
         <div className="actions">
           <button type="button" onClick={() => void list.reload()}>
             {t('common.refresh')}
@@ -98,7 +124,8 @@ export function SandboxesView() {
           <ul className="plain-list">
             {orphans.slice(0, 5).map((o) => (
               <li key={o.id} className="plain">
-                <code>{o.id}</code> ({o.backend}, {o.template})
+                <Safe text={o.id} max={80} /> ({safeInline(o.backend, 30)},{' '}
+                <Safe text={o.template} max={60} />)
               </li>
             ))}
           </ul>
@@ -117,7 +144,9 @@ export function SandboxesView() {
         </Banner>
       ) : null}
       {unreachable.length > 0 ? (
-        <Banner tone="warn">{t('sandboxes.unreachable', { hosts: unreachable.join(', ') })}</Banner>
+        <Banner tone="warn">
+          {t('sandboxes.unreachable', { hosts: safeInline(unreachable.join(', '), 300) })}
+        </Banner>
       ) : null}
 
       {list.loading && !list.data ? <Loading /> : null}
@@ -171,7 +200,7 @@ export function SandboxesView() {
                 <option value="agent">{t('sandboxes.filter.anyAgent')}</option>
                 {owners.map((o) => (
                   <option key={o} value={o}>
-                    {o}
+                    {safeInline(o, 80)}
                   </option>
                 ))}
               </select>
@@ -185,7 +214,7 @@ export function SandboxesView() {
                 <option value="">{t('common.all')}</option>
                 {templates.map((x) => (
                   <option key={x} value={x}>
-                    {x}
+                    {safeInline(x, 80)}
                   </option>
                 ))}
               </select>
@@ -225,15 +254,33 @@ export function SandboxesView() {
                           className="linklike"
                           onClick={() => navigate({ view: 'detail', sandboxId: s.id })}
                         >
-                          {s.name}
+                          <Safe text={s.name} max={80} />
                         </button>
-                        <div className="muted small plain">{s.id}</div>
+                        <div className="muted small">
+                          <Safe text={s.id} max={80} />
+                        </div>
                       </th>
-                      <td>{s.host}</td>
-                      <td className="plain">{s.template}</td>
+                      <td>
+                        <Safe text={s.host} max={60} />
+                      </td>
+                      <td>
+                        <Safe text={s.template} max={80} />
+                      </td>
                       <td>
                         <StateBadge state={s.state} stale={s.stale} />
-                        {s.error ? <div className="small danger-text plain">{s.error}</div> : null}
+                        {s.stale || !s.hostReachable ? (
+                          <div className="muted small" data-testid="stale-note">
+                            {!s.hostReachable ? `${t('sandboxes.hostUnreachable')} · ` : ''}
+                            {s.lastSeenAt
+                              ? t('sandboxes.lastSeen', { time: formatClock(s.lastSeenAt) })
+                              : t('sandboxes.neverSeen')}
+                          </div>
+                        ) : null}
+                        {s.error ? (
+                          <div className="small danger-text">
+                            <Safe text={s.error} max={160} />
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         <OwnerBadge owner={s.owner} />
@@ -245,7 +292,7 @@ export function SandboxesView() {
                       </td>
                       <td>
                         <div className="badges">
-                          <Badge tone="neutral">{s.backend}</Badge>
+                          <Badge tone="neutral">{safeInline(s.backend, 30)}</Badge>
                           <IsolationBadge level={s.isolation} />
                           {s.network.mode === 'open' ? (
                             <Badge tone="danger">{t('network.open')}</Badge>
@@ -274,11 +321,11 @@ export function SandboxesView() {
                           {s.resources.cpus} CPU, {formatBytes(s.resources.memoryBytes)}
                         </span>
                       </td>
-                      <td className="path plain" title={s.workspace?.source ?? ''}>
+                      <td className="path plain" title={safeInline(s.workspace?.source ?? '', 500)}>
                         {s.workspace ? (
                           <>
                             <span className="muted small">{s.workspace.mode}</span>{' '}
-                            {s.workspace.source ?? s.workspace.sandboxPath}
+                            <Safe text={s.workspace.source ?? s.workspace.sandboxPath} max={120} />
                           </>
                         ) : (
                           '—'
@@ -292,11 +339,30 @@ export function SandboxesView() {
                           >
                             {t('sandboxes.action.open')}
                           </button>
+                          <button
+                            type="button"
+                            disabled={s.state !== 'running' || s.stale || !s.hostReachable}
+                            title={
+                              s.state !== 'running' || s.stale || !s.hostReachable
+                                ? t('sandboxes.action.shellUnavailable')
+                                : undefined
+                            }
+                            aria-label={t('sandboxes.action.shellNamed', {
+                              name: safeInline(s.name, 60),
+                            })}
+                            onClick={() =>
+                              navigate({ view: 'detail', sandboxId: s.id, tab: 'terminal' })
+                            }
+                          >
+                            {t('sandboxes.action.shell')}
+                          </button>
                           {s.state === 'running' ? (
                             <button
                               type="button"
                               disabled={busyId === s.id}
-                              aria-label={t('sandboxes.action.stopNamed', { name: s.name })}
+                              aria-label={t('sandboxes.action.stopNamed', {
+                                name: safeInline(s.name, 60),
+                              })}
                               onClick={() => void act(s, 'sandboxes:stop', 'sandboxes.stopped')}
                             >
                               {t('sandboxes.action.stop')}
@@ -306,7 +372,9 @@ export function SandboxesView() {
                             <button
                               type="button"
                               disabled={busyId === s.id}
-                              aria-label={t('sandboxes.action.startNamed', { name: s.name })}
+                              aria-label={t('sandboxes.action.startNamed', {
+                                name: safeInline(s.name, 60),
+                              })}
                               onClick={() => void act(s, 'sandboxes:start', 'sandboxes.started')}
                             >
                               {t('sandboxes.action.start')}
@@ -314,14 +382,18 @@ export function SandboxesView() {
                           ) : null}
                           <button
                             type="button"
-                            aria-label={t('sandboxes.action.extendNamed', { name: s.name })}
+                            aria-label={t('sandboxes.action.extendNamed', {
+                              name: safeInline(s.name, 60),
+                            })}
                             onClick={() => setExtendFor(s)}
                           >
                             {t('sandboxes.action.extend')}
                           </button>
                           <button
                             type="button"
-                            aria-label={t('sandboxes.action.exportNamed', { name: s.name })}
+                            aria-label={t('sandboxes.action.exportNamed', {
+                              name: safeInline(s.name, 60),
+                            })}
                             onClick={() =>
                               navigate({ view: 'detail', sandboxId: s.id, tab: 'files' })
                             }
@@ -332,7 +404,9 @@ export function SandboxesView() {
                             type="button"
                             className="danger"
                             disabled={busyId === s.id}
-                            aria-label={t('sandboxes.action.deleteNamed', { name: s.name })}
+                            aria-label={t('sandboxes.action.deleteNamed', {
+                              name: safeInline(s.name, 60),
+                            })}
                             onClick={() => setDeleteFor(s)}
                           >
                             {t('sandboxes.action.delete')}
@@ -378,7 +452,7 @@ export function SandboxesView() {
           onClose={() => setDeleteFor(null)}
           onConfirm={() => void remove(deleteFor)}
         >
-          <p>{t('sandboxes.delete.text', { name: deleteFor.name })}</p>
+          <p>{t('sandboxes.delete.text', { name: safeInline(deleteFor.name, 60) })}</p>
           <p className="muted">{t('sandboxes.delete.hint')}</p>
         </ConfirmDialog>
       ) : null}
@@ -405,7 +479,7 @@ export function ExtendDialog(props: { sandbox: SandboxView; onClose(): void; onD
       if (r.status === 'confirmation_required') {
         setConfirmation({ reasons: r.reasons, risks: r.risks });
       } else {
-        notify('ok', t('sandboxes.extended', { name: props.sandbox.name }));
+        notify('ok', t('sandboxes.extended', { name: safeInline(props.sandbox.name, 60) }));
         props.onDone();
       }
     } catch (e) {
@@ -417,7 +491,7 @@ export function ExtendDialog(props: { sandbox: SandboxView; onClose(): void; onD
 
   return (
     <Dialog
-      title={t('sandboxes.extend.title', { name: props.sandbox.name })}
+      title={t('sandboxes.extend.title', { name: safeInline(props.sandbox.name, 60) })}
       onClose={props.onClose}
       footer={
         <>
@@ -467,7 +541,7 @@ export function ExtendDialog(props: { sandbox: SandboxView; onClose(): void; onD
           <ul>
             {[...confirmation.reasons, ...confirmation.risks].map((x, i) => (
               <li key={i} className="plain">
-                {x}
+                {safeText(x)}
               </li>
             ))}
           </ul>

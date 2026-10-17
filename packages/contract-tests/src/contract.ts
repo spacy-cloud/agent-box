@@ -403,6 +403,31 @@ export function defineProviderContract(opts: ContractOptions): void {
         }
       });
 
+      test('a stopped sandbox is read with the rights of the sandbox user, not as root', async () => {
+        const id = await startSandbox();
+        try {
+          const name = `ct-stopped-${randomId('', 4)}.txt`;
+          await provider.writeFile(id, wsPath(name), Buffer.from('mine\n'));
+          await sh(id, `ln -s /etc/shadow ct-shadow-link-${name}`);
+          await provider.stop(id);
+          // root-only files stay unreadable, also through a link planted in the workspace
+          for (const p of ['/etc/shadow', wsPath(`ct-shadow-link-${name}`)]) {
+            const err = await captureError(provider.readFile(id, p, 100));
+            expect(err, `reading ${p} of a stopped sandbox must be refused`).toBeDefined();
+            expect((err as ErrorLike).name).toBe('AboxError');
+          }
+          // what the sandbox user owns is readable, or the backend needs the sandbox running
+          const ok = await captureError(provider.readFile(id, wsPath(name), 100));
+          if (ok === undefined) {
+            expect((await provider.readFile(id, wsPath(name), 100)).data.toString()).toBe('mine\n');
+          } else {
+            expect((ok as ErrorLike).code).toBe('conflict');
+          }
+        } finally {
+          await finish(id);
+        }
+      });
+
       test('stop terminates processes started in the sandbox', async () => {
         const id = await startSandbox();
         try {

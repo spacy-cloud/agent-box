@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  APPROVAL_MODES,
   AUDIT_DECISIONS,
   ISOLATION_LEVELS,
   NETWORK_MODES,
@@ -20,6 +21,8 @@ describe('IPC contract', () => {
       'evt:navigate',
       'evt:tty-data',
       'evt:tty-exit',
+      'evt:askpass',
+      'evt:askpass-end',
     ]);
   });
 
@@ -29,6 +32,7 @@ describe('IPC contract', () => {
     expect([...ui.NETWORK_MODES]).toEqual([...NETWORK_MODES]);
     expect([...ui.WORKSPACE_MODES]).toEqual([...WORKSPACE_MODES]);
     expect([...ui.AUDIT_DECISIONS]).toEqual([...AUDIT_DECISIONS]);
+    expect([...ui.APPROVAL_MODES]).toEqual([...APPROVAL_MODES]);
   });
 
   it('no channel exposes a shell, path-write or arbitrary eval capability', () => {
@@ -98,6 +102,28 @@ describe('IPC contract', () => {
   it('policy text is bounded', () => {
     expect(ok('policy:validate', { text: 'x'.repeat(1_000_001) })).toBe(false);
     expect(ok('policy:validate', { text: 'version: 1' })).toBe(true);
+  });
+
+  describe('ssh passphrase answers and MCP status', () => {
+    const ID = '3f2b8a52-6c0e-4d7b-9a43-0d9f1d3c7a11';
+    it('an answer names a prompt by its uuid and carries a bounded string or null (cancel)', () => {
+      expect(ok('askpass:answer', { id: ID, value: 'secret' })).toBe(true);
+      expect(ok('askpass:answer', { id: ID, value: null })).toBe(true);
+      expect(ok('askpass:answer', { id: ID, value: '' })).toBe(true);
+      expect(ok('askpass:answer', { id: 'not-a-uuid', value: 'x' })).toBe(false);
+      expect(ok('askpass:answer', { id: ID })).toBe(false);
+      expect(ok('askpass:answer', { id: ID, value: 'x'.repeat(4097) })).toBe(false);
+      expect(ok('askpass:answer', { id: ID, value: 'x', extra: 1 })).toBe(false);
+    });
+    it('a refused answer does not echo the value back in its error', () => {
+      const r = IPC['askpass:answer'].safeParse({ id: ID, value: 'p4ssw0rd'.repeat(1000) });
+      expect(r.success).toBe(false);
+      expect(JSON.stringify(r.error?.issues)).not.toContain('p4ssw0rd');
+    });
+    it('mcp:status takes no input', () => {
+      expect(ok('mcp:status', undefined)).toBe(true);
+      expect(ok('mcp:status', { all: true })).toBe(false);
+    });
   });
 
   describe('terminals', () => {

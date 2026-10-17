@@ -254,11 +254,17 @@ r=$(cd -- "$1" && pwd -P) || exit ${FILE_EXIT.resolve}
 case "$r" in ${DENIED_RESOLVED}) exit ${FILE_EXIT.denied};; esac
 exec tar -xpof - -C "$r"`;
 
-/** `sh -c` script (args: <file> <max bytes>) run as the sandbox user: size line, then the first bytes. */
-export const READ_FILE_SCRIPT = `[ -e "$1" ] || exit ${FILE_EXIT.missing}
+/**
+ * `sh -c` script (args: <file> <max bytes>) run as the sandbox user: size line, then the first bytes.
+ * Files of /proc, /sys and the like report size 0 although they have content: for those one byte
+ * more than asked for is read, so the caller can tell a truncated read from a complete one.
+ */
+export const READ_FILE_SCRIPT = `[ -e "$1" ] || { m=$(stat -L -c %s -- "$1" 2>&1); case "$m" in *ermission\\ denied*) echo "$m" >&2; exit 1;; esac; exit ${FILE_EXIT.missing}; }
 [ -f "$1" ] || exit ${FILE_EXIT.notRegular}
-stat -L -c %s -- "$1" || exit ${FILE_EXIT.stat}
-head -c "$2" -- "$1"`;
+s=$(stat -L -c %s -- "$1") || exit ${FILE_EXIT.stat}
+n=$2; [ "$s" = 0 ] && n=$(($2 + 1))
+echo "$s"
+head -c "$n" -- "$1"`;
 
 /** Maps a failed file script to an error that says what went wrong. */
 export function fileScriptError(
@@ -312,7 +318,9 @@ export function fileScriptError(
 interface PathHeader {
   type: 'file' | 'directory' | 'symlink' | 'other';
   uid: number;
+  gid: number;
   mode: number;
+  linkname?: string;
 }
 
 /** The archive header of `p` itself (symlinks are not followed), or undefined when it does not exist. */
@@ -326,7 +334,15 @@ async function headerOf(c: Docker.Container, p: string): Promise<PathHeader | un
   }
   try {
     const entry = await readFirstEntry(stream, 0);
-    return entry ? { type: entry.type, uid: entry.uid, mode: entry.mode } : undefined;
+    return entry
+      ? {
+          type: entry.type,
+          uid: entry.uid,
+          gid: entry.gid,
+          mode: entry.mode,
+          ...(entry.linkname !== undefined ? { linkname: entry.linkname } : {}),
+        }
+      : undefined;
   } finally {
     stream.destroy();
   }
@@ -377,4 +393,104 @@ export async function assertStoppedWriteAllowed(
       { hint: 'Use a path in the workspace or the home directory.' },
     );
   }
+}
+
+/**
+ * Would the kernel give the sandbox user `bit` (4 read, 2 write, 1 execute/search) on an entry with
+ * this owner and mode? Only the primary group is known for a stopped sandbox (the supplementary
+ * groups of the user are not looked at), so this can only be stricter than the running sandbox.
+ * Root may read, write and search everything.
+ */
+function permits(h: PathHeader, ids: { uid: number; gid: number }, bit: number): boolean {
+  if (ids.uid === 0) return true;
+  if (h.uid === ids.uid) return (h.mode & (bit << 6)) !== 0;
+  if (h.gid === ids.gid) return (h.mode & (bit << 3)) !== 0;
+  return (h.mode & bit) !== 0;
+}
+
+const MAX_SYMLINK_HOPS = 40;
+
+/**
+ * Static counterpart of reading as the sandbox user, for a *stopped* sandbox (nothing runs there to
+ * ask, and the archive API reads as root and follows symlinks): resolves `target` component by
+ * component like the kernel would (following symlinks, `..` after a link is physical), requires
+ * search permission on every directory on the way and read permission on the final file (or read and
+ * search permission on the final directory), and returns the physical path, which contains no
+ * symlink, so the archive API can read it without being led anywhere else. The only difference to a
+ * running sandbox is that mounts the sandbox user sees (the `/tmp` tmpfs, `/proc`) do not exist.
+ *
+ * Errors: `not_found` for a missing path (or a link loop, as a running sandbox answers), `invalid_input`
+ * for a wrong type, `policy_denied` when the sandbox user would not be allowed to.
+ */
+export async function resolveStoppedReadable(
+  c: Docker.Container,
+  target: string,
+  ids: { uid: number; gid: number },
+  want: 'file' | 'dir',
+): Promise<string> {
+  const denied = (p: string, why: string): AboxError =>
+    new AboxError(
+      'policy_denied',
+      `Reading ${target}: the sandbox user is not allowed to (${why} ${p})`,
+      {
+        hint: 'A stopped sandbox is read with the permissions of the sandbox user, like a running one. Start the sandbox or use a path in the workspace, the home directory or /tmp.',
+      },
+    );
+  const tooManyLinks = new AboxError(
+    'not_found',
+    `No such file or directory: ${target} (too many levels of symbolic links)`,
+  );
+  let pending = target.split('/').filter((s) => s !== '' && s !== '.');
+  let real: string[] = []; // the directories resolved so far (no symlinks), all searchable
+  let hops = 0;
+  let final: { path: string; header: PathHeader } | undefined;
+  while (pending.length > 0) {
+    const comp = pending.shift() as string;
+    if (comp === '..') {
+      real.pop();
+      continue;
+    }
+    const p = `/${[...real, comp].join('/')}`;
+    const h = await headerOf(c, p).catch((e: unknown) => {
+      // the engine gives up on a link loop itself (a running sandbox answers "no such file" for it)
+      if (/too many (levels of )?(symbolic )?links/i.test(String((e as Error)?.message)))
+        throw tooManyLinks;
+      throw e;
+    });
+    if (!h) throw new AboxError('not_found', `No such file or directory: ${target}`);
+    if (h.type === 'symlink') {
+      if (++hops > MAX_SYMLINK_HOPS) throw tooManyLinks;
+      const link = h.linkname ?? '';
+      if (link === '') throw new AboxError('not_found', `No such file or directory: ${target}`);
+      if (link.startsWith('/')) real = [];
+      pending = [...link.split('/').filter((s) => s !== '' && s !== '.'), ...pending];
+      continue;
+    }
+    if (pending.length === 0) {
+      final = { path: p, header: h };
+      break;
+    }
+    // not the last component: a directory the user may search
+    if (h.type !== 'directory')
+      throw new AboxError('invalid_input', `Not a directory: ${p} (while resolving ${target})`);
+    if (!permits(h, ids, 1)) throw denied(p, 'no search permission on');
+    real.push(comp);
+  }
+  if (!final) {
+    // the path ended in a directory reached through `..` or a link (or is `/`)
+    const p = `/${real.join('/')}`;
+    const h = await headerOf(c, p);
+    if (!h) throw new AboxError('not_found', `No such file or directory: ${target}`);
+    final = { path: p, header: h };
+  }
+  if (want === 'file') {
+    if (final.header.type !== 'file')
+      throw new AboxError('invalid_input', `Not a regular file: ${target}`);
+    if (!permits(final.header, ids, 4)) throw denied(final.path, 'no read permission on');
+  } else {
+    if (final.header.type !== 'directory')
+      throw new AboxError('invalid_input', `Not a directory: ${target}`);
+    if (!permits(final.header, ids, 5)) throw denied(final.path, 'no read/search permission on');
+  }
+  return final.path;
 }

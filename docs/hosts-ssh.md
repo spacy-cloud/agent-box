@@ -18,6 +18,7 @@ access; policy and audit stay on your machine, and the remote host trusts the co
 - [Host keys](#host-keys)
 - [Tunnels](#tunnels)
 - [Using a host](#using-a-host)
+- [Differences from the design](#differences-from-the-design)
 - [What agents can and cannot do](#what-agents-can-and-cannot-do)
 
 ## Host profiles
@@ -50,6 +51,8 @@ hosts:
 | `min_isolation`                     | `none` `container` `hardened` `vm`; can only raise the zone's minimum                                                  |
 | `backends`                          | engines available on the host (`docker`, `podman`, and also `process`, `python`, `vm` in the schema)                   |
 | `engine_socket`                     | absolute path of the **rootless** engine socket on the host                                                            |
+| `runtimes`                          | hardened OCI runtime of the engine **on this host**, per engine: `runtimes: { docker: runsc }` (see below)             |
+| `allow_rootful`                     | `true` accepts a rootful engine on a `shared`/`restricted` host (root-equivalent; default: refused)                    |
 | `data_dir`                          | working directory root on the host (process/vm backends)                                                               |
 | `limits`                            | `cpus`, `memory`, `sandboxes` caps for everything on this host (`abox host add --cpus/--memory/--max-sandboxes`)       |
 | `tags`, `favorite`, `port_forwards` | organisation and saved forwards (loopback only)                                                                        |
@@ -74,6 +77,21 @@ abox host add lab1 --hostname lab1.example.org --user abox-sandbox --zone lab \
   --backend podman --max-sandboxes 4 --cpus 8 --memory 16g
 ```
 
+`abox host rm` forgets the profile, closes its engine tunnel and also ends a live ssh master
+connection (`ssh -O exit`, see [host keys](#host-keys)), so a removed host is not reachable through
+a connection that is still cached.
+
+"Together" is meant literally: `--cpus` and `--memory` are budgets of the whole host, not caps per
+sandbox. Every sandbox reserves the cpu and memory limits it was created (or resized) with, and a
+create or an `access_request` for more resources is refused (`policy_denied`, naming what is left)
+when the sum of all reservations on that host would exceed the limit; `--max-sandboxes` counts the
+same sandboxes. Counted are all sandboxes of the host that can still run: being created, running
+**and stopped** (a stopped sandbox keeps its reservation, so starting it again can never exceed the
+limit); not counted are expired, removed and failed ones and those the backend no longer reports.
+The check is repeated inside the registry transaction that claims the new sandbox, so parallel
+creates (several terminals, the GUI and an agent at once) cannot overshoot the budget. Reservations
+are the configured limits, not live usage.
+
 Only the engine backends make sense on a remote host in practice: of all backends, only
 `docker` and `podman` can work through an engine socket today (the VM backend does not support
 remote hosts, see [backends](backends.md)).
@@ -90,10 +108,50 @@ A zone says how much you trust a machine and drives policy, instead of host name
 | `restricted`  | holds sensitive data                        | approval required, sandboxes only as `vm` (or not at all)                      |
 
 A host's `min_isolation` can only raise the zone's value; the stricter of host and template wins.
+The zone minimums belong to the machine, not to the caller: they bind you in the CLI or GUI exactly
+as they bind agents (a `shared` host refuses a plain container sandbox from you as well); what the
+profile rules `isolation.min`, `network_open`, `mounts` and `secrets_env` demand is an agent rule.
 Because plain containers provide `container` isolation, a `shared` host effectively refuses
-container sandboxes unless a hardened runtime is available, and a `restricted` host refuses
-everything except VMs (which cannot run remotely). Choose the zone honestly: `lab` for a throwaway
-VPS, never for a machine with production services.
+container sandboxes unless a hardened runtime is available on **that host's engine**, and a
+`restricted` host refuses everything except VMs (which cannot run remotely). Choose the zone
+honestly: `lab` for a throwaway VPS, never for a machine with production services.
+
+### A hardened runtime on a remote host
+
+Whether a host can deliver `hardened` is a property of its engine, so it is configured per host in
+`hosts.yaml` (or `--runtime docker=runsc` of `abox host add`), not taken from the local
+`config.yaml`:
+
+```yaml
+hosts:
+  homeserver:
+    hostname: homeserver.example.org
+    user: abox-sandbox
+    zone: shared # needs approval and isolation hardened
+    backends: [docker]
+    engine_socket: /run/user/1001/docker.sock
+    runtimes: { docker: runsc } # the runtime must be installed in THAT engine
+```
+
+When the host is used, abox asks the engine through the tunnel (`GET /info`, the `Runtimes`
+field) and reports `hardened` only if the runtime is really there. If it is missing, the host
+stays at `container`, `abox host test` shows `hardened runtime: docker: runsc (MISSING)`, the audit
+log gets a `host.runtime_missing` entry, and a refused create says so ("The hardened runtime
+"runsc" configured for host 'homeserver' is not available in its engine ..."). The `runtimes` of
+the local host come from `hosts.yaml` if set there, otherwise from `config.yaml` as before. A remote
+host never inherits the local runtime. `python` uses the `docker` entry.
+
+### Rootless engines on `shared` and `restricted` hosts
+
+Access to a rootful engine socket is root on that machine, and these zones are the ones that carry
+your services or data. So for `shared` and `restricted` hosts abox **refuses a rootful engine**
+(`policy_denied`, reason `engine_rootful`): `engine_socket` pointing at a system-wide socket
+(`/var/run/docker.sock`, `/run/docker.sock`, `/run/podman/podman.sock`) is refused before any
+connection is made, and for every other socket the engine itself is asked (`SecurityOptions`
+contains `rootless`); an engine that does not say is refused too. The tunnel is closed again when
+a host is refused. `allow_rootful: true` (`--allow-rootful`) is the explicit opt-in for a rootful
+engine you accept. For `workstation` and `lab` hosts a rootful engine is only a warning of
+`abox host test` and `abox doctor`.
 
 ## Preparing a server
 
@@ -147,7 +205,13 @@ recommended setup, all done **by you on the server** (abox does none of it):
 
 Then run `abox host test lab1`: it reports reachability, host key, login, the user's uid, whether
 the engine is rootless, the configured socket and candidate sockets, and warns if the user is
-root or in the `docker` group.
+root or in the `docker` group. It also asks the engine behind `engine_socket` itself (through a
+short-lived forward, the way sandboxes reach it): rootless or not, which OCI runtimes it has, and
+whether the `runtimes` of the profile are among them.
+
+For a hardened runtime install it in the **rootless engine of that user** (gVisor's `runsc`:
+register it in that engine's `daemon.json`/`containers.conf` under the name used in `runtimes`),
+then run `abox host test` again.
 
 ## Adding and trusting a host
 
@@ -184,11 +248,22 @@ administrator: replace it with the dedicated unprivileged user and declare the e
 - All ssh calls run with `StrictHostKeyChecking=yes`, no agent forwarding, no X11 forwarding, no
   `PermitLocalCommand`, no host-key updates; the hardening also applies to jump hosts. It is
   placed before your own ssh config, so it wins.
+- **No local environment is sent to the server.** `SendEnv` accumulates over all config sources
+  instead of "first value wins", so the generated config ends with `SendEnv -*` _behind_ the include
+  of your ssh config: a `SendEnv LANG LC_*` or `SendEnv MY_TOKEN` there has no effect. (`SetEnv`
+  values you write explicitly are not local variables and stay.)
+- **Scanning follows the real route.** The host key shown for `abox host test` / `trust` is read the
+  way the connection later goes: directly with `ssh-keyscan`, behind a `ProxyJump` or a
+  `ProxyCommand` of the effective ssh config (`ssh -G`) with a throwaway handshake that stops before
+  authentication (jump hosts must be trusted already; the `ProxyCommand` of your own config runs,
+  as it does for the real connection). A direct scan would show the key of whatever answers
+  _directly_, not of the machine abox then logs in to.
 - **A changed key blocks everything.** `abox host trust` refuses even the correct new fingerprint.
   After a legitimate key change verify the new fingerprint out of band, then
   `abox host forget-key lab1` and `abox host trust lab1`.
 - Connections are multiplexed (`ControlMaster`, 60 s). A live master skips the host-key check of
-  new channels, as ssh does; closing it is part of the security-sensitive paths.
+  new channels, as ssh does; therefore `abox host rm` and `abox host forget-key` end it
+  (`ssh -O exit`) before they return.
 
 ## Tunnels
 
@@ -199,19 +274,55 @@ like a local engine socket. Health is checked with `GET /_ping`. If the tunnel d
 operation reconnects; sandboxes of an unreachable host are shown as _stale_ with their last known
 state.
 
+- **Only the engine socket is forwarded.** `ClearAllForwardings=yes` cannot be used for that (ssh
+  would drop abox's own `-L` as well), so before the tunnel starts abox asks `ssh -G` what this
+  exact command line would forward. A `LocalForward`, `RemoteForward` or `DynamicForward` from your
+  ssh config (a `RemoteForward` is a way back into your machine for whoever controls the server)
+  makes the start fail with `config_forwards` and names the entry. Every other call runs with
+  `ClearAllForwardings=yes` (a session with saved port forwards excepted).
+- **A dead abox does not leave a tunnel behind.** The ssh process runs below a small supervisor
+  that polls the abox process which started it and stops ssh within about a second once that process
+  is gone (`kill -9`, crash). The pid file `<socket>.pid` holds `<ssh pid> <owner pid>`; the next
+  abox run removes the tunnels (process, socket, pid file) of owners that no longer exist, and never
+  touches the tunnel of another live abox process (CLI, GUI and MCP server share the directory: a
+  second process gets its own `<host>.<pid>.sock`).
+
 ## Using a host
 
 ```sh
 abox create node-dev --host lab1 --workspace ~/projects/app --mode clone
 abox ls --host lab1
 abox ssh lab1                 # an interactive ssh session with abox's hardening and known_hosts
+abox ssh lab1 -- uptime -a    # one command; everything after "--" is the remote command
 ```
 
 On a remote host the workspace modes are `empty`, `clone`, `copy` and `sync` (the workspace is
 prepared locally and uploaded); **`mount` and `worktree` are not available**, nor are extra
-mounts. The image cache, the proxy sidecar and the TTL enforcement live on the host. The
-agent-side guarantees are the same as locally: nothing is merged back automatically, export
-brings results to you.
+mounts. A refused `mount` says so ("workspace mode 'mount' is not possible on host 'lab1': it is a
+remote host and cannot bind-mount a directory of this machine") and suggests `copy` or `clone`. The
+image cache and the proxy sidecar live on the host. The agent-side guarantees are the same as
+locally: nothing is merged back automatically, export brings results to you.
+
+**Expiry** is enforced on two levels. The container ends itself at its deadline (the entrypoint of
+the sandbox), also when no abox is running. Every abox process that is open (a CLI command, the MCP
+server, the app's watcher) additionally marks overdue sandboxes of **all** hosts as expired and
+stops them through the provider of their host; a host that is unreachable at the deadline is retried
+by the running watchers until it is back. There is no cron job or daemon on the server.
+
+## Differences from the design
+
+The design note (Hosts und SSH) describes more than abox does today. What differs, and why:
+
+| Design                                                                            | abox today                                                                                                                                      |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mount` is refused remotely, `sync` as the replacement                            | as designed (`mount` refused with a message that names the remote host; use `copy`, `clone` or `sync`)                                          |
+| `clone`: a git clone **on the server** (credentials through a proxy secret)       | the clone is made **locally** (no hooks, no remote, own object store) and uploaded; no repository credentials ever reach the server             |
+| `worktree`: a worktree of a repository cloned on the server                       | **refused** on remote hosts (`clone` is the equivalent: an independent repository with a baseline for `export`)                                 |
+| `sync`: one-way, rsync-like synchronisation that can be repeated                  | **one-shot** upload, the same as `copy`; a later change of the local tree is not sent (create a new sandbox or use `abox cp`)                   |
+| TTL: `expires` label plus a cleanup run on the next connection, or a server timer | the container's entrypoint ends it at the deadline; sweeps run in every open abox process for all hosts; no timer or cleanup job on the server  |
+| image is built on the target host or transferred                                  | built on the target host through the engine API (no transfer); a template's base image must be pullable there                                   |
+| engine is "rootless where possible"                                               | **required** for `shared` and `restricted` hosts (refused otherwise, `allow_rootful` to opt in); `hardened` needs a runtime configured per host |
+| M2 (abox daemon on the server)                                                    | not implemented (after v1.0)                                                                                                                    |
 
 ## What agents can and cannot do
 

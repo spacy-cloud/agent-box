@@ -277,6 +277,16 @@ export class SandboxRegistry {
   }
 
   /**
+   * Run `fn` in one write transaction: it sees the registry as no other process can change it
+   * until it returns. Quota checks that must hold under parallel creates (also across processes)
+   * read and write inside it. `fn` is synchronous, must not wait for anything and is retried
+   * from the start on SQLITE_BUSY, so it must not have side effects outside the database.
+   */
+  atomic<T>(fn: (registry: SandboxRegistry) => T): T {
+    return transaction(this.ctx.db, () => fn(this));
+  }
+
+  /**
    * Atomically claim a new sandbox row: runs `check` (e.g. a quota check) and the insert in
    * one write transaction. With a `requestId` the claim is idempotent (see `upsertIdempotent`).
    */

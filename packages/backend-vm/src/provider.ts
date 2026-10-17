@@ -1630,7 +1630,7 @@ export class VmProvider implements SandboxProvider {
       meta.user.name,
       normSandboxPath(sandboxPath, meta.workspacePath),
       hostPath,
-      undefined,
+      opts?.onSkip,
       opts?.symlinks,
     );
   }

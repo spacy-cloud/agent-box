@@ -83,7 +83,7 @@ describe('humans are not limited by workspace roots', () => {
     const { typed } = linkedProject();
     const other = join(env.root, 'data', 'other');
     mkdirSync(other, { recursive: true });
-    // the human may only use ~/Projekte (a symlink to /data/Projekte) and ~/projects
+    // the human may only use ~/Projekte (a symlink to a directory on another disk) and ~/projects
     await abox.setPolicy(
       HUMAN,
       `${testPolicy(env)}`.replace(
@@ -185,33 +185,34 @@ describe('idempotency compares the effective request', () => {
   });
 });
 
-describe('an invalid policy.yaml is detected and reported while the last good policy stays', () => {
-  it('records policy.reload_failed, emits an event and shows the problem to humans only', async () => {
+describe('an invalid policy.yaml is detected and reported (degraded mode, see policy-degraded.test.ts)', () => {
+  it('records policy.reload_failed, emits an event and shows the problem to the human', async () => {
     const events: AboxEvent[] = [];
     abox.onEvent((e) => events.push(e));
     const good = abox.policyHash;
     await sleep(520);
     writeFileSync(abox.paths.policyFile, 'profiles:\n  p:\n    approval: sometimes\n');
-    await abox.listSandboxes(A);
+    await abox.listSandboxes(HUMAN);
     expect(abox.policyHash).toBe(good);
     const failed = await abox.queryAudit(HUMAN, { action: 'policy.reload_failed' });
     expect(failed).toHaveLength(1);
     expect(failed[0]).toMatchObject({ actor: 'system', decision: 'error' });
     expect(JSON.stringify(failed[0]!.details)).toContain('approval');
-    expect(JSON.stringify(failed[0]!.details)).toContain('last valid policy stays in force');
+    expect(JSON.stringify(failed[0]!.details)).toContain('degraded mode');
     expect(events.map((e) => e.type)).toContain('policy.reload_failed');
     const human = await abox.showPolicy(HUMAN);
     expect(human.policy.contentHash).toBe(good);
     expect(human.policy.reloadError?.message).toContain('invalid policy');
-    expect((await abox.showPolicy(A)).policy.reloadError).toBeUndefined();
+    // agents are refused while the file is invalid
+    await expect(abox.showPolicy(A)).rejects.toMatchObject({ code: 'policy_denied' });
     // the same broken file is not reported again on every request
     await sleep(520);
-    await abox.listSandboxes(A);
+    await abox.listSandboxes(HUMAN);
     expect(await abox.queryAudit(HUMAN, { action: 'policy.reload_failed' })).toHaveLength(1);
     // fixing the file clears the problem
     await sleep(520);
     writeFileSync(abox.paths.policyFile, testPolicy(env).replace('sandboxes: 5', 'sandboxes: 2'));
-    await abox.listSandboxes(A);
+    await abox.listSandboxes(HUMAN);
     expect((await abox.showPolicy(HUMAN)).policy.reloadError).toBeUndefined();
     expect((await abox.showPolicy(A)).profile.limits.sandboxes).toBe(2);
   });

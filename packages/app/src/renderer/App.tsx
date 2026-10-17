@@ -14,6 +14,7 @@ import { SettingsView } from './views/Settings';
 import { TemplatesView } from './views/Templates';
 import { HostsView } from './views/Hosts';
 import { SshPanel, SshTabsProvider, useSshTabs } from './views/ssh-tabs';
+import { AskpassHost } from './components/AskpassDialog';
 
 const NAV: Array<{ view: Exclude<ViewName, 'detail'>; key: string }> = [
   { view: 'sandboxes', key: 'nav.sandboxes' },
@@ -147,6 +148,7 @@ function Shell() {
         {active === 'policy' ? <PolicyView /> : null}
         {active === 'settings' ? <SettingsView /> : null}
       </main>
+      <AskpassHost />
       <ToastRegion />
     </div>
   );

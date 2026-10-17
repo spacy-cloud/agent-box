@@ -17,6 +17,9 @@ import { EXPIRY_FILE, LABEL } from './labels.js';
 /** Epoch seconds the deadline is stored with. */
 export const toEpochSeconds = (ms: number): number => Math.ceil(ms / 1000);
 
+/** A moved deadline is stored in whole seconds (rounded up): up to this much later than asked for. */
+export const EXPIRY_STORAGE_RESOLUTION_MS = 1000;
+
 /** Does the container's entrypoint honour `EXPIRY_FILE` (created by a version that moves deadlines)? */
 export function hasMovableExpiry(labels: Record<string, string> | null | undefined): boolean {
   return labels?.[LABEL.expiryFile] === '1';

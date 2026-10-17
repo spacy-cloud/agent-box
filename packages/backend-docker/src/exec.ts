@@ -43,17 +43,29 @@ reap() {
 }
 `;
 
+/**
+ * PATH the wrappers use for their own helpers (`sleep`, `rm`). The command gets the environment the
+ * caller asked for, `PATH` included; the wrapper must not depend on it (a `PATH` without `/bin`
+ * would make the watchdog's `sleep` fail, which reads as an instant timeout).
+ */
+const WRAPPER_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
 /** `sh -c` script: args are <pidfile> <timeout-seconds|""> <argv...>. */
 export const WRAP_SCRIPT = `${SH_LIB}
 f=$1; t=$2; shift 2
+_hp=\${PATH+x}; _up=\${PATH-}
+PATH=${WRAPPER_PATH}
 echo $$ > "$f"
 wd=
 if [ -n "$t" ]; then
   ( sleep "$t" 2>/dev/null || sleep "\${t%%.*}"; read -r me _ < /proc/self/stat; : > "$f.t"; reap "$$" "$me" ) &
   wd=$!
 fi
+# the command runs with the PATH it was given (or none)
+if [ -n "$_hp" ]; then PATH=$_up; else unset PATH; fi
 "$@"
 rc=$?
+PATH=${WRAPPER_PATH}
 if [ -n "$wd" ]; then
   desc "$wd"; for _p in $wd $D; do kill -KILL "$_p" 2>/dev/null; done
 fi
@@ -64,6 +76,7 @@ exit $rc
 
 /** `sh -c` script: args are <pidfile>. Kills the wrapper's process tree (including the wrapper). */
 export const KILL_SCRIPT = `${SH_LIB}
+PATH=${WRAPPER_PATH}
 f=$1; i=0
 while [ ! -s "$f" ] && [ "$i" -lt 30 ]; do i=$((i+1)); sleep 0.1 2>/dev/null || sleep 1; done
 [ -s "$f" ] || exit 0

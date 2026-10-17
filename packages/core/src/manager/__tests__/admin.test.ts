@@ -61,7 +61,7 @@ describe('policy', () => {
     expect(abox.policyHash).toBe(r.contentHash);
   });
 
-  it('picks up edits made by a human in another process; a broken edit keeps the last good policy', async () => {
+  it('picks up edits made by a human in another process; a broken edit puts the manager in degraded mode', async () => {
     const good = abox.policyHash;
     await sleep(520);
     writeFileSync(abox.paths.policyFile, testPolicy(env).replace('sandboxes: 5', 'sandboxes: 1'));
@@ -85,8 +85,9 @@ describe('policy', () => {
     expect((await abox.verifyAudit(HUMAN)).ok).toBe(true);
     await sleep(520);
     writeFileSync(abox.paths.policyFile, 'profiles: [not, a, map]');
-    await abox.listSandboxes(A);
-    expect(abox.policyHash).toBe(edited);
+    await abox.listSandboxes(HUMAN);
+    expect(abox.policyHash).toBe(edited); // the last valid policy is kept for looking and cleaning up
+    await expect(abox.listSandboxes(A)).rejects.toMatchObject({ code: 'policy_denied' });
     expect(await abox.queryAudit(HUMAN, { action: 'policy.reload_failed' })).toHaveLength(1);
   });
 

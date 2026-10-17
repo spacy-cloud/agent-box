@@ -9,13 +9,14 @@ import {
   TEST_INSTANCE,
   TEST_LABEL,
   TEST_RUN,
+  TEST_SOCKET,
   dockerEnabled,
   newProvider,
   sweepTestObjects,
 } from './__tests__/harness.js';
 import { defaultProxyAssets } from './proxy.js';
 
-const raw = new Docker({ socketPath: '/var/run/docker.sock' });
+const raw = new Docker({ socketPath: TEST_SOCKET });
 const host = { host: 'local', kind: 'local' } as const;
 
 describe('instance id option (no engine needed)', () => {

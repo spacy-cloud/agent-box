@@ -779,23 +779,25 @@ Add an SSH host profile (metadata only; keys stay with ssh-agent / your key file
 | -------- | -------------------------------- |
 | `id`     | short id, e.g. vps (a-z, 0-9, -) |
 
-| Option                    | Meaning                                                                                                  |
-| ------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `--hostname <name>`       | DNS name or IP address                                                                                   |
-| `--user <name>`           | login user (use a dedicated unprivileged one)                                                            |
-| `--port <n>`              | ssh port                                                                                                 |
-| `--zone <zone>`           | trust zone: workstation, lab, shared, restricted (choices: "workstation", "lab", "shared", "restricted") |
-| `--backend <kind>`        | container engine / backend on the host (repeatable or comma separated)                                   |
-| `--engine-socket <path>`  | engine socket path ON THE HOST (rootless docker/podman)                                                  |
-| `--identity-file <path>`  | private key path (never its contents)                                                                    |
-| `--ssh-alias <alias>`     | use this Host alias from ~/.ssh/config                                                                   |
-| `--proxy-jump <hops>`     | jump hosts, [user@]host[:port], comma separated                                                          |
-| `--min-isolation <level>` | minimum isolation required on this host (choices: "none", "container", "hardened", "vm")                 |
-| `--data-dir <path>`       | working directory root on the host (process/vm backends)                                                 |
-| `--tag <tag>`             | tag (repeatable)                                                                                         |
-| `--max-sandboxes <n>`     | limit: sandboxes on this host in total (0..10000)                                                        |
-| `--cpus <n>`              | limit: CPUs for all sandboxes on this host together (up to 1024)                                         |
-| `--memory <size>`         | limit: memory for all sandboxes on this host together, e.g. 16g                                          |
+| Option                       | Meaning                                                                                                              |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `--hostname <name>`          | DNS name or IP address                                                                                               |
+| `--user <name>`              | login user (use a dedicated unprivileged one)                                                                        |
+| `--port <n>`                 | ssh port                                                                                                             |
+| `--zone <zone>`              | trust zone: workstation, lab, shared, restricted (choices: "workstation", "lab", "shared", "restricted")             |
+| `--backend <kind>`           | container engine / backend on the host (repeatable or comma separated)                                               |
+| `--engine-socket <path>`     | engine socket path ON THE HOST (rootless docker/podman)                                                              |
+| `--runtime <engine=runtime>` | hardened OCI runtime of that engine on the host, e.g. docker=runsc (repeatable); needed for min isolation "hardened" |
+| `--allow-rootful`            | accept a rootful engine on a shared/restricted host (root-equivalent access; default: refused)                       |
+| `--identity-file <path>`     | private key path (never its contents)                                                                                |
+| `--ssh-alias <alias>`        | use this Host alias from ~/.ssh/config                                                                               |
+| `--proxy-jump <hops>`        | jump hosts, [user@]host[:port], comma separated                                                                      |
+| `--min-isolation <level>`    | minimum isolation required on this host (choices: "none", "container", "hardened", "vm")                             |
+| `--data-dir <path>`          | working directory root on the host (process/vm backends)                                                             |
+| `--tag <tag>`                | tag (repeatable)                                                                                                     |
+| `--max-sandboxes <n>`        | limit: sandboxes on this host in total (0..10000)                                                                    |
+| `--cpus <n>`                 | limit: CPUs for all sandboxes on this host together (up to 1024)                                                     |
+| `--memory <size>`            | limit: memory for all sandboxes on this host together, e.g. 16g                                                      |
 
 #### `abox host rm`
 
@@ -923,8 +925,12 @@ Print a shell completion script (bash, zsh or fish)
   asks before saving. The change is versioned in the audit log. Agents cannot do any of this.
 - **`abox policy validate`** only reads: it does not open the manager and creates no directories.
   Without a `policy.yaml` it says that none exists and that the built-in default policy applies
-  (exit 0; `--json`: `exists: false`, `source: "default"`). `abox policy show` also warns when a
-  running manager keeps an older policy because the file on disk is invalid.
+  (exit 0; `--json`: `exists: false`, `source: "default"`). While the file on disk is invalid,
+  abox is in degraded mode (fail closed): `abox policy show` warns and shows the last valid policy,
+  `abox doctor` reports it as a failed check, `create`, `extend`, `approvals approve`, `template build`
+  and `token create` and every agent call are refused (exit 3), while `ls`, `inspect`, `stop`, `rm`,
+  `logs`, `audit`, `approvals ls/deny`, `template ls/show/validate` and `policy edit` keep working so you
+  can clean up and repair it (see [troubleshooting](troubleshooting.md)).
 - **`abox audit`** shows the hash-chained log; `abox audit verify` recomputes the chain and
   exits 1 if it is broken. See the limits in [security](security.md#audit-log).
 - **`abox reconcile`** only reports unless you pass `--apply`; backend objects that belong to no

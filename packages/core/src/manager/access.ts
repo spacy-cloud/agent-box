@@ -3,6 +3,7 @@ import type { SandboxRecord } from '../state/sandbox-registry.js';
 import {
   canonicalizePath,
   evaluateAccessRequest,
+  hostQuotaViolations,
   normalizeDomainPattern,
   type AccessRequestSpec,
   type AgentContext,
@@ -16,6 +17,7 @@ import { confirmationRequired, consumeApproval, gate } from './approvals.js';
 import type { Internals, StoredEffective } from './internals.js';
 import { toDuration, viewFor } from './lifecycle.js';
 import { accessSchema } from './schemas.js';
+import { requireNotTakenOver } from './takeover.js';
 import type { AccessResult, Caller, ExecCallOptions } from './types.js';
 import type { AccessRequestInput } from './types.js';
 import { errMessage, parseInput } from './util.js';
@@ -64,8 +66,10 @@ export async function accessRequest(
   o: ExecCallOptions = {},
 ): Promise<AccessResult> {
   const ctx = await I.context(caller);
+  I.requirePolicyValid(ctx, 'sandbox.access_request', 'granting access');
   const input = parseInput(accessSchema, rawInput, 'access request');
   const rec = I.lookup(ctx, id);
+  requireNotTakenOver(I, ctx, rec, 'sandbox.access_request');
   liveOrThrow(I, rec);
   const eff = (rec.effective ?? {}) as Partial<StoredEffective>;
   const currentNet = eff.network ?? { mode: 'none', allow: [] };
@@ -170,6 +174,8 @@ export async function accessRequest(
       ...(host ? { host } : {}),
       isolation: rec.isolation,
       network: { mode: currentNet.mode as NetworkMode, allow: currentNet.allow },
+      // what the other sandboxes of the host reserve: the host limits hold for all of them together
+      hostUsage: I.hostUsage(rec.host, { exclude: rec.id }),
     },
     spec,
     { ...(ctx.kind === 'human' && caller.humanConfirmed === true ? { humanConfirmed: true } : {}) },
@@ -368,18 +374,65 @@ async function applyAccess(
       if (apply.cpus === undefined && apply.memoryBytes === undefined)
         throw new AboxError('invalid_input', 'the request names neither cpus nor memory');
       const provider = await I.providerForRecord(fresh);
+      // The host limits hold for all sandboxes of the host together. Check against what the others
+      // reserve right now and reserve the larger of old and new in the same transaction, so a create
+      // or resize running in parallel (also in another process) sees it; the reservation is cut back
+      // to what the backend really applied afterwards.
+      const host = await hostInfoOf(I, fresh);
+      const previous = I.state.sandboxes.atomic((registry) => {
+        const now = registry.get(fresh.id);
+        const cur = (now?.effective ?? {}) as Partial<StoredEffective>;
+        if (!now || !cur.resources) return undefined;
+        if (host) {
+          const violations = hostQuotaViolations(
+            host,
+            I.hostUsage(fresh.host, { exclude: fresh.id, registry }),
+            {
+              ...(apply.cpus !== undefined ? { cpus: apply.cpus } : {}),
+              ...(apply.memoryBytes !== undefined ? { memoryBytes: apply.memoryBytes } : {}),
+            },
+          );
+          if (violations.length > 0) {
+            throw new AboxError('policy_denied', violations.map((v) => v.reason).join('; '), {
+              hint: [...new Set(violations.map((v) => v.hint))].join(' '),
+              details: { reasons: violations.map((v) => v.reason) },
+            });
+          }
+        }
+        registry.setEffective(fresh.id, {
+          ...cur,
+          resources: {
+            ...cur.resources,
+            cpus: Math.max(cur.resources.cpus, apply.cpus ?? 0),
+            memoryBytes: Math.max(cur.resources.memoryBytes, apply.memoryBytes ?? 0),
+          },
+        });
+        return cur.resources;
+      });
       // The backend first: if it refuses (a memory limit below what the sandbox uses now) the
       // registry keeps the limits that are really in force.
-      await provider.updateResources!(fresh.id, {
-        ...(apply.cpus !== undefined ? { cpus: apply.cpus } : {}),
-        ...(apply.memoryBytes !== undefined ? { memoryBytes: apply.memoryBytes } : {}),
-      });
+      try {
+        await provider.updateResources!(fresh.id, {
+          ...(apply.cpus !== undefined ? { cpus: apply.cpus } : {}),
+          ...(apply.memoryBytes !== undefined ? { memoryBytes: apply.memoryBytes } : {}),
+        });
+      } catch (e) {
+        const now = I.state.sandboxes.get(fresh.id)?.effective as StoredEffective | undefined;
+        if (previous && now)
+          I.state.sandboxes.setEffective(fresh.id, {
+            ...now,
+            resources: { ...now.resources, cpus: previous.cpus, memoryBytes: previous.memoryBytes },
+          });
+        throw e;
+      }
+      const latest = (I.state.sandboxes.get(fresh.id)?.effective ??
+        eff) as unknown as StoredEffective;
       const resources = {
-        ...eff.resources,
+        ...latest.resources,
         ...(apply.cpus !== undefined ? { cpus: apply.cpus } : {}),
         ...(apply.memoryBytes !== undefined ? { memoryBytes: apply.memoryBytes } : {}),
       };
-      I.state.sandboxes.setEffective(fresh.id, { ...eff, resources });
+      I.state.sandboxes.setEffective(fresh.id, { ...latest, resources });
       message = `limits are now ${resources.cpus} cpu(s), ${formatSize(resources.memoryBytes)} memory`;
     } else {
       await assertApplicable(I, fresh, apply);
@@ -409,6 +462,7 @@ export async function applyApprovedAccess(
 ): Promise<{ ok: boolean; message: string }> {
   const ctx = await I.context(caller);
   I.requireHuman(ctx, 'access.apply');
+  I.requirePolicyValid(ctx, 'access.apply', 'applying access requests');
   return applyApprovedAccessInternal(I, ctx, approvalId);
 }
 

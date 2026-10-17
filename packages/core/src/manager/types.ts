@@ -617,10 +617,17 @@ export interface PolicyView {
     source: 'default' | 'file';
     path?: string;
     /**
-     * Humans only: policy.yaml on disk is invalid, so this (older) policy stays in force until the
-     * file is valid again. Absent while the file is fine.
+     * Humans only: policy.yaml on disk is invalid, so the manager is in degraded mode until the
+     * file is valid again: this (older, `last_valid`; or the restrictive `built_in`, when no valid
+     * one was ever recorded) policy only serves to look at things and clean up, sandbox creation,
+     * access grants, approvals and every agent are refused. Absent while the file is fine.
      */
-    reloadError?: { message: string; detectedAt: number };
+    reloadError?: {
+      message: string;
+      detectedAt: number;
+      issues: ErrorIssue[];
+      fallback: 'last_valid' | 'built_in';
+    };
   };
   /** Humans only: every profile and context of the policy. */
   profiles?: Record<string, ResolvedProfile>;

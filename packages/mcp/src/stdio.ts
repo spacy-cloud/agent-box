@@ -23,6 +23,8 @@ export async function assertAgentContext(abox: Abox, contextId: string): Promise
     const view = await abox.showPolicy({ contextId });
     if (view.kind !== 'agent') throw new Error('not an agent context');
   } catch (e) {
+    // policy.yaml is invalid: say so, instead of claiming the context is missing
+    if (isAboxError(e) && e.details?.['reason'] === 'policy_invalid') throw e;
     if (isAboxError(e) && e.code === 'policy_denied') {
       throw new AboxError(
         'policy_denied',

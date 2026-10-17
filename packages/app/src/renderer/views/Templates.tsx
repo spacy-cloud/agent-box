@@ -37,7 +37,7 @@ import type {
   TemplateForm,
 } from '../../shared/template-form';
 import { TEMPLATE_BACKENDS, ISOLATION_LEVELS, NETWORK_MODES } from '../../shared/constants';
-import { formatDuration } from '../../shared/format';
+import { formatDuration, safeInline, safeText } from '../../shared/format';
 import type { TemplateListEntry } from '@abox/core';
 import type {
   TemplateCatalogInfo,
@@ -434,12 +434,14 @@ function TemplateItem(props: { entry: TemplateListEntry; selected: boolean; onOp
       onClick={props.onOpen}
     >
       <span className="tpl-item-head">
-        <strong className="plain">{e.name}</strong>
+        <strong className="plain">{safeInline(e.name, 80)}</strong>
         <Badge tone={e.source.kind === 'user' ? 'info' : 'neutral'}>
           {t(`tpl.source.${e.source.kind}`)}
         </Badge>
       </span>
-      <span className="muted small plain tpl-item-desc">{e.useFor ?? e.description}</span>
+      <span className="muted small plain tpl-item-desc">
+        {safeInline(e.useFor ?? e.description, 240)}
+      </span>
       <span className="badges">
         <Badge tone="neutral">{e.backend}</Badge>
         <IsolationBadge level={e.isolation} />
@@ -486,7 +488,7 @@ function ValidationSummary(props: { validation: TemplateValidation | null; valid
               <ul>
                 {v.policy.reasons.map((r, i) => (
                   <li key={i} className="plain">
-                    {r}
+                    {safeText(r)}
                   </li>
                 ))}
               </ul>

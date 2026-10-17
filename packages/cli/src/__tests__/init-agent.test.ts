@@ -38,6 +38,9 @@ describe('abox init --agent: workspace roots of the built-in policy', () => {
     expect(text.stdout).toContain('is not usable for it');
     expect(text.stdout).toContain('abox policy edit');
     expect(text.stdout).toContain('workspace.roots');
+    expect(text.stdout).toContain('codex mcp add abox -- abox mcp serve --agent codex');
+    expect(text.stdout).toContain('[mcp_servers.abox]');
+    expect(text.stdout).not.toContain('"mcpServers"');
   });
 
   it('a project inside a hidden home directory is refused whatever the roots', async () => {

@@ -5,6 +5,7 @@ import {
   type AboxConfig,
   type AboxPaths,
   type BackendKind,
+  type HostConnection,
   type ProviderFactory,
 } from '@abox/core';
 import { createDockerProvider, createPodmanProvider } from '@abox/backend-docker';
@@ -38,6 +39,22 @@ export function configuredRuntime(
   return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
 }
 
+/**
+ * The hardened runtime of an engine ON A HOST. A host profile's `runtimes` entry (hosts.yaml) is
+ * authoritative for that host. Only the local host falls back to `config.yaml`: the runtime
+ * installed in this machine's engine says nothing about the engine of a remote server, so a
+ * remote host without its own entry has no hardened runtime.
+ */
+export function hardenedRuntimeFor(
+  kind: 'docker' | 'podman',
+  config: AboxConfig,
+  host: HostConnection,
+): string | undefined {
+  return (
+    host.runtimes?.[kind] ?? (host.kind === 'local' ? configuredRuntime(kind, config) : undefined)
+  );
+}
+
 /** Socket of a container engine: config.yaml, then the environment, then the default location. */
 export function engineSocket(
   kind: 'docker' | 'podman',
@@ -60,8 +77,12 @@ export function engineSocket(
   return join(runtime, 'podman', 'podman.sock');
 }
 
-function hardened(kind: 'docker' | 'podman', ctx: ProviderContext): { hardenedRuntime?: string } {
-  const rt = configuredRuntime(kind, ctx.config);
+function hardened(
+  kind: 'docker' | 'podman',
+  ctx: ProviderContext,
+  host: HostConnection,
+): { hardenedRuntime?: string } {
+  const rt = hardenedRuntimeFor(kind, ctx.config, host);
   return rt ? { hardenedRuntime: rt } : {};
 }
 
@@ -74,7 +95,7 @@ registry.set(
     createDockerProvider(host, {
       socketPath: engineSocket('docker', ctx, host.engineSocket),
       instanceId: loadInstanceId(ctx.paths.dataDir),
-      ...hardened('docker', ctx),
+      ...hardened('docker', ctx, host),
     }),
 );
 registry.set(
@@ -83,7 +104,7 @@ registry.set(
     createPodmanProvider(host, {
       socketPath: engineSocket('podman', ctx, host.engineSocket),
       instanceId: loadInstanceId(ctx.paths.dataDir),
-      ...hardened('podman', ctx),
+      ...hardened('podman', ctx, host),
     }),
 );
 registry.set(
@@ -106,7 +127,7 @@ registry.set(
       docker: {
         socketPath: engineSocket('docker', ctx, host.engineSocket),
         instanceId: loadInstanceId(ctx.paths.dataDir),
-        ...hardened('docker', ctx),
+        ...hardened('docker', ctx, host),
       },
       dataDir: host.dataDir ?? ctx.paths.dataDir,
     }),

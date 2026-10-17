@@ -764,6 +764,7 @@ export async function snapshotSandbox(
 ): Promise<{ snapshotId: string }> {
   const ctx = await I.context(caller);
   const rec = I.lookup(ctx, id);
+  requireNotTakenOver(I, ctx, rec, 'sandbox.snapshot');
   if (typeof name !== 'string' || !SNAPSHOT_NAME_RE.test(name)) {
     throw new AboxError('invalid_input', 'invalid snapshot name (letters, digits . _ -, max 64)');
   }

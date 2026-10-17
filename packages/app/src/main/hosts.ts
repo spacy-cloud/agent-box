@@ -56,6 +56,8 @@ interface GuiHostInfo {
     authOk?: boolean;
     remoteUser?: string;
     backends?: HostStatus['backends'];
+    engine?: NonNullable<HostStatus['engine']>;
+    runtimes?: HostStatus['runtimes'];
     warnings?: string[];
   };
 }
@@ -78,6 +80,8 @@ export function statusFor(
     authOk: null,
     remoteUser: null,
     backends: [],
+    engine: null,
+    runtimes: [],
     warnings: [],
   };
   if (profile.kind === 'local') return { ...empty, state: 'local' };
@@ -94,6 +98,8 @@ export function statusFor(
     authOk: info.gui?.authOk ?? null,
     remoteUser: info.gui?.remoteUser ?? null,
     backends: info.gui?.backends ?? [],
+    engine: info.gui?.engine ?? null,
+    runtimes: info.gui?.runtimes ?? [],
     warnings: info.gui?.warnings ?? [],
   };
 }
@@ -249,6 +255,10 @@ export function createHostsService(
         authOk: r.authOk,
         ...(r.remoteUser ? { remoteUser: r.remoteUser } : {}),
         backends,
+        ...(r.engine
+          ? { engine: { rootless: r.engine.rootless, runtimes: r.engine.runtimes } }
+          : {}),
+        runtimes: r.runtimes,
         warnings: r.warnings,
       },
     };

@@ -9,6 +9,7 @@ import type {
   ServerRequest,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { describeUnknownParameters } from './arguments.js';
 import { renderResult, errorOutcome, fail, toWire } from './results.js';
 import { raceSignal, resolveLimits } from './runtime.js';
 import type { McpLimits, Runtime } from './runtime.js';
@@ -70,13 +71,17 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
     },
   );
 
+  // Strict input schemas (unknown parameters are errors, see arguments.ts), by tool name.
+  const schemas = new Map<string, z.ZodType>();
   const register: Register = (def) => {
+    const inputSchema = z.strictObject(def.input);
+    schemas.set(def.name, inputSchema);
     (server.registerTool.bind(server) as LooseRegisterTool)(
       def.name,
       {
         title: def.title,
         description: def.description,
-        inputSchema: def.input,
+        inputSchema,
         annotations: { title: def.title, ...def.annotations },
       },
       async (args: Record<string, unknown>, extra): Promise<CallToolResult> => {
@@ -116,7 +121,7 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
   registerTools(register);
   registerResources(server, abox, caller);
   registerPrompts(server);
-  structureArgumentErrors(server, abox, caller);
+  structureArgumentErrors(server, abox, caller, schemas);
   return server;
 }
 
@@ -124,7 +129,12 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
  * The SDK reports argument validation failures as text-only error results. Add the same structured shape
  * every other error has (`{ok:false, code:'invalid_input', message}`) so agents get one format.
  */
-function structureArgumentErrors(server: McpServer, abox: Abox, caller: Caller): void {
+function structureArgumentErrors(
+  server: McpServer,
+  abox: Abox,
+  caller: Caller,
+  schemas: ReadonlyMap<string, z.ZodType>,
+): void {
   const handlers = (server.server as unknown as { _requestHandlers?: Map<string, unknown> })
     ._requestHandlers;
   const orig = handlers?.get('tools/call') as
@@ -145,6 +155,23 @@ function structureArgumentErrors(server: McpServer, abox: Abox, caller: Caller):
             args && typeof args === 'object' ? Object.keys(args) : [],
           )
           .catch(() => undefined);
+      }
+      // A parameter the tool does not have: name it and suggest the closest valid one.
+      const schema = schemas.get(req.params.name);
+      if (schema) {
+        const parsed = schema.safeParse(req.params.arguments ?? {});
+        const problem = parsed.success
+          ? undefined
+          : describeUnknownParameters(schema, parsed.error.issues);
+        if (problem)
+          return renderResult(
+            fail(
+              'invalid_input',
+              problem.message,
+              { hint: problem.hint },
+              `${problem.message}\nHint: ${problem.hint}`,
+            ),
+          );
       }
       return renderResult(
         fail(/not found|disabled/i.test(message) ? 'not_found' : 'invalid_input', message, {

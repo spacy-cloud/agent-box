@@ -123,6 +123,8 @@ const portForward = z
  * Host profile fields. The shape is bounded here; the host module of @abox/core validates every value
  * again against its strict grammars (no secrets exist in this model: `identityFile` is a path only).
  */
+/** Name of an OCI runtime (`runsc`, `kata`); the host module validates it again. */
+const runtimeName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/, 'runtime like runsc');
 const hostFields = {
   hostname: z.string().min(1).max(253),
   port: z.number().int().min(1).max(65535),
@@ -135,6 +137,10 @@ const hostFields = {
   backends: z.array(z.enum(HOST_BACKENDS)).max(8),
   engineSocket: z.string().min(1).max(300),
   dataDir: z.string().min(1).max(300),
+  /** Hardened OCI runtime per engine on THAT host (`{ docker: 'runsc' }`). */
+  runtimes: z.object({ docker: runtimeName.optional(), podman: runtimeName.optional() }).strict(),
+  /** Accept a rootful engine on a shared / restricted host (root-equivalent). */
+  allowRootful: z.boolean(),
   tags: z.array(z.string().min(1).max(32)).max(20),
   favorite: z.boolean(),
   limits: z
@@ -162,6 +168,8 @@ const hostPatch = z
     backends: hostFields.backends.optional(),
     engineSocket: hostFields.engineSocket.nullable().optional(),
     dataDir: hostFields.dataDir.nullable().optional(),
+    runtimes: hostFields.runtimes.nullable().optional(),
+    allowRootful: hostFields.allowRootful.nullable().optional(),
     tags: hostFields.tags.optional(),
     favorite: hostFields.favorite.optional(),
     limits: hostFields.limits.nullable().optional(),
@@ -183,6 +191,8 @@ const hostAdd = z
     backends: hostFields.backends.optional(),
     engineSocket: hostFields.engineSocket.optional(),
     dataDir: hostFields.dataDir.optional(),
+    runtimes: hostFields.runtimes.optional(),
+    allowRootful: hostFields.allowRootful.optional(),
     tags: hostFields.tags.optional(),
     favorite: hostFields.favorite.optional(),
     limits: hostFields.limits.optional(),
@@ -197,6 +207,13 @@ export const IPC = {
   'app:copy': z.string().max(20_000),
   'app:settings': z.object({ closeToTray: z.boolean() }).strict(),
   'dialog:pickDirectory': none,
+  /**
+   * The answer to an ssh passphrase / PIN prompt (`evt:askpass`); `null` cancels. The value is handed to ssh and
+   * dropped: it is never logged, audited or kept, and not part of any error text.
+   */
+  'askpass:answer': z
+    .object({ id: z.string().uuid(), value: z.string().max(4096).nullable() })
+    .strict(),
 
   'sandboxes:list': z
     .object({
@@ -320,6 +337,8 @@ export const IPC = {
     })
     .strict()
     .optional(),
+  /** MCP status for the settings view: agent contexts with their last activity, token usage. */
+  'mcp:status': none,
 
   // -- terminals (sandbox shell and ssh sessions). The renderer never names a command or a path. ----------
   'tty:open': z.discriminatedUnion('kind', [

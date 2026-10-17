@@ -66,6 +66,15 @@ everything in and around `/usr/local/share/abox`. The registry of the manager st
 (no `abox.expiry-file` label) cannot move their deadline: `extendExpiry` answers `unsupported`. The
 proxy sidecar has no deadline of its own, it is started and stopped with the sandbox.
 
+**At expiry the egress infrastructure goes, the sandbox stays.** The stopped sandbox container is kept
+so that its workspace can be exported until `gc`, but its proxy sidecar (which holds the injected
+secret values in its config volume) and its internal network have no use any more. `stop` of a
+sandbox past its deadline (what the manager's TTL sweep calls) therefore removes the sidecar with its
+volume and the network right away; `start` of an expired sandbox, which is refused, removes leftovers
+of a container that ended itself at its deadline. A deadline that was moved is stored in whole seconds
+(rounded up), so the last second before the stored value already counts as expired for this cleanup.
+A stop before the deadline is an ordinary stop: sidecar and network stay and `start` brings them back.
+
 ## Network modes
 
 - `none`: `NetworkMode: none`, no interface besides `lo`.
@@ -86,6 +95,36 @@ proxy sidecar has no deadline of its own, it is started and stopped with the san
   change (`invalid_input`), and injections cannot be _added_ to a sandbox created without them
   (`unsupported`: the CA environment is fixed at creation); removing or changing them is fine.
 
+## File APIs and the sandbox user
+
+`readFile`, `listDir`, `writeFile` and `copyIn`/`copyOut` act with the rights of the sandbox user,
+whether the sandbox runs or not. While it runs they execute inside the container as that user (the
+kernel decides). The engine's archive API, used for a **stopped** sandbox, works as root and follows
+symlinks, so for that case the same decision is made statically before it is used:
+
+- Reads (`readFile`, `listDir`): the path is resolved component by component from `/` like the kernel
+  does (symlinks followed, also in the middle, a link loop is `not_found`; `..` after a link is
+  physical), every directory on the way needs search permission (`x`) and the final file read permission
+  (`r`) or the final directory `r` and `x`, judged from owner, group and mode of the archive header
+  against the sandbox user's uid and primary gid (supplementary groups are not known for a stopped
+  container, so this can only be stricter than a running sandbox). Otherwise `policy_denied`; the
+  archive API only reads the resolved, symlink-free path. `/etc/shadow`, a link to it planted in the
+  workspace and a file in a root-only directory are refused, a workspace file is readable.
+- Writes: the directory chain is walked without following symlinks and the deepest existing directory
+  must be writable for the sandbox user (see `assertStoppedWriteAllowed`).
+
+Differences that remain between a stopped and a running sandbox: the `/tmp` tmpfs and `/proc` only
+exist while it runs. A running `readFile` of a file that reports size 0 but has content (`/proc/self/environ`) returns
+that content and reports the number of bytes it got as `size` (one byte more than `maxBytes` is read to tell
+`truncated`); `listDir` ignores entries that vanish while the directory is listed (`/proc/self/fd`).
+
+## Exec wrapper and `PATH`
+
+A command with a timeout or abort signal runs inside a small `sh` wrapper (pid file, watchdog, process
+tree kill). The wrapper has its own `PATH` for its helpers (`sleep`, `rm`) and hands the command exactly
+the `PATH` that was requested (or none), so an agent that sets `env.PATH=/nonexistent` only breaks its own
+command lookup, never the watchdog (formerly: "timed out after 0s ... killed").
+
 ## Workspace delivery
 
 - `none`: empty directory owned by the sandbox user.
@@ -97,6 +136,19 @@ proxy sidecar has no deadline of its own, it is started and stopped with the san
   its private scratch directory, where the links the project already had (also absolute ones) are
   recreated as links so they can be compared with the baseline; nothing is ever written through a
   link.
+  - **Symlink chains.** Every link target is checked when it is read and **again against the finished
+    tree** (a link made later can redirect an earlier one): `d/sub -> ..`, `s -> d/sub`, `t -> s/..`
+    ends outside the destination although each target looks harmless. Such a link is removed and the
+    copy is refused (`policy_denied`). The `preserve` scratch tree keeps its links (never followed).
+  - **Hardlinks** become real hardlinks of the extracted file (a copy where the file system cannot
+    link), so a file with many names is stored once. Their logical sizes add up to at most 1 GiB
+    (`MAX_HARDLINK_BYTES`, everything downstream reads each name again): beyond that the copy is refused,
+    or, for the export scratch tree, the further links are left out and reported.
+  - **Names the host must not receive.** For the export (`preserve`) an entry whose name contains a
+    backslash (a path separator on some hosts), and a hardlink to something that was not extracted, is
+    left out and reported through `CopyOutOptions.onSkip`; the export lists it as skipped and flags it, so a
+    hostile sandbox cannot block exports with one awkward file name. `abox cp` (`refuse`) keeps refusing
+    such an archive.
 - `bind`: the host directory is bind-mounted (local engines only). `readonlySubpaths` (e.g. `.git`)
   are re-mounted read-only on top, extra `mounts` are read-only unless declared `rw`.
 
@@ -149,6 +201,23 @@ Copy delivery and `none` delivery always keep files owned by the template (sandb
   on a stopped sandbox still cannot see `/tmp` content.
 - `create` with an `expiresAt` in the past succeeds; the sandbox reports `expired` and cannot be
   started.
+
+## Podman
+
+The Podman provider (`createPodmanProvider`) is this code with Podman's default socket and wording.
+**It has not been run against a real Podman.** [docs/backends.md](../../docs/backends.md#podman-what-is-expected-to-work)
+lists which features are expected to work and which are unverified or known to differ. The suite can be
+pointed at a Podman socket:
+
+```sh
+systemctl --user enable --now podman.socket
+ABOX_TEST_DOCKER=1 ABOX_TEST_ENGINE=podman ABOX_TEST_ENGINE_SOCKET=$XDG_RUNTIME_DIR/podman/podman.sock \
+  npx vitest run packages/backend-docker --no-file-parallelism
+```
+
+`ABOX_TEST_ENGINE=podman` makes the suite's `newProvider()` a Podman provider; `ABOX_TEST_ENGINE_SOCKET`
+sets the socket of every client of the suite (also in `packages/e2e`, which then uses the Docker
+provider against that socket and the `docker` CLI with `DOCKER_HOST` set to it). See CONTRIBUTING.md.
 
 ## Known limits
 

@@ -9,6 +9,8 @@ export interface QueryState<T> {
   data: T | undefined;
   error: IpcError | undefined;
   loading: boolean;
+  /** When `data` was last fetched successfully (epoch ms); undefined before the first answer. */
+  updatedAt: number | undefined;
   reload(): Promise<void>;
 }
 
@@ -34,6 +36,7 @@ export function useQuery<C extends IpcChannel>(
   const [data, setData] = useState<IpcOutput<C>>();
   const [error, setError] = useState<IpcError>();
   const [loading, setLoading] = useState(enabled);
+  const [updatedAt, setUpdatedAt] = useState<number>();
   const seq = useRef(0);
   const mounted = useRef(true);
   const key = JSON.stringify(input ?? null);
@@ -53,6 +56,7 @@ export function useQuery<C extends IpcChannel>(
       const res = await call(channel, inputRef.current);
       if (mounted.current && mine === seq.current) {
         setData(res);
+        setUpdatedAt(Date.now());
         setError(undefined);
       }
     } catch (e) {
@@ -72,7 +76,7 @@ export function useQuery<C extends IpcChannel>(
     return () => clearInterval(id);
   }, [enabled, pollMs, reload]);
 
-  return { data, error, loading, reload };
+  return { data, error, loading, updatedAt, reload };
 }
 
 /** A clock that ticks every `ms` (default 1 s) so countdowns advance without refetching. */

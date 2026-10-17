@@ -73,7 +73,7 @@ Deny rules are evaluated first and all reasons are collected; **deny always wins
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | template not in `templates` (`*` = any)                                                                                                                                                           | deny, hint lists allowed templates                                        |
 | host not in context hosts (`*` = any)                                                                                                                                                             | deny                                                                      |
-| cpus / memory / ttl above profile `limits` or host limits                                                                                                                                         | deny with exact numbers; `effective` holds the clamped (strictest) values |
+| cpus / memory / ttl above profile `limits`; cpus / memory above the host limits **together with what the other sandboxes of the host reserve** (`req.hostUsage`, `hostQuotaViolations`)           | deny with exact numbers; `effective` holds the clamped (strictest) values |
 | owner sandbox count >= `limits.sandboxes`; host count >= host `sandboxes`                                                                                                                         | deny                                                                      |
 | workspace mode not in `workspace.modes`; `mount` on remote host                                                                                                                                   | deny                                                                      |
 | workspace path forbidden / hidden home directory (agents) / outside `workspace.roots` / missing host path                                                                                         | deny                                                                      |
@@ -105,18 +105,31 @@ excludes counts and the confirmation flag. For a create it includes the template
 approval is bound to the base image. Bind the policy `contentHash` separately if
 approvals should expire on policy change.
 
+## Host quotas (`hostQuotaViolations`)
+
+`limits.cpus`, `limits.memory` and `limits.sandboxes` of a host profile are budgets of the host as a whole. The
+engine is pure, so the caller passes what is already reserved: `CreateRequest.hostUsage` (cpus, memory bytes of
+the other live sandboxes on the host) and `currentHostSandboxCount`; for an `access_request` of kind `resources`
+`SandboxRef.hostUsage` (the others, without the sandbox being resized). A request above a limit on its own is
+reported as such, one that only exceeds the total says what is left. The manager repeats the check
+(`hostQuotaViolations`, the same function) inside the registry transaction that claims the sandbox row, so
+parallel creates cannot all pass a check only one of them satisfies; the policy evaluation is advisory. A resize
+reserves the larger of old and new limits in a transaction before the backend is asked.
+
 ## The human context
 
 The built-in `human` profile has the workspace and mount roots `['*']` (`ANY_ROOT`): **no roots check**, only
-the forbidden list above. A project below a symlink that leaves `$HOME` (`~/Projekte` -> `/data/Projekte`)
+the forbidden list above. A project below a symlink that leaves `$HOME` (`~/projects` -> `/mnt/data/projects`)
 therefore works for a human. `*` is not valid in `policy.yaml` (roots must be paths); a `human` profile there
 that sets `workspace.roots` / `mounts.roots` replaces it, and those roots are then enforced: the manager passes
 the path as typed too (`lexicalPath`, normalized, not symlink-resolved, only when it contains no `..`) and the
 check accepts a path whose canonical _or_ typed form lies within a canonical root (the forbidden list is always
 checked on the canonical path). Agents are compared by the canonical path only; `lexicalPath` is ignored for them.
 
-The built-in `human` profile (the CLI/GUI user) does not enforce the agent isolation minimums
-(`isolation.min`, `network_open`, `mounts`, `secrets_env`, host zone minimums are denials for agents). It keeps
+The built-in `human` profile (the CLI/GUI user) does not enforce the agent isolation minimums of a profile
+(`isolation.min`, `network_open`, `mounts`, `secrets_env` are denials for agents). The **host zone minimums**
+(`shared` hardened, `restricted` vm) and a host's `min_isolation` are properties of the machine (Hosts und SSH,
+Hostzonen) and bind the human as well: a container sandbox on a `shared` host is denied for everybody. It keeps
 the invariant approval items, which a human satisfies with `humanConfirmed` (CLI prompt or `--yes`, GUI dialog):
 isolation `none`, untrusted template, shared/restricted host zone, secrets as env/file, private-address
 exceptions. One more, following the concept "network mode `open` needs at least `hardened`": **network mode

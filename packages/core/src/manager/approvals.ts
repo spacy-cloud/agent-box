@@ -290,6 +290,8 @@ async function decide(
 ): Promise<ApprovalDecision> {
   const ctx = await I.context(caller);
   I.requireHuman(ctx, decision === 'approved' ? 'approval.approve' : 'approval.deny');
+  // Denying is always possible; approving grants rights, so it waits for a valid policy.
+  if (decision === 'approved') I.requirePolicyValid(ctx, 'approval.approve', 'approving requests');
   if (typeof id !== 'string' || id.length === 0 || id.length > 80)
     throw new AboxError('not_found', 'approval not found');
   const decided = I.state.approvals.decide(id, {

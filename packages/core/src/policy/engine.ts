@@ -78,6 +78,11 @@ export interface CreateRequest {
   currentSandboxCount: number;
   /** Sandboxes currently on `host`. */
   currentHostSandboxCount: number;
+  /**
+   * What the sandboxes already on `host` reserve together (cpus, memory; see `hostQuotaViolations`).
+   * Default: nothing, which only checks the request on its own against the host limits.
+   */
+  hostUsage?: { cpus: number; memoryBytes: number };
   paths: { home: string; extraForbidden?: string[] };
   /**
    * The human explicitly confirmed the approval items (CLI `--yes`/dialog).
@@ -152,6 +157,96 @@ export type CreateEvaluation = PolicyDecision & {
 
 export interface EngineDeps {
   checkHostPath?: (canonical: string, opts: CheckHostPathOptions) => PathCheck;
+}
+
+// ---------------------------------------------------------------------------
+// Host quotas
+// ---------------------------------------------------------------------------
+
+/** What the live sandboxes of a host reserve together (their cpu and memory limits, not live usage). */
+export interface HostUsage {
+  sandboxes: number;
+  cpus: number;
+  memoryBytes: number;
+}
+
+export interface HostQuotaViolation {
+  field: 'sandboxes' | 'cpus' | 'memory';
+  reason: string;
+  hint: string;
+  /** Largest value of the field that would still fit (0 when the host is full). */
+  max: number;
+}
+
+const QUOTA_EPSILON = 1e-9;
+
+/**
+ * Host profile limits (`limits.cpus`, `limits.memory`, `limits.sandboxes`) are quotas of the host as a
+ * whole: all live sandboxes on it together may not reserve more. `others` is what the other sandboxes
+ * already reserve (for a resize: without the sandbox being resized); `next` is the sandbox that is
+ * created (`sandbox: true`) or resized (the fields that change). A request that exceeds a limit on
+ * its own is reported as such, otherwise as exceeding the total. Pure: the manager calls it once for
+ * the policy decision and again inside the registry transaction that claims the sandbox, so parallel
+ * creates cannot overshoot.
+ */
+export function hostQuotaViolations(
+  host: HostInfo,
+  others: HostUsage,
+  next: { sandbox?: boolean; cpus?: number; memoryBytes?: number },
+): HostQuotaViolation[] {
+  const limits = host.limits;
+  const out: HostQuotaViolation[] = [];
+  if (!limits) return out;
+  if (next.sandbox && limits.sandboxes !== undefined && others.sandboxes >= limits.sandboxes) {
+    out.push({
+      field: 'sandboxes',
+      reason: `host "${host.id}" already runs ${others.sandboxes} sandbox(es); its limit is ${limits.sandboxes}`,
+      hint: 'Delete a sandbox on that host or use another host.',
+      max: 0,
+    });
+  }
+  if (limits.cpus !== undefined && next.cpus !== undefined && Number.isFinite(next.cpus)) {
+    const room = Math.max(0, limits.cpus - others.cpus);
+    if (next.cpus > limits.cpus + QUOTA_EPSILON) {
+      out.push({
+        field: 'cpus',
+        reason: `requested cpus ${next.cpus} exceeds the limit of ${limits.cpus} on host "${host.id}"`,
+        hint: `Request at most ${limits.cpus} cpus on this host.`,
+        max: limits.cpus,
+      });
+    } else if (next.cpus > room + QUOTA_EPSILON) {
+      out.push({
+        field: 'cpus',
+        reason: `requested cpus ${next.cpus} exceeds what is left of the host limit on "${host.id}": the limit of ${limits.cpus} cpus applies to all sandboxes there together and ${others.cpus} are reserved by the others`,
+        hint: `Request at most ${room} cpus now, or delete a sandbox on that host.`,
+        max: room,
+      });
+    }
+  }
+  const hostMem = limits.memory === undefined ? undefined : tryParseSize(limits.memory);
+  if (
+    hostMem !== undefined &&
+    next.memoryBytes !== undefined &&
+    Number.isFinite(next.memoryBytes)
+  ) {
+    const room = Math.max(0, hostMem - others.memoryBytes);
+    if (next.memoryBytes > hostMem) {
+      out.push({
+        field: 'memory',
+        reason: `requested memory ${formatSize(next.memoryBytes)} exceeds the limit of ${formatSize(hostMem)} on host "${host.id}"`,
+        hint: `Request at most ${formatSize(hostMem)} of memory on this host.`,
+        max: hostMem,
+      });
+    } else if (next.memoryBytes > room) {
+      out.push({
+        field: 'memory',
+        reason: `requested memory ${formatSize(next.memoryBytes)} exceeds what is left of the host limit on "${host.id}": the limit of ${formatSize(hostMem)} applies to all sandboxes there together and ${formatSize(others.memoryBytes)} are reserved by the others`,
+        hint: `Request at most ${formatSize(room)} of memory now, or delete a sandbox on that host.`,
+        max: room,
+      });
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,41 +570,41 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
     );
   }
 
-  if (cpusOk) {
-    if (reqRes.cpus > p.limits.cpus) {
-      f.deny(
-        `requested cpus ${reqRes.cpus} exceeds the limit of ${p.limits.cpus} set by profile "${p.name}" (limits.cpus)`,
-        `Request at most ${p.limits.cpus} cpus, or ask the human to raise limits.cpus.`,
-      );
-      clamped.push('cpus');
-      effCpus = Math.min(effCpus, p.limits.cpus);
-    }
-    if (hostLimits?.cpus !== undefined && reqRes.cpus > hostLimits.cpus) {
-      f.deny(
-        `requested cpus ${reqRes.cpus} exceeds the limit of ${hostLimits.cpus} on host "${req.host.id}"`,
-        `Request at most ${hostLimits.cpus} cpus on this host.`,
-      );
-      if (!clamped.includes('cpus')) clamped.push('cpus');
-      effCpus = Math.min(effCpus, hostLimits.cpus);
-    }
+  if (cpusOk && reqRes.cpus > p.limits.cpus) {
+    f.deny(
+      `requested cpus ${reqRes.cpus} exceeds the limit of ${p.limits.cpus} set by profile "${p.name}" (limits.cpus)`,
+      `Request at most ${p.limits.cpus} cpus, or ask the human to raise limits.cpus.`,
+    );
+    clamped.push('cpus');
+    effCpus = Math.min(effCpus, p.limits.cpus);
   }
-  if (memOk) {
-    if (reqRes.memoryBytes > p.limits.memoryBytes) {
-      f.deny(
-        `requested memory ${formatSize(reqRes.memoryBytes)} exceeds the limit of ${formatSize(p.limits.memoryBytes)} set by profile "${p.name}" (limits.memory)`,
-        `Request at most ${formatSize(p.limits.memoryBytes)} of memory, or ask the human to raise limits.memory.`,
-      );
-      clamped.push('memory');
-      effMem = Math.min(effMem, p.limits.memoryBytes);
-    }
-    if (hostMemBytes !== undefined && reqRes.memoryBytes > hostMemBytes) {
-      f.deny(
-        `requested memory ${formatSize(reqRes.memoryBytes)} exceeds the limit of ${formatSize(hostMemBytes)} on host "${req.host.id}"`,
-        `Request at most ${formatSize(hostMemBytes)} of memory on this host.`,
-      );
-      if (!clamped.includes('memory')) clamped.push('memory');
-      effMem = Math.min(effMem, hostMemBytes);
-    }
+  if (memOk && reqRes.memoryBytes > p.limits.memoryBytes) {
+    f.deny(
+      `requested memory ${formatSize(reqRes.memoryBytes)} exceeds the limit of ${formatSize(p.limits.memoryBytes)} set by profile "${p.name}" (limits.memory)`,
+      `Request at most ${formatSize(p.limits.memoryBytes)} of memory, or ask the human to raise limits.memory.`,
+    );
+    clamped.push('memory');
+    effMem = Math.min(effMem, p.limits.memoryBytes);
+  }
+  // The host limits are quotas of the whole host: the request plus what the sandboxes already there reserve.
+  const used = req.hostUsage ?? { cpus: 0, memoryBytes: 0 };
+  for (const v of hostQuotaViolations(
+    req.host,
+    {
+      sandboxes: req.currentHostSandboxCount,
+      cpus: used.cpus,
+      memoryBytes: used.memoryBytes,
+    },
+    {
+      ...(cpusOk ? { cpus: reqRes.cpus } : {}),
+      ...(memOk ? { memoryBytes: reqRes.memoryBytes } : {}),
+    },
+  )) {
+    if (v.field === 'sandboxes') continue; // the count is checked below, next to the profile's
+    f.deny(v.reason, v.hint);
+    if (!clamped.includes(v.field)) clamped.push(v.field);
+    if (v.field === 'cpus') effCpus = Math.min(effCpus, v.max);
+    else effMem = Math.min(effMem, v.max);
   }
   if (ttlOk && req.ttlMs > p.limits.ttlMs) {
     f.deny(
@@ -525,12 +620,12 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
       'Delete a sandbox you no longer need (or wait until it expires), then retry.',
     );
   }
-  if (hostLimits?.sandboxes !== undefined && req.currentHostSandboxCount >= hostLimits.sandboxes) {
-    f.deny(
-      `host "${req.host.id}" already runs ${req.currentHostSandboxCount} sandbox(es); its limit is ${hostLimits.sandboxes}`,
-      'Delete a sandbox on that host or use another host.',
-    );
-  }
+  for (const v of hostQuotaViolations(
+    req.host,
+    { sandboxes: req.currentHostSandboxCount, cpus: 0, memoryBytes: 0 },
+    { sandbox: true },
+  ))
+    f.deny(v.reason, v.hint);
 
   // --- workspace --------------------------------------------------------
   const ws = req.workspace;
@@ -792,6 +887,12 @@ export interface SandboxRef {
   /** Isolation the sandbox actually runs with. */
   isolation?: IsolationLevel;
   network?: { mode: NetworkMode; allow: string[] };
+  /**
+   * What the other live sandboxes on the same host reserve (without this one). With it, a resource
+   * request is checked against the host limits as a whole (see `hostQuotaViolations`); without it,
+   * only the request on its own.
+   */
+  hostUsage?: HostUsage;
 }
 
 /** Humans may act on every sandbox; agent contexts only on their own. */
@@ -961,7 +1062,6 @@ export function evaluateAccessRequest(
     }
     case 'resources': {
       const d = request.details;
-      const hostLimits = sandbox.host?.limits;
       if (d.cpus === undefined && d.memoryBytes === undefined)
         f.deny('resources request names neither cpus nor memory');
       if (d.cpus !== undefined) {
@@ -972,10 +1072,6 @@ export function evaluateAccessRequest(
             f.deny(
               `requested cpus ${d.cpus} exceeds the limit of ${p.limits.cpus} set by profile "${p.name}" (limits.cpus)`,
               `Request at most ${p.limits.cpus} cpus, or ask the human to raise limits.cpus.`,
-            );
-          if (hostLimits?.cpus !== undefined && d.cpus > hostLimits.cpus)
-            f.deny(
-              `requested cpus ${d.cpus} exceeds the limit of ${hostLimits.cpus} on host "${sandbox.host?.id}"`,
             );
         }
       }
@@ -988,12 +1084,24 @@ export function evaluateAccessRequest(
               `requested memory ${formatSize(d.memoryBytes)} exceeds the limit of ${formatSize(p.limits.memoryBytes)} set by profile "${p.name}" (limits.memory)`,
               `Request at most ${formatSize(p.limits.memoryBytes)}, or ask the human to raise limits.memory.`,
             );
-          const hm = hostLimits?.memory === undefined ? undefined : tryParseSize(hostLimits.memory);
-          if (hm !== undefined && d.memoryBytes > hm)
-            f.deny(
-              `requested memory ${formatSize(d.memoryBytes)} exceeds the limit of ${formatSize(hm)} on host "${sandbox.host?.id}"`,
-            );
         }
+      }
+      if (sandbox.host) {
+        for (const v of hostQuotaViolations(
+          sandbox.host,
+          sandbox.hostUsage ?? { sandboxes: 0, cpus: 0, memoryBytes: 0 },
+          {
+            ...(d.cpus !== undefined && Number.isFinite(d.cpus) && d.cpus > 0
+              ? { cpus: d.cpus }
+              : {}),
+            ...(d.memoryBytes !== undefined &&
+            Number.isSafeInteger(d.memoryBytes) &&
+            d.memoryBytes > 0
+              ? { memoryBytes: d.memoryBytes }
+              : {}),
+          },
+        ))
+          f.deny(v.reason, v.hint);
       }
       break;
     }

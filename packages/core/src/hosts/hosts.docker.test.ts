@@ -21,11 +21,13 @@ import { closeSshConnection } from './control.js';
 import { run } from './exec.js';
 import type { HostProfile } from './model.js';
 import { checkHostKey, forgetHostKey, scanHostKey, trustHostKey } from './known-hosts.js';
+import { parseSshG } from './effective.js';
 import { HostRegistry } from './registry.js';
 import { createHostResolver } from './resolver.js';
-import { buildSshArgs, sshBinary, type HostsEnv } from './ssh-args.js';
+import { buildSshArgs, sshBinary, sshSessionArgs, type HostsEnv } from './ssh-args.js';
 import { testHost } from './test-host.js';
-import { TunnelManager, openEngineTunnel } from './tunnel.js';
+import { getEngineInfo } from './engine-info.js';
+import { TUNNEL_SUPERVISOR, TunnelManager, openEngineTunnel } from './tunnel.js';
 
 /**
  * Integration tests against a REAL sshd in a throw-away alpine container (label abox.test=1),
@@ -37,7 +39,13 @@ const DOCKER = process.env.ABOX_TEST_DOCKER === '1';
 const IMAGE = 'abox-test-sshd:1';
 const FAKE_SOCK = '/tmp/fake-engine.sock';
 
-const FAKE_ENGINE = `#!/bin/sh
+const ROOTLESS_INFO =
+  '{"SecurityOptions":["name=seccomp","name=rootless"],"Runtimes":{"runc":{},"runsc":{}}}';
+const ROOTFUL_INFO = '{"SecurityOptions":["name=seccomp,profile=builtin"],"Runtimes":{"runc":{}}}';
+const FAKE_SOCK_ROOTFUL = '/tmp/fake-rootful.sock';
+
+/** A tiny HTTP responder (run by socat per connection) that answers like an engine: /_ping, /version, /info. */
+const fakeEngine = (info: string) => `#!/bin/sh
 read -r line
 while read -r h; do
   [ -z "$h" ] && break
@@ -46,6 +54,7 @@ done
 case "$line" in
   "GET /_ping"*) body="OK" ;;
   "GET /version"*) body='{"Version":"fake-1.0"}' ;;
+  "GET /info"*) body='${info}' ;;
   *) body="pong" ;;
 esac
 printf 'HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nContent-Length: %s\\r\\nConnection: close\\r\\n\\r\\n%s' "\${#body}" "$body"
@@ -56,9 +65,9 @@ LABEL abox.test=1
 RUN apk add --no-cache openssh-server socat \\
  && adduser -D -s /bin/sh tester && sed -i 's/^tester:!/tester:*/' /etc/shadow \\
  && mkdir -p /home/tester/.ssh /root/.ssh && chown tester:tester /home/tester/.ssh && chmod 700 /home/tester/.ssh /root/.ssh \\
- && printf 'PasswordAuthentication no\\nPermitRootLogin prohibit-password\\nAllowTcpForwarding yes\\nAllowStreamLocalForwarding yes\\nAllowAgentForwarding yes\\nLogLevel VERBOSE\\nPerSourcePenalties no\\n' > /etc/ssh/sshd_config
-COPY fake-engine.sh /usr/local/bin/fake-engine.sh
-RUN chmod 755 /usr/local/bin/fake-engine.sh
+ && printf 'PasswordAuthentication no\\nPermitRootLogin prohibit-password\\nAllowTcpForwarding yes\\nAllowStreamLocalForwarding yes\\nAllowAgentForwarding yes\\nAcceptEnv MYVAR\\nLogLevel VERBOSE\\nPerSourcePenalties no\\n' > /etc/ssh/sshd_config
+COPY fake-engine.sh fake-engine-rootful.sh /usr/local/bin/
+RUN chmod 755 /usr/local/bin/fake-engine.sh /usr/local/bin/fake-engine-rootful.sh
 `;
 
 async function sh(file: string, args: string[], opts: { input?: string; timeoutMs?: number } = {}) {
@@ -145,7 +154,8 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
     tmp = mkdtempSync(join(tmpdir(), 'abox-h-'));
     mkdirSync(join(tmp, 'ctx'));
     writeFileSync(join(tmp, 'ctx', 'Dockerfile'), DOCKERFILE);
-    writeFileSync(join(tmp, 'ctx', 'fake-engine.sh'), FAKE_ENGINE);
+    writeFileSync(join(tmp, 'ctx', 'fake-engine.sh'), fakeEngine(ROOTLESS_INFO));
+    writeFileSync(join(tmp, 'ctx', 'fake-engine-rootful.sh'), fakeEngine(ROOTFUL_INFO));
     const build = await sh('docker', ['build', '-q', '-t', IMAGE, join(tmp, 'ctx')]);
     if (build.code !== 0) throw new Error(`docker build failed: ${build.stderr}`);
 
@@ -406,22 +416,28 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
 
   describe('engine socket tunnel', () => {
     beforeAll(async () => {
-      const r = await sh('docker', [
-        'exec',
-        '-d',
-        '-u',
-        'tester',
-        container,
-        'socat',
-        `UNIX-LISTEN:${FAKE_SOCK},fork`,
-        'EXEC:/usr/local/bin/fake-engine.sh',
-      ]);
-      expect(r.code).toBe(0);
-      for (let i = 0; i < 40; i++) {
-        if ((await dockerExec(['test', '-S', FAKE_SOCK])).code === 0) return;
-        await sleep(100);
+      for (const [sock, script] of [
+        [FAKE_SOCK, 'fake-engine.sh'],
+        [FAKE_SOCK_ROOTFUL, 'fake-engine-rootful.sh'],
+      ] as const) {
+        const r = await sh('docker', [
+          'exec',
+          '-d',
+          '-u',
+          'tester',
+          container,
+          'socat',
+          `UNIX-LISTEN:${sock},fork`,
+          `EXEC:/usr/local/bin/${script}`,
+        ]);
+        expect(r.code).toBe(0);
+        let up = false;
+        for (let i = 0; i < 40 && !up; i++) {
+          up = (await dockerExec(['test', '-S', sock])).code === 0;
+          if (!up) await sleep(100);
+        }
+        if (!up) throw new Error(`fake engine ${sock} did not start`);
       }
-      throw new Error('fake engine did not start');
     });
 
     it('forwards the remote unix socket; requests through the local socket reach it; close() cleans up', async () => {
@@ -465,7 +481,7 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
         await t.reconnect();
         expect((await httpGet(t.localSocket, '/version')).status).toBe(200);
 
-        const pid = Number(readFileSync(`${t.localSocket}.pid`, 'utf8'));
+        const pid = Number(readFileSync(`${t.localSocket}.pid`, 'utf8').split(' ')[0]); // "<ssh pid> <owner pid>"
         const states: string[] = [];
         t.on('state', (s) => states.push(s));
         process.kill(pid, 'SIGKILL');
@@ -496,6 +512,86 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
       expect(ps.stdout.trim()).toBe('');
     }, 40_000);
 
+    it('asks the engine behind the tunnel: rootless mode and runtimes (the same path sandboxes use)', async () => {
+      const t = await openEngineTunnel(profile, env, { remoteSocket: FAKE_SOCK });
+      try {
+        expect(await getEngineInfo(t.localSocket)).toEqual({
+          rootless: true,
+          runtimes: ['runc', 'runsc'],
+        });
+      } finally {
+        await t.close();
+      }
+      const rootful = await openEngineTunnel(profile, env, { remoteSocket: FAKE_SOCK_ROOTFUL });
+      try {
+        expect(await getEngineInfo(rootful.localSocket)).toEqual({
+          rootless: false,
+          runtimes: ['runc'],
+        });
+      } finally {
+        await rootful.close();
+      }
+    });
+
+    it('a forward in the ssh config is refused: the tunnel carries only the engine socket (RemoteForward would reach back here)', async () => {
+      writeFileSync(
+        join(tmp, 'ssh_fwd_config'),
+        'Host *\n  RemoteForward 9999 127.0.0.1:22\n  LocalForward 9998 127.0.0.1:22\n',
+      );
+      const err = await openEngineTunnel(
+        profile,
+        { ...env, sshConfigFile: join(tmp, 'ssh_fwd_config') },
+        { remoteSocket: FAKE_SOCK },
+      ).catch((e: unknown) => e);
+      expect(isAboxError(err) && err.details?.['reason']).toBe('config_forwards');
+      expect(existsSync(join(env.runtimeDir, 'tunnels', 'sbx.sock'))).toBe(false);
+    });
+
+    it('stops the forwarded socket when its owner dies without cleaning up (kill -9 of abox)', async () => {
+      const owner = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        stdio: 'ignore',
+      });
+      const local = join(env.runtimeDir, 'tunnels', 'orphan.sock');
+      const args = buildSshArgs(profile, env, {
+        mode: 'tunnel',
+        rawForwards: [{ flag: '-L', spec: `${local}:${FAKE_SOCK}` }],
+      });
+      const sup = spawn(
+        '/bin/sh',
+        [
+          '-c',
+          TUNNEL_SUPERVISOR,
+          'abox-tunnel',
+          String(owner.pid),
+          `${local}.pid`,
+          sshBinary(env),
+          ...args,
+        ],
+        { stdio: 'ignore' },
+      );
+      try {
+        for (let i = 0; i < 100 && !existsSync(local); i++) await sleep(100);
+        expect((await httpGet(local, '/version')).status).toBe(200);
+        const sshPid = Number(readFileSync(`${local}.pid`, 'utf8').split(' ')[0]);
+        owner.kill('SIGKILL');
+        let alive = true;
+        for (let i = 0; i < 100 && alive; i++) {
+          try {
+            process.kill(sshPid, 0);
+            await sleep(100);
+          } catch {
+            alive = false;
+          }
+        }
+        expect(alive).toBe(false);
+      } finally {
+        owner.kill('SIGKILL');
+        sup.kill('SIGKILL');
+        rmSync(local, { force: true });
+        rmSync(`${local}.pid`, { force: true });
+      }
+    }, 30_000);
+
     it('rejects unsafe socket paths before running anything', async () => {
       await expect(
         openEngineTunnel(profile, env, { remoteSocket: '/tmp/x;id' }),
@@ -513,7 +609,12 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
       const db = openDatabase(':memory:');
       const cache = new HostCache({ db, now: () => Date.now() });
       const registry = new HostRegistry({ file: join(tmp, 'config', 'hosts.yaml') });
-      registry.add({ ...profile, zone: 'shared', limits: { cpus: 1, memory: '2g', sandboxes: 2 } });
+      registry.add({
+        ...profile,
+        zone: 'shared',
+        limits: { cpus: 1, memory: '2g', sandboxes: 2 },
+        runtimes: { docker: 'runsc' },
+      });
       const tunnels = new TunnelManager(env);
       const resolve = createHostResolver(registry, tunnels, { cache });
       try {
@@ -534,6 +635,8 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
           backends: ['docker'],
           limits: { cpus: 1, memory: '2g', sandboxes: 2 },
         });
+        expect(r.connection.runtimes).toEqual({ docker: 'runsc' });
+        expect(r.engine).toEqual({ rootless: true, runtimes: ['runc', 'runsc'] });
         expect((await httpGet(r.connection.engineSocket!, '/version')).status).toBe(200);
         const again = await resolve('sbx');
         expect(again.connection.engineSocket).toBe(r.connection.engineSocket);
@@ -547,11 +650,159 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
       }
     }, 60_000);
 
+    it('a shared host needs a rootless engine: the engine itself is asked and a rootful one refused (roadmap 4b.8)', async () => {
+      const registry = new HostRegistry({ file: join(tmp, 'config', 'hosts-rootful.yaml') });
+      registry.add({ ...profile, id: 'rootful', zone: 'shared', engineSocket: FAKE_SOCK_ROOTFUL });
+      registry.add({
+        ...profile,
+        id: 'optin',
+        zone: 'shared',
+        engineSocket: FAKE_SOCK_ROOTFUL,
+        allowRootful: true,
+      });
+      registry.add({ ...profile, id: 'labbox', zone: 'lab', engineSocket: FAKE_SOCK_ROOTFUL });
+      registry.add({
+        ...profile,
+        id: 'system',
+        zone: 'shared',
+        engineSocket: '/var/run/docker.sock',
+      });
+      const tunnels = new TunnelManager(env);
+      const resolve = createHostResolver(registry, tunnels);
+      try {
+        const err = await resolve('rootful').catch((e: unknown) => e);
+        expect(isAboxError(err) && err.code).toBe('policy_denied');
+        expect(isAboxError(err) && err.details?.['reason']).toBe('engine_rootful');
+        expect(tunnels.peek('rootful')).toBeUndefined();
+        expect(existsSync(join(env.runtimeDir, 'tunnels', 'sbx.sock'))).toBe(false);
+        // the obvious mistake is refused before a connection is made
+        await expect(resolve('system')).rejects.toMatchObject({
+          code: 'policy_denied',
+          details: { reason: 'engine_rootful' },
+        });
+        expect((await resolve('optin')).engine?.rootless).toBe(false);
+        expect((await resolve('labbox')).engine?.rootless).toBe(false);
+      } finally {
+        await tunnels.closeAll();
+      }
+    }, 60_000);
+
     it('an ssh-only host (no backends) is reported as unsupported', async () => {
       const registry = new HostRegistry({ file: join(tmp, 'config', 'hosts2.yaml') });
       registry.add({ ...profile, id: 'plain', backends: [], engineSocket: undefined });
       const resolve = createHostResolver(registry, new TunnelManager(env));
       await expect(resolve('plain')).rejects.toMatchObject({ code: 'unsupported' });
+    });
+  });
+
+  // -- host test: what the engine itself says ------------------------------------------------------
+
+  describe('engine checks of host test', () => {
+    it('reports rootless mode and which configured runtimes the engine really has', async () => {
+      const ok = await testHost(
+        base({ zone: 'shared', engineSocket: FAKE_SOCK, runtimes: { docker: 'runsc' } }),
+        env,
+      );
+      expect(ok.engine).toEqual({ rootless: true, runtimes: ['runc', 'runsc'] });
+      expect(ok.runtimes).toEqual([{ engine: 'docker', runtime: 'runsc', available: true }]);
+      expect(ok.warnings.join(' ')).not.toMatch(/not rootless|Runtime "/);
+
+      const missing = await testHost(
+        base({ zone: 'shared', engineSocket: FAKE_SOCK, runtimes: { docker: 'kata' } }),
+        env,
+      );
+      expect(missing.runtimes).toEqual([{ engine: 'docker', runtime: 'kata', available: false }]);
+      expect(missing.warnings.join(' ')).toMatch(
+        /Runtime "kata" \(runtimes\.docker\) is not installed.*runc, runsc/,
+      );
+    });
+
+    it('warns about a rootful engine; for shared hosts it says that abox refuses it', async () => {
+      const shared = await testHost(base({ zone: 'shared', engineSocket: FAKE_SOCK_ROOTFUL }), env);
+      expect(shared.engine?.rootless).toBe(false);
+      expect(shared.warnings.join(' ')).toMatch(/is not rootless; abox refuses it for zone shared/);
+      const optIn = await testHost(
+        base({ zone: 'shared', engineSocket: FAKE_SOCK_ROOTFUL, allowRootful: true }),
+        env,
+      );
+      expect(optIn.warnings.join(' ')).toMatch(/is not rootless: access to it is root-equivalent/);
+      expect(optIn.warnings.join(' ')).not.toMatch(/refuses/);
+      const lab = await testHost(base({ zone: 'lab', engineSocket: FAKE_SOCK_ROOTFUL }), env);
+      expect(lab.warnings.join(' ')).toMatch(/is not rootless: access to it is root-equivalent/);
+    });
+
+    it('flags a system-wide engine socket as the engine_socket', async () => {
+      const res = await testHost(
+        base({ zone: 'shared', engineSocket: '/var/run/docker.sock' }),
+        env,
+      );
+      expect(res.warnings.join(' ')).toMatch(/system-wide engine.*abox refuses it for zone shared/);
+    });
+  });
+
+  // -- abox ssh <host> -- <command>, and what the session may take along --------------------------
+
+  describe('ssh sessions', () => {
+    const sessionEnv = (): HostsEnv => ({ ...env, multiplex: false });
+
+    it('runs the typed command: the arguments follow the destination, a second `--` would break it', async () => {
+      const good = await run(
+        sshBinary(env),
+        sshSessionArgs(profile, sessionEnv(), { command: ['echo', 'hi', '-a'] }),
+        { timeoutMs: 20_000 },
+      );
+      expect(good.code, good.stderr).toBe(0);
+      expect(good.stdout.trim()).toBe('hi -a');
+      // the old argv (`... -- host -- echo hi -a`): the remote shell gets the second `--` as its command
+      const broken = [...sshSessionArgs(profile, sessionEnv()), '--', 'echo', 'hi', '-a'];
+      const bad = await run(sshBinary(env), broken, { timeoutMs: 20_000 });
+      expect(bad.stdout.trim()).not.toBe('hi -a');
+      expect(bad.code).not.toBe(0);
+    });
+
+    it('does not hand local environment variables to the server, whatever the ssh config says', async () => {
+      writeFileSync(join(tmp, 'ssh_sendenv_config'), 'Host *\n  SendEnv MYVAR\n');
+      const probe = 'sh -c \'echo "V=${MYVAR:-none}"\'';
+      const withConfig: HostsEnv = {
+        ...sessionEnv(),
+        sshConfigFile: join(tmp, 'ssh_sendenv_config'),
+      };
+      const secret = { MYVAR: 'leaked' };
+      // control: the same config with a plain ssh does send it (the server accepts MYVAR)
+      const ctl = await run(
+        'ssh',
+        [
+          '-F',
+          join(tmp, 'ssh_sendenv_config'),
+          '-p',
+          String(port),
+          '-l',
+          'tester',
+          '-i',
+          keyPath(),
+          '-o',
+          'BatchMode=yes',
+          '-o',
+          'StrictHostKeyChecking=yes',
+          '-o',
+          `UserKnownHostsFile=${env.knownHostsFile}`,
+          '-o',
+          'GlobalKnownHostsFile=/dev/null',
+          '--',
+          '127.0.0.1',
+          probe,
+        ],
+        { timeoutMs: 20_000, env: secret },
+      );
+      expect(ctl.stdout.trim()).toBe('V=leaked');
+      for (const mode of ['batch', 'interactive'] as const) {
+        const res = await run(
+          sshBinary(env),
+          buildSshArgs(profile, withConfig, { mode, remoteCommand: probe }),
+          { timeoutMs: 20_000, env: secret },
+        );
+        expect(res.stdout.trim(), mode).toBe('V=none');
+      }
     });
   });
 
@@ -637,6 +888,69 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
       // clean up the extra entry so the next tests see a single host
       await forgetHostKey(p, jenv);
       await forgetHostKey(hop, jenv);
+    }, 60_000);
+  });
+
+  // -- ProxyCommand -----------------------------------------------------------------------------
+
+  describe('ProxyCommand', () => {
+    // The host name does not resolve: only the ProxyCommand (which dials the container's published
+    // port) can reach it, so a direct ssh-keyscan would find nothing, or the wrong machine.
+    const viaCommand = () =>
+      base({
+        id: 'viapc',
+        hostname: undefined,
+        sshConfigAlias: 'viapc',
+        port: undefined,
+        identityFile: undefined,
+        backends: [],
+        engineSocket: undefined,
+      });
+    const pcEnv = (): HostsEnv => ({
+      ...env,
+      sshConfigFile: join(tmp, 'ssh_proxycmd_config'),
+      knownHostsFile: join(tmp, 'config', 'proxycmd_known_hosts'),
+      multiplex: false,
+    });
+
+    beforeAll(() => {
+      const dial = `const s=require('net').connect(${port},'127.0.0.1');process.stdin.pipe(s);s.pipe(process.stdout)`;
+      writeFileSync(
+        join(tmp, 'ssh_proxycmd_config'),
+        [
+          'Host viapc',
+          '  HostName behind.example.invalid',
+          '  User tester',
+          `  IdentityFile ${join(tmp, 'id_test')}`,
+          '  IdentitiesOnly yes',
+          `  ProxyCommand node -e "${dial}"`,
+          '',
+        ].join('\n'),
+      );
+    });
+
+    it('the effective config carries the ProxyCommand', async () => {
+      const g = await run('ssh', ['-G', '-F', join(tmp, 'ssh_proxycmd_config'), '--', 'viapc']);
+      expect(parseSshG(g.stdout).proxyCommand).toMatch(/^node -e /);
+    });
+
+    it('scans, trusts and logs in through the ProxyCommand, never directly', async () => {
+      const p = viaCommand();
+      const e = pcEnv();
+      const fp = await hostKeyFingerprint();
+      const scan = await scanHostKey(p, e);
+      expect(scan).toMatchObject({ via: 'ssh', hostname: 'behind.example.invalid' });
+      expect(scan.keys.some((k) => k.fingerprint === fp)).toBe(true);
+      expect((await checkHostKey(p, e)).status).toBe('unknown');
+      await trustHostKey(p, fp, e);
+      expect((await checkHostKey(p, e)).status).toBe('trusted');
+      const res = await testHost(p, e);
+      expect(res).toMatchObject({
+        reachable: true,
+        hostKey: 'trusted',
+        authOk: true,
+        remoteUser: 'tester',
+      });
     }, 60_000);
   });
 

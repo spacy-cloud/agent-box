@@ -114,8 +114,9 @@ always exits 0. Fix: install abox or set `ABOX_BIN`, then restart Claude Code.
 
 When you open a terminal in a sandbox that Claude owns (GUI terminal tab or `abox shell`), abox
 **pauses Claude's input** there, as the GUI concept asks: `sandbox_exec`, `sandbox_process_start`,
-`sandbox_process_stop`, `sandbox_write_file` and `sandbox_restore` answer `conflict` with "paused: a
-human is working in sandbox ...", and `sandbox_inspect` / `sandbox_list` carry `human_attached`.
+`sandbox_process_stop`, `sandbox_write_file`, `sandbox_snapshot`, `sandbox_restore`, `sandbox_start`,
+`sandbox_stop`, `sandbox_delete` and `access_request` answer `conflict` with "paused: a human is
+working in sandbox ...", and `sandbox_inspect` / `sandbox_list` carry `human_attached`.
 Reading (files, listing, logs, inspect) keeps working. See [GUI: taking over a
 sandbox](gui.md#taking-over-an-agents-sandbox).
 
@@ -161,7 +162,7 @@ Run unknown or untrusted code only in an abox sandbox, never directly on the hos
 
 | Agent         | Where the entry goes                                                                                                                               | Command                                                                |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Codex         | the Codex MCP configuration (JSON form shown by `abox init`; TOML: `[mcp_servers.abox]`)                                                           | `abox mcp serve --agent codex`                                         |
+| Codex         | `codex mcp add abox -- abox mcp serve --agent codex`, or the `[mcp_servers.abox]` TOML in `~/.codex/config.toml` (both shown by `abox init`)       | `abox mcp serve --agent codex`                                         |
 | Cursor        | `.cursor/mcp.json` (project) or `~/.cursor/mcp.json`                                                                                               | `abox mcp serve --agent cursor`                                        |
 | Orca          | HTTP: start `abox mcp serve --http 127.0.0.1:8765`, create a token with `abox token create orca`, put the URL and a bearer header into `.mcp.json` | see [MCP: HTTP](mcp.md#http)                                           |
 | anything else | its MCP configuration                                                                                                                              | `abox mcp serve --agent <name>` with `<name>` defined in `policy.yaml` |

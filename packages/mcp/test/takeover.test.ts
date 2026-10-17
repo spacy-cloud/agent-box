@@ -45,9 +45,15 @@ describe('human takeover seen from the MCP server', () => {
     for (const [tool, args] of [
       ['sandbox_process_start', { id, argv: ['sleep', '1'] }],
       ['sandbox_write_file', { id, path: '/workspace/x.txt', content: 'x' }],
+      ['sandbox_stop', { id }],
+      ['sandbox_start', { id }],
+      ['sandbox_delete', { id }],
+      ['sandbox_snapshot', { id, name: 'before' }],
+      ['sandbox_restore', { id, snapshot_id: 'before' }],
+      ['access_request', { id, kind: 'ttl', details: { ttl: '10m' }, reason: 'more time' }],
     ] as const) {
       const r = await a.call(tool, args);
-      expect(r.s).toMatchObject({ ok: false, code: 'conflict' });
+      expect(r.s, tool).toMatchObject({ ok: false, code: 'conflict' });
     }
     // the agent can still look: inspect (with the marker), list and read
     const view = await a.call('sandbox_inspect', { id });
@@ -55,6 +61,10 @@ describe('human takeover seen from the MCP server', () => {
     expect(view.text).toMatch(/PAUSED: a human is working/);
     expect((await a.call('sandbox_list_dir', { id, path: '/workspace' })).isError).toBe(false);
     expect(env.fakes.at(-1)!.execCalls).toHaveLength(0);
+
+    expect((await a.call('sandbox_inspect', { id })).s['sandbox']).toMatchObject({
+      state: 'running',
+    });
 
     gui.humanSessions.end('gui-1');
     const again = await a.call('sandbox_exec', { id, argv: ['true'] });

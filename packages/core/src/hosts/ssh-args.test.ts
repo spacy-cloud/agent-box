@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -12,6 +12,8 @@ import {
   sshSessionArgs,
   type HostsEnv,
 } from './ssh-args.js';
+import { parseSshG } from './effective.js';
+import { run } from './exec.js';
 import { probeCommand } from './test-host.js';
 
 const root = mkdtempSync(join(tmpdir(), 'abox-args-'));
@@ -302,5 +304,59 @@ describe('injection resistance', () => {
     expect(cmd.match(/'/g)).toHaveLength(2);
     expect(cmd.includes('\n')).toBe(false);
     expect(cmd.includes('!')).toBe(false);
+  });
+});
+
+describe('abox ssh <host> -- <command>', () => {
+  it('puts the typed command right behind the destination, with no second `--`', () => {
+    const a = sshSessionArgs(profile(), env, { command: ['uptime', '-a'] });
+    expect(a.slice(a.indexOf('--'))).toEqual(['--', 'server.example.org', 'uptime', '-a']);
+    expect(a.filter((x) => x === '--')).toHaveLength(1);
+  });
+
+  it('without a command the argv ends at the destination', () => {
+    const a = sshSessionArgs(profile(), env, { command: [] });
+    expect(a.slice(a.indexOf('--'))).toEqual(['--', 'server.example.org']);
+  });
+
+  it('is for interactive sessions of a human only', () => {
+    expect(() => buildSshArgs(profile(), env, { mode: 'batch', userCommand: ['id'] })).toThrow(
+      /interactive/,
+    );
+    expect(() =>
+      buildSshArgs(profile(), env, {
+        mode: 'interactive',
+        remoteCommand: 'id',
+        userCommand: ['id'],
+      }),
+    ).toThrow();
+  });
+});
+
+describe('local environment variables stay local', () => {
+  it('clears SendEnv last: a user config (or a distribution default) cannot forward variables', async () => {
+    const userConf = join(root, 'user_config');
+    writeFileSync(
+      userConf,
+      'SendEnv LANG LC_*\nHost *\n  SendEnv SECRET_TOKEN\nHost vps\n  HostName server.example.org\n  SendEnv MORE\n',
+    );
+    const e: HostsEnv = { ...env, sshConfigFile: userConf, runtimeDir: join(root, 'run-env') };
+    for (const mode of ['batch', 'interactive', 'tunnel'] as const) {
+      const a = buildSshArgs(profile({ sshConfigAlias: 'vps', hostname: undefined }), e, { mode });
+      const conf = a[a.indexOf('-F') + 1]!;
+      const text = readFileSync(conf, 'utf8');
+      expect(text.trimEnd().endsWith('Match all\n  SendEnv -*')).toBe(true);
+      expect(text.indexOf('Include')).toBeLessThan(text.indexOf('SendEnv -*'));
+      // what ssh itself computes from that config
+      const res = await run('ssh', ['-G', '-F', conf, '--', 'vps']);
+      expect(res.code).toBe(0);
+      expect(parseSshG(res.stdout).hostname).toBe('server.example.org');
+      expect(res.stdout).not.toMatch(/^sendenv /m);
+    }
+    // control: without the clearing entry the same config does send them
+    const bare = join(root, 'no_clear');
+    writeFileSync(bare, `Match all\nInclude ${userConf}\n`);
+    const ctl = await run('ssh', ['-G', '-F', bare, '--', 'vps']);
+    expect(ctl.stdout).toMatch(/^sendenv SECRET_TOKEN$/m);
   });
 });

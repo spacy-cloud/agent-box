@@ -4,6 +4,7 @@ import type { IsolationLevel } from '@abox/core';
 import { call } from '../api';
 import { useApp, useT } from '../context';
 import type { IpcError } from '../../shared/ipc';
+import { safeInline, safeText } from '../../shared/format';
 
 // -- badges -----------------------------------------------------------------------------------------
 
@@ -66,8 +67,8 @@ export function OwnerBadge(props: { owner: string }) {
   if (props.owner === 'human') return <Badge tone="neutral">{t('owner.human')}</Badge>;
   if (props.owner === 'system') return <Badge tone="neutral">{t('owner.system')}</Badge>;
   return (
-    <Badge tone="info" title={props.owner}>
-      {t('owner.agent')}: {props.owner.replace(/^agent:/, '')}
+    <Badge tone="info" title={safeInline(props.owner, 200)}>
+      {t('owner.agent')}: {safeInline(props.owner.replace(/^agent:/, ''), 80)}
     </Badge>
   );
 }
@@ -97,12 +98,12 @@ export function ErrorBox(props: { error: unknown }) {
   return (
     <Banner tone="danger" role="alert">
       <strong>{e.code ? t(`error.${e.code}`) : t('error.internal')}</strong>
-      <div className="plain">{e.message}</div>
+      <ScrollText text={String(e.message ?? '')} label={t('error.details')} />
       {Array.isArray(reasons) ? (
         <ul>
           {reasons.map((r, i) => (
             <li key={i} className="plain">
-              {String(r)}
+              {safeText(String(r))}
             </li>
           ))}
         </ul>
@@ -111,14 +112,14 @@ export function ErrorBox(props: { error: unknown }) {
         <ul>
           {e.issues.map((i, n) => (
             <li key={n} className="plain">
-              {i.path ? <code>{i.path}</code> : null} {i.message}
+              {i.path ? <code>{safeInline(i.path, 120)}</code> : null} {safeText(i.message)}
             </li>
           ))}
         </ul>
       ) : null}
       {e.hint ? (
         <div>
-          {t('error.hint')}: <span className="plain">{e.hint}</span>
+          {t('error.hint')}: <span className="plain">{safeText(e.hint)}</span>
         </div>
       ) : null}
     </Banner>
@@ -317,12 +318,82 @@ export function Field(props: {
   );
 }
 
-/** Agent-provided text: always plain text (React text node), visibly labelled, never interpreted. */
+/**
+ * Text an agent (or a project file, or a remote host) wrote, as one line: control, bidi and zero-width
+ * characters become visible escapes, newlines become spaces and the text is shortened to `max`
+ * characters; the complete text is in the tooltip. Always a React text node, never markup.
+ */
+export function Safe(props: { text: string; max?: number; className?: string }) {
+  const max = props.max ?? 200;
+  const short = safeInline(props.text, max);
+  const full = safeInline(props.text, 2000);
+  return (
+    <span
+      className={`plain${props.className ? ` ${props.className}` : ''}`}
+      title={full !== short ? full : undefined}
+    >
+      {short}
+    </span>
+  );
+}
+
+/** Texts longer than this (characters or lines) get a keyboard-focusable scroll box. */
+const SCROLL_CHARS = 160;
+const SCROLL_LINES = 4;
+
+/**
+ * Multi-line agent text in a box with a height cap (`.scroll-text`: it scrolls instead of pushing the
+ * page, a long text cannot hide the buttons below it). The text is neutralised like `Safe`; once it can
+ * overflow, the box is a labelled, focusable group so keyboard users can scroll it.
+ */
+export function ScrollText(props: {
+  text: string;
+  label: string;
+  className?: string;
+  /** Text to show when the value is empty. */
+  empty?: string;
+  /** Marker shown in front of the text (e.g. a change sign), inside the box. */
+  prefix?: ReactNode;
+}) {
+  const text = safeText(props.text);
+  const long = text.length > SCROLL_CHARS || text.split('\n').length > SCROLL_LINES;
+  const cls = `plain scroll-text${props.className ? ` ${props.className}` : ''}`;
+  if (text === '' && props.empty !== undefined) {
+    return (
+      <span className="plain">
+        {props.prefix}
+        {props.empty}
+      </span>
+    );
+  }
+  return long ? (
+    <div className={cls} role="group" tabIndex={0} aria-label={props.label}>
+      {props.prefix}
+      {text}
+    </div>
+  ) : (
+    <div className={cls}>
+      {props.prefix}
+      {text}
+    </div>
+  );
+}
+
+/** Agent-provided text: always plain text (React text node), neutralised, capped in height, visibly labelled, never interpreted. */
 export function AgentText(props: { text: string; label: string }) {
+  const capId = useId();
+  const text = safeText(props.text);
+  const long = text.length > SCROLL_CHARS || text.split('\n').length > SCROLL_LINES;
   return (
     <figure className="agent-text">
-      <figcaption>{props.label}</figcaption>
-      <blockquote className="plain">{props.text || '—'}</blockquote>
+      <figcaption id={capId}>{props.label}</figcaption>
+      <blockquote
+        className="plain scroll-text"
+        tabIndex={long ? 0 : undefined}
+        aria-labelledby={long ? capId : undefined}
+      >
+        {text || '—'}
+      </blockquote>
     </figure>
   );
 }

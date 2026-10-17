@@ -346,6 +346,41 @@ function safeRelative(name: string): string | undefined {
 }
 
 /**
+ * Would the symlink `target`, placed in the directory `dirSegs` (relative to `root`; real
+ * directories), lead out of `root` once the tree is complete? The target is resolved against what
+ * is on disk the way the kernel does: a component that is itself a symlink is followed (its
+ * target spliced in) and `..` after it goes up from where the link leads, so the chain
+ * `d/sub -> ..`, `s -> d/sub`, `t -> s/..` is caught although every target looks harmless.
+ * Components that do not exist count as plain directories. More than 40 links in a row cannot be
+ * followed at all (ELOOP), which is not an escape.
+ */
+async function linkLeavesRoot(root: string, dirSegs: string[], target: string): Promise<boolean> {
+  if (posix.isAbsolute(target)) return true;
+  const real = [...dirSegs];
+  let pending = target.split('/').filter((s) => s !== '' && s !== '.');
+  let hops = 0;
+  while (pending.length > 0) {
+    const comp = pending.shift() as string;
+    if (comp === '..') {
+      if (real.length === 0) return true;
+      real.pop();
+      continue;
+    }
+    const p = join(root, ...real, comp);
+    const st = await lstat(p).catch(() => undefined);
+    if (st?.isSymbolicLink()) {
+      if (++hops > 40) return false;
+      const next = await readlink(p);
+      if (posix.isAbsolute(next)) return true;
+      pending = [...next.split('/').filter((s) => s !== '' && s !== '.'), ...pending];
+      continue;
+    }
+    real.push(comp);
+  }
+  return false;
+}
+
+/**
  * Extracts `source` below `dest`. With `singleFile: true` the archive must hold one regular
  * file (or symlink) which becomes `dest` itself (parent directory must exist).
  */
@@ -363,6 +398,7 @@ export async function extractTar(
   let longName: string | undefined;
   let longLink: string | undefined;
   let singleDone = false;
+  const links: Array<{ abs: string; rel: string; target: string }> = [];
 
   if (!opts.singleFile) await mkdir(root, { recursive: true });
 
@@ -425,6 +461,12 @@ export async function extractTar(
     longLink = undefined;
     const bodyBlocks = Math.ceil(size / BLOCK) * BLOCK;
 
+    if (!opts.singleFile && name.includes('\\') && !name.includes('\0')) {
+      // a path separator on some hosts: never written, whatever the rest of the archive holds
+      skip(name.replace(/^(\.\/)+/, ''), 'file name contains a backslash (not extracted)');
+      await reader.skip(bodyBlocks);
+      continue;
+    }
     const rel = safeRelative(name);
     if (rel === undefined)
       throw new AboxError(
@@ -508,6 +550,7 @@ export async function extractTar(
         await rm(abs, { force: true, recursive: false }).catch(() => undefined);
         await symlink(target, abs);
         result.symlinks++;
+        if (opts.symlinks !== 'preserve') links.push({ abs, rel, target });
         break;
       }
       default:
@@ -518,6 +561,17 @@ export async function extractTar(
     if (h.type === '2' || h.type === '5') await finishBody();
   }
   await reader.drain();
+  // Every link again, against the finished tree: a link made later can redirect an earlier one.
+  for (const l of links) {
+    const dirSegs = l.rel.split('/').slice(0, -1);
+    if (!(await linkLeavesRoot(root, dirSegs, l.target))) continue;
+    await rm(l.abs, { force: true, recursive: false }).catch(() => undefined);
+    result.symlinks--;
+    skip(
+      l.rel,
+      `symlink target '${l.target.slice(0, 80)}' leads outside the copied tree through other links`,
+    );
+  }
   // directory modes last: a read-only directory must not stop us from filling it
   for (const d of dirModes.reverse()) {
     await chmod(d.path, (d.mode | 0o700) & 0o777).catch(() => undefined);

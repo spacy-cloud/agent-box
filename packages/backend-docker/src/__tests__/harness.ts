@@ -2,6 +2,8 @@ import { randomBytes } from 'node:crypto';
 import Docker from 'dockerode';
 import {
   createDockerProvider,
+  createPodmanProvider,
+  defaultSocketPath,
   type DockerProvider,
   type DockerProviderOptions,
 } from '../provider.js';
@@ -21,10 +23,22 @@ export const TEST_INSTANCE = `dtest${TEST_RUN}`;
 
 export const dockerEnabled = process.env['ABOX_TEST_DOCKER'] === '1';
 
+/**
+ * The engine the integration tests run against: `ABOX_TEST_ENGINE=podman` makes `newProvider` a Podman
+ * provider (default: Docker), `ABOX_TEST_ENGINE_SOCKET=/path/to/engine.sock` points every client of the
+ * suite at another socket (default: the engine's usual one: `/var/run/docker.sock`, or Podman's user
+ * socket). Together they run the suite against a Podman socket.
+ */
+export const TEST_ENGINE: 'docker' | 'podman' =
+  process.env['ABOX_TEST_ENGINE'] === 'podman' ? 'podman' : 'docker';
+export const TEST_SOCKET: string =
+  process.env['ABOX_TEST_ENGINE_SOCKET'] || defaultSocketPath(TEST_ENGINE);
+
 export function newProvider(opts: DockerProviderOptions = {}): DockerProvider {
-  return createDockerProvider(
+  return (TEST_ENGINE === 'podman' ? createPodmanProvider : createDockerProvider)(
     { host: 'local', kind: 'local' },
     {
+      socketPath: TEST_SOCKET,
       instanceId: TEST_INSTANCE,
       stopTimeoutSec: 1,
       ...opts,
@@ -126,7 +140,7 @@ async function leftovers(docker: Docker, filters: { label: string[] }): Promise<
  * behind: objects of any other `abox.dtest` run whose creating process is gone (or, without the pid
  * label, older than `STALE_AFTER_MS`).
  */
-export async function sweepTestObjects(socketPath = '/var/run/docker.sock'): Promise<void> {
+export async function sweepTestObjects(socketPath = TEST_SOCKET): Promise<void> {
   const docker = new Docker({ socketPath });
   const own = { label: [`${TEST_LABEL}=${TEST_RUN}`] };
   let left: string[] = [];
@@ -150,7 +164,7 @@ export async function sweepTestObjects(socketPath = '/var/run/docker.sock'): Pro
  * exits. A SIGKILL cannot be caught; the stale sweep of the next run covers that.
  */
 let signalsHooked = false;
-export function sweepOnSignals(socketPath = '/var/run/docker.sock'): void {
+export function sweepOnSignals(socketPath = TEST_SOCKET): void {
   if (signalsHooked || !dockerEnabled) return;
   signalsHooked = true;
   for (const [sig, code] of [

@@ -74,23 +74,47 @@ export function formatTimestamp(ts: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-// Control characters, bidi overrides and zero-width characters.
+/** Local time of day `HH:MM:SS` (stable, locale independent). */
+export function formatClock(ts: number): string {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// Control characters, bidi overrides and zero-width / invisible format characters: the C0/C1 controls,
+// U+00AD (soft hyphen), U+061C (Arabic letter mark), U+180E, U+200B-U+200F (zero-width, LRM/RLM),
+// U+2028/U+2029 (line / paragraph separator), U+202A-U+202E (embeddings and overrides), U+2060-U+2064
+// (word joiner, invisible operators), U+2066-U+2069 (isolates), U+206A-U+206F (deprecated format characters),
+// U+FEFF (BOM / zero-width no-break space), U+FFF9-U+FFFB (interlinear annotation) and the tag characters
+// U+E0000-U+E007F. Newlines and tabs stay.
 const CONTROL_RE = new RegExp(
   // eslint-disable-next-line no-control-regex
-  '[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069]',
-  'g',
+  '[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f\\u00ad\\u061c\\u180e\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\\u{e0000}-\\u{e007f}]',
+  'gu',
 );
 
 /**
  * Makes text from a project file or an agent safe to read: control characters, bidi overrides and
  * zero-width characters become visible escapes (a template could otherwise hide or reorder lines
- * in the review). Newlines and tabs stay. Same rules as `safe` of the CLI.
+ * in the review). Newlines and tabs stay. Same rules as `safe` of the CLI, plus the invisible format
+ * characters listed above. Use it for everything an agent, a project file or a remote host wrote.
  */
 export function safeText(text: string): string {
   return text.replace(CONTROL_RE, (c) => {
     const code = c.codePointAt(0) ?? 0;
-    return code < 0x100
-      ? `\\x${code.toString(16).padStart(2, '0')}`
-      : `\\u${code.toString(16).padStart(4, '0')}`;
+    if (code < 0x100) return `\\x${code.toString(16).padStart(2, '0')}`;
+    if (code > 0xffff) return `\\u{${code.toString(16)}}`;
+    return `\\u${code.toString(16).padStart(4, '0')}`;
   });
+}
+
+/**
+ * Neutralised and shortened for one line (a table cell, a toast, a title): newlines become spaces, at most
+ * `max` characters (code points) stay and an ellipsis marks the cut. The complete text belongs in a
+ * scrollable block (`ScrollText`), never in a cell.
+ */
+export function safeInline(text: string, max = 200): string {
+  const one = safeText(text.replace(/\s*[\r\n]+\s*/g, ' ')).trim();
+  const chars = [...one];
+  return chars.length > max ? `${chars.slice(0, Math.max(1, max - 1)).join('')}…` : one;
 }

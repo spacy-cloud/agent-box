@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AuditEntry, DirEntry, ExportSandboxResult, ResourceUsage } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
 import { useNow, useQuery, useSandboxUsage } from '../hooks';
 import { TerminalPane } from '../components/Terminal';
+import { FileTree } from '../components/FileTree';
+import type { TreeSelection } from '../components/FileTree';
 import { UsageLines } from '../components/usage';
 import { UnifiedDiff } from '../components/review';
 import {
@@ -16,15 +18,18 @@ import {
   IsolationBadge,
   Loading,
   OwnerBadge,
+  ScrollText,
+  Safe,
   StateBadge,
   Tabs,
 } from '../components/ui';
 import { overviewRows } from '../../shared/overview';
 import {
-  formatBytes,
   formatDuration,
   formatTimestamp,
   remainingMs,
+  safeInline,
+  safeText,
   shortId,
 } from '../../shared/format';
 import { ExtendDialog } from './Sandboxes';
@@ -49,7 +54,7 @@ export function DetailView(props: { id: string }) {
     setBusy(true);
     try {
       await fn();
-      notify('ok', t(okKey, { name: s?.name ?? '' }));
+      notify('ok', t(okKey, { name: safeInline(s?.name ?? '', 60) }));
       await q.reload();
     } catch (e) {
       notify('error', (e as Error).message);
@@ -72,14 +77,14 @@ export function DetailView(props: { id: string }) {
           <header className="page-head">
             <div>
               <h1 id="h-detail" className="plain">
-                {s.name}
+                {safeInline(s.name, 120)}
               </h1>
               <div className="badges">
                 <StateBadge state={s.state} stale={s.stale} />
                 <OwnerBadge owner={s.owner} />
                 <Badge tone="neutral">{s.backend}</Badge>
                 <IsolationBadge level={s.isolation} />
-                <span className="muted plain mono">{s.id}</span>
+                <Safe text={s.id} max={80} className="muted mono" />
               </div>
             </div>
             <div className="actions">
@@ -116,7 +121,7 @@ export function DetailView(props: { id: string }) {
           {s.humanAttached ? (
             <Banner tone="warn">
               <strong>{t('detail.humanAttached.title')}</strong>{' '}
-              {t('detail.humanAttached.text', { owner: s.owner })}
+              {t('detail.humanAttached.text', { owner: safeInline(s.owner, 80) })}
             </Banner>
           ) : null}
           {s.pendingApprovals > 0 ? (
@@ -129,7 +134,7 @@ export function DetailView(props: { id: string }) {
           ) : null}
           {s.error ? (
             <Banner tone="danger">
-              <span className="plain">{s.error}</span>
+              <Safe text={s.error} max={400} />
             </Banner>
           ) : null}
           <Tabs
@@ -176,7 +181,7 @@ export function DetailView(props: { id: string }) {
                 setBusy(true);
                 void call('sandboxes:remove', { id: s.id }).then(
                   () => {
-                    notify('ok', t('sandboxes.removed', { name: s.name }));
+                    notify('ok', t('sandboxes.removed', { name: safeInline(s.name, 60) }));
                     navigate({ view: 'sandboxes' });
                   },
                   (e: Error) => {
@@ -187,7 +192,7 @@ export function DetailView(props: { id: string }) {
                 );
               }}
             >
-              <p>{t('sandboxes.delete.text', { name: s.name })}</p>
+              <p>{t('sandboxes.delete.text', { name: safeInline(s.name, 60) })}</p>
               <p className="muted">{t('sandboxes.delete.hint')}</p>
             </ConfirmDialog>
           ) : null}
@@ -225,7 +230,7 @@ function OverviewTab(props: {
                 {r.values.length > 0 ? (
                   <ul className="plain-list">
                     {r.values.map((v) => (
-                      <li key={v}>{v}</li>
+                      <li key={v}>{safeText(v)}</li>
                     ))}
                   </ul>
                 ) : r.enumKey ? null : (
@@ -264,11 +269,15 @@ function OverviewTab(props: {
           </tr>
           <tr>
             <th scope="row">{t('detail.opt.template')}</th>
-            <td className="plain">{s.template}</td>
+            <td>
+              <Safe text={s.template} max={120} />
+            </td>
           </tr>
           <tr>
             <th scope="row">{t('detail.opt.host')}</th>
-            <td className="plain">{s.host}</td>
+            <td>
+              <Safe text={s.host} max={120} />
+            </td>
           </tr>
           <tr>
             <th scope="row">{t('detail.opt.processes')}</th>
@@ -294,13 +303,15 @@ function TerminalTab(props: { id: string; name: string; state: string; owner: st
     <>
       <p className="muted">{t('detail.terminal.intro')}</p>
       {props.owner.startsWith('agent:') ? (
-        <Banner tone="info">{t('detail.terminal.takeover', { owner: props.owner })}</Banner>
+        <Banner tone="info">
+          {t('detail.terminal.takeover', { owner: safeInline(props.owner, 80) })}
+        </Banner>
       ) : null}
       <TerminalPane
         target={{ kind: 'sandbox', id: props.id }}
         kindLabel={t('terminal.kind.sandbox')}
-        title={props.name}
-        subtitle={props.id}
+        title={safeInline(props.name, 80)}
+        subtitle={safeInline(props.id, 80)}
       />
     </>
   );
@@ -330,9 +341,13 @@ export function AuditTable(props: { entries: AuditEntry[]; onSandbox?: (id: stri
             <tr key={e.seq}>
               <td className="mono">{e.seq}</td>
               <td className="mono nowrap">{formatTimestamp(e.ts)}</td>
-              <td className="plain">{e.actor}</td>
-              <td className="plain">
-                <code>{e.action}</code>
+              <td>
+                <Safe text={e.actor} max={80} />
+              </td>
+              <td>
+                <code>
+                  <Safe text={e.action} max={100} />
+                </code>
               </td>
               <td>
                 {e.decision ? (
@@ -359,7 +374,7 @@ export function AuditTable(props: { entries: AuditEntry[]; onSandbox?: (id: stri
                       className="linklike plain"
                       onClick={() => props.onSandbox?.(e.sandboxId!)}
                     >
-                      {e.sandboxId}
+                      {safeInline(e.sandboxId, 80)}
                     </button>
                   ) : (
                     '—'
@@ -370,7 +385,11 @@ export function AuditTable(props: { entries: AuditEntry[]; onSandbox?: (id: stri
                 {e.details ? (
                   <details>
                     <summary>{summaryOf(e.details)}</summary>
-                    <pre className="log plain">{JSON.stringify(e.details, null, 2)}</pre>
+                    <ScrollText
+                      className="log"
+                      text={JSON.stringify(e.details, null, 2)}
+                      label={t('audit.col.details')}
+                    />
                   </details>
                 ) : (
                   '—'
@@ -386,7 +405,7 @@ export function AuditTable(props: { entries: AuditEntry[]; onSandbox?: (id: stri
 
 function summaryOf(d: Record<string, unknown>): string {
   const keys = Object.keys(d).slice(0, 4);
-  return keys.join(', ') || '{}';
+  return safeInline(keys.join(', '), 120) || '{}';
 }
 
 function ActivityTab(props: { id: string }) {
@@ -402,8 +421,8 @@ function ActivityTab(props: { id: string }) {
 
 function FilesTab(props: { id: string }) {
   const { t, notify } = useApp();
-  const [path, setPath] = useState<string>('');
-  const dir = useQuery('files:list', { id: props.id, ...(path ? { path } : {}) }, { live: false });
+  const [sel, setSel] = useState<TreeSelection>({ path: '', entry: null });
+  const [treeKey, setTreeKey] = useState(0);
   const [exp, setExp] = useState<ExportSandboxResult | null>(null);
   const [expError, setExpError] = useState<unknown>();
   const [expBusy, setExpBusy] = useState(false);
@@ -411,8 +430,19 @@ function FilesTab(props: { id: string }) {
   const [branchConfirm, setBranchConfirm] = useState(false);
   const [copyTarget, setCopyTarget] = useState('');
 
-  const entries = (dir.data ?? []) as DirEntry[];
-  const parts = path.split('/').filter(Boolean);
+  const sandboxId = props.id;
+  const loadDir = useCallback(
+    (path: string): Promise<DirEntry[]> =>
+      call('files:list', { id: sandboxId, ...(path ? { path } : {}) }),
+    [sandboxId],
+  );
+  /** The folder a copy-in goes to by default: the selected folder, or the folder of the selected file. */
+  const dirOfSelection =
+    sel.entry?.type === 'dir' || sel.entry === null
+      ? sel.path
+      : sel.path.includes('/')
+        ? sel.path.slice(0, sel.path.lastIndexOf('/'))
+        : '';
 
   async function loadDiff() {
     setExpBusy(true);
@@ -437,14 +467,14 @@ function FilesTab(props: { id: string }) {
 
   async function copyIn() {
     try {
-      const target = path ? `${path}/` : '';
+      const target = dirOfSelection ? `${dirOfSelection}/` : '';
       const r = await call('files:copyIn', {
         id: props.id,
         sandboxPath: copyTarget || target || '.',
       });
       if (r.copied) {
         notify('ok', t('detail.files.copiedIn', { path: r.copied }));
-        await dir.reload();
+        setTreeKey((k) => k + 1);
       }
     } catch (e) {
       notify('error', (e as Error).message);
@@ -473,79 +503,28 @@ function FilesTab(props: { id: string }) {
   return (
     <>
       <h2 className="h-small">{t('detail.files.dir')}</h2>
-      <nav aria-label={t('detail.files.breadcrumb')} className="crumbs">
-        <button type="button" className="linklike" onClick={() => setPath('')}>
-          {t('detail.files.root')}
+      <p className="muted small">{t('detail.files.treeHint')}</p>
+      <div className="actions" data-testid="file-actions">
+        <button type="button" onClick={() => setTreeKey((k) => k + 1)}>
+          {t('common.refresh')}
         </button>
-        {parts.map((p, i) => (
-          <span key={i}>
-            {' / '}
-            <button
-              type="button"
-              className="linklike plain"
-              onClick={() => setPath(parts.slice(0, i + 1).join('/'))}
-            >
-              {p}
-            </button>
-          </span>
-        ))}
-      </nav>
-      {dir.error ? <ErrorBox error={dir.error} /> : null}
-      {dir.loading && !dir.data ? <Loading /> : null}
-      {dir.data ? (
-        entries.length === 0 ? (
-          <p className="muted">{t('detail.files.emptyDir')}</p>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <caption className="sr-only">{t('detail.files.dir')}</caption>
-              <thead>
-                <tr>
-                  <th scope="col">{t('detail.files.name')}</th>
-                  <th scope="col">{t('detail.files.size')}</th>
-                  <th scope="col">{t('detail.files.modified')}</th>
-                  <th scope="col">{t('sandboxes.col.actions')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((e) => (
-                  <tr key={e.name}>
-                    <th scope="row" className="plain">
-                      {e.type === 'dir' ? (
-                        <button
-                          type="button"
-                          className="linklike plain"
-                          onClick={() => setPath(path ? `${path}/${e.name}` : e.name)}
-                        >
-                          {e.name}/
-                        </button>
-                      ) : (
-                        e.name
-                      )}
-                      {e.type === 'symlink' ? (
-                        <span className="muted"> ({t('detail.files.symlink')})</span>
-                      ) : null}
-                    </th>
-                    <td>{e.type === 'file' ? formatBytes(e.size) : ''}</td>
-                    <td className="mono">{formatTimestamp(e.mtimeMs)}</td>
-                    <td>
-                      {e.type === 'file' || e.type === 'dir' ? (
-                        <button
-                          type="button"
-                          onClick={() => void copyOut(path ? `${path}/${e.name}` : e.name)}
-                        >
-                          {t('detail.files.copyOut')}
-                          <span className="sr-only"> {e.name}</span>
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )
-      ) : null}
+        <button type="button" disabled={sel.path === ''} onClick={() => void copyOut(sel.path)}>
+          {t('detail.files.copyOut')}
+          {sel.path !== '' ? <span className="sr-only"> {safeInline(sel.path, 120)}</span> : null}
+        </button>
+        <span className="muted small plain" aria-live="polite">
+          {t('detail.files.selected', {
+            path: sel.path === '' ? t('detail.files.root') : safeInline(sel.path, 160),
+          })}
+        </span>
+      </div>
+      <FileTree
+        load={loadDir}
+        reloadKey={treeKey}
+        rootLabel={t('detail.files.root')}
+        label={t('detail.files.dir')}
+        onSelect={setSel}
+      />
 
       <div className="with-button">
         <Field label={t('detail.files.copyInTarget')} hint={t('detail.files.copyInHint')}>
@@ -554,7 +533,7 @@ function FilesTab(props: { id: string }) {
               id={id}
               type="text"
               value={copyTarget}
-              placeholder={path ? `${path}/` : '.'}
+              placeholder={dirOfSelection ? `${dirOfSelection}/` : '.'}
               onChange={(e) => setCopyTarget(e.target.value)}
               spellCheck={false}
             />
@@ -600,7 +579,7 @@ function FilesTab(props: { id: string }) {
               <ul>
                 {exp.flagged.map((f) => (
                   <li key={f.path} className="plain">
-                    <code>{f.path}</code> - {f.reason}
+                    <code>{safeInline(f.path, 200)}</code> - {safeInline(f.reason, 300)}
                   </li>
                 ))}
               </ul>
@@ -611,7 +590,7 @@ function FilesTab(props: { id: string }) {
               <ul>
                 {exp.warnings.map((w, i) => (
                   <li key={i} className="plain">
-                    {w}
+                    {safeText(w)}
                   </li>
                 ))}
               </ul>
@@ -634,7 +613,7 @@ function FilesTab(props: { id: string }) {
                     return (
                       <tr key={f.path} className={flagged ? 'row-danger' : ''}>
                         <th scope="row" className="plain">
-                          <code>{f.path}</code>
+                          <code>{safeInline(f.path, 200)}</code>
                         </th>
                         <td>
                           {t(`detail.files.status.${f.status}`)}
@@ -708,7 +687,7 @@ function SandboxOutput(props: { id: string }) {
         aria-label={t('detail.logs.sandboxOutput')}
         aria-live="off"
       >
-        {q.data?.content ?? ''}
+        {safeText(q.data?.content ?? '')}
       </pre>
     </>
   );
@@ -743,7 +722,7 @@ function LogsTab(props: { id: string }) {
               <select id={id} value={sel ?? ''} onChange={(e) => setSel(e.target.value)}>
                 {list.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.id} - {p.command.slice(0, 60)} ({p.status})
+                    {safeInline(p.id, 40)} - {safeInline(p.command, 60)} ({p.status})
                   </option>
                 ))}
               </select>
@@ -763,7 +742,7 @@ function LogsTab(props: { id: string }) {
             aria-label={t('detail.logs.output')}
             aria-live="off"
           >
-            {logs.data?.content ?? ''}
+            {safeText(logs.data?.content ?? '')}
           </pre>
           {logs.data?.truncated ? (
             <p className="muted small">{t('detail.logs.truncated')}</p>
@@ -851,13 +830,17 @@ function SnapshotsTab(props: { id: string }) {
             <tbody>
               {snaps.map((snap) => (
                 <tr key={snap.id}>
-                  <td className="plain">{snap.name}</td>
-                  <td className="plain mono">{snap.id}</td>
+                  <td>
+                    <Safe text={snap.name} max={80} />
+                  </td>
+                  <td>
+                    <Safe text={snap.id} max={80} className="mono" />
+                  </td>
                   <td className="mono">{formatTimestamp(snap.createdAt)}</td>
                   <td>
                     <button type="button" onClick={() => setRestoreId(snap.id)}>
                       {t('detail.snap.restore')}
-                      <span className="sr-only"> {snap.name}</span>
+                      <span className="sr-only"> {safeInline(snap.name, 60)}</span>
                     </button>
                   </td>
                 </tr>

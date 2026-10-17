@@ -295,6 +295,7 @@ export async function createAgentToken(
 ): Promise<AgentTokenView & { token: string }> {
   const ctx = await I.context(caller);
   I.requireHuman(ctx, 'token.create');
+  I.requirePolicyValid(ctx, 'token.create', 'creating agent tokens');
   if (
     typeof contextId !== 'string' ||
     contextId === 'human' ||
@@ -668,6 +669,24 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   }
 
   // policy file
+  if (I.policyProblem) {
+    const p = I.policyProblem;
+    add({
+      id: 'policy.invalid',
+      level: 'error',
+      title:
+        'policy.yaml is invalid: creating sandboxes, granting access, approving and every agent are refused',
+      detail: [
+        p.message,
+        ...p.issues
+          .slice(0, 10)
+          .map(
+            (i) => `${i.line ? `line ${i.line}: ` : ''}${i.path ? `${i.path}: ` : ''}${i.message}`,
+          ),
+      ].join('\n'),
+      hint: `\`abox policy validate\` shows all problems, \`abox policy edit\` repairs the file. Until then ${p.fallback === 'last_valid' ? 'the last valid policy is only used to look at things and clean up' : 'no valid policy was ever recorded, only the human context exists'}.`,
+    });
+  }
   let fileMode: string | undefined;
   if (I.policy.source.kind === 'file') {
     try {

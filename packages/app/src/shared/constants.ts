@@ -34,6 +34,7 @@ export const AUDIT_DECISIONS = [
   'error',
   'info',
 ] as const;
+export const APPROVAL_MODES = ['strict', 'medium', 'open'] as const;
 export const APPROVAL_STATUSES = ['pending', 'approved', 'denied', 'expired'] as const;
 export const EXPORT_FORMATS = ['diff', 'patch', 'branch'] as const;
 export const LOCALES = ['de', 'en'] as const;
@@ -90,12 +91,28 @@ export interface TtyExitEvent {
   /** Set when the session ended because of an error on abox's side. */
   reason?: string;
 }
+/** A passphrase / PIN prompt of an ssh session, to be answered in a dialog (`askpass:answer`). */
+export interface AskpassEvent {
+  id: string;
+  /** Label of the ssh session (`user@host:port`). */
+  session: string;
+  /** The prompt text as ssh printed it. May come from the server: shown as neutralised text. */
+  prompt: string;
+  /** `secret`: input expected; `confirm`: yes / no; `info`: a notice (touch the key); `refused`: not relayed. */
+  mode: 'secret' | 'confirm' | 'info' | 'refused';
+}
+/** The prompt with this id is gone (answered elsewhere, ssh stopped waiting, window reloaded). */
+export interface AskpassEndEvent {
+  id: string;
+}
 export interface EventPayloads {
   'evt:changed': ChangedEvent;
   'evt:progress': ProgressEvent;
   'evt:navigate': NavigateEvent;
   'evt:tty-data': TtyDataEvent;
   'evt:tty-exit': TtyExitEvent;
+  'evt:askpass': AskpassEvent;
+  'evt:askpass-end': AskpassEndEvent;
 }
 
 /** Errors cross the boundary as plain data. */

@@ -24,7 +24,7 @@ import {
   type SecretStore,
 } from '@abox/core';
 import { readFileSync } from 'node:fs';
-import { configuredRuntime, providerFactories } from './providers.js';
+import { hardenedRuntimeFor, providerFactories } from './providers.js';
 
 export interface OpenAboxOptions {
   /** Environment for path resolution (default `process.env`; `ABOX_HOME=<dir>` isolates everything). */
@@ -37,6 +37,8 @@ export interface OpenAboxOptions {
   hosts?: boolean;
   /** Override the keyring (tests). */
   secretStore?: SecretStore;
+  /** Overrides for the ssh helpers, e.g. another `sshBinary` or `sshConfigFile: null` (tests). */
+  hostsEnv?: Partial<HostsEnv>;
   /** Home directory for `~` expansion in the manager (tests). */
   home?: string;
   now?: () => number;
@@ -110,12 +112,15 @@ export async function openAbox(opts: OpenAboxOptions = {}): Promise<AboxRuntime>
       audit(action, details);
       opts.onHostAudit?.(action, details);
     },
+    ...opts.hostsEnv,
   });
   const tunnels = new TunnelManager(hostsEnv);
 
   const factories = providerFactories({ env, paths, config });
+  const hardened = hardenedProviders(factories, config, audit);
   let hostResolver: HostResolver | undefined;
   let resolveTarget: ((hostId: string) => Promise<HostConnection>) | undefined;
+  let localTarget: Promise<HostConnection | undefined> | undefined;
   if (opts.hosts !== false) {
     const inner = createHostResolver(hostRegistry, tunnels, { cache: state.hosts });
     // Unless hosts.yaml defines `local` itself, every registered backend is available on this
@@ -125,14 +130,25 @@ export async function openAbox(opts: OpenAboxOptions = {}): Promise<AboxRuntime>
     const registered = Object.keys(factories) as BackendKind[];
     const resolver: HostTargetResolver = async (hostId) => {
       const target = await inner(hostId);
-      if (hostId !== 'local' || localDefined) return target;
-      return { ...target, backends: [...new Set([...target.backends, ...registered])] };
+      const out =
+        hostId !== 'local' || localDefined
+          ? target
+          : { ...target, backends: [...new Set([...target.backends, ...registered])] };
+      // `capabilities()` is synchronous: a remote engine's hardened runtime must be known before
+      // the manager asks the provider of this host for its isolation (it always resolves first)
+      if (hostId !== 'local') await hardened.prepare(out);
+      return out;
     };
     hostResolver = resolver;
     resolveTarget = async (hostId) => (await resolver(hostId)).connection;
+    localTarget = resolveTarget('local').catch(() => undefined);
+  } else {
+    localTarget = Promise.resolve({ host: 'local', kind: 'local' } as HostConnection);
   }
 
-  await initHardenedProviders(factories, config, resolveTarget);
+  // The local engine is checked up front (cheap when no runtime is configured: nothing connects)
+  const local = await localTarget;
+  if (local) await hardened.prepare({ connection: local });
 
   let abox: Abox;
   try {
@@ -217,28 +233,80 @@ function localIsDefined(hostsFile: string): boolean {
 
 /**
  * `capabilities()` is synchronous and the manager checks a template's isolation against it before
- * anything else touches the engine. A configured hardened runtime (runsc, kata) is only known to be
- * present after asking the engine, so those providers are built and initialised up front (once, for
- * the local host) and the factory hands out that instance. Without a configured runtime nothing
- * connects to an engine here. An unreachable engine is not an error: isolation stays `container`.
+ * anything else touches the engine. A configured hardened runtime (runsc, kata) is only known to
+ * be present after asking the engine, so those providers are built and initialised first and the
+ * factory hands out that instance for the host. The runtime comes from the host: `runtimes` in
+ * its hosts.yaml entry, and for the local host from `config.yaml`. Without a configured runtime
+ * nothing connects to an engine here. An unreachable engine is not an error: isolation stays
+ * `container`.
+ *
+ * Remote hosts are prepared by the host resolver, once their engine tunnel is up: a runtime the
+ * engine does not list is audited (`host.runtime_missing`) so that "isolation container is below
+ * hardened" has a visible cause.
  */
-async function initHardenedProviders(
+function hardenedProviders(
   factories: Partial<Record<BackendKind, ProviderFactory>>,
   config: AboxConfig,
-  resolveTarget: ((hostId: string) => Promise<HostConnection>) | undefined,
-): Promise<void> {
-  const wanted = (['docker', 'podman', 'python'] as const).filter(
-    (k) => factories[k] && configuredRuntime(k === 'podman' ? 'podman' : 'docker', config),
-  );
-  if (wanted.length === 0) return;
-  const local = resolveTarget
-    ? await resolveTarget('local').catch(() => undefined)
-    : ({ host: 'local', kind: 'local' } as HostConnection);
-  if (!local) return;
-  for (const kind of wanted) {
-    const factory = factories[kind] as ProviderFactory;
-    const ready = factory(local) as SandboxProvider & { init?: () => Promise<void> };
-    await ready.init?.().catch(() => undefined);
-    factories[kind] = (h) => (h.host === local.host ? ready : factory(h));
+  audit: (action: string, details?: Record<string, unknown>) => void,
+): {
+  prepare(target: {
+    connection: HostConnection;
+    backends?: readonly BackendKind[];
+    engine?: { runtimes: string[] };
+  }): Promise<void>;
+} {
+  const kinds = ['docker', 'podman', 'python'] as const;
+  const engineOf = (k: (typeof kinds)[number]) => (k === 'podman' ? 'podman' : 'docker');
+  const make: Partial<Record<BackendKind, ProviderFactory>> = { ...factories };
+  const ready = new Map<string, SandboxProvider>();
+  const keyOf = (c: HostConnection, kind: (typeof kinds)[number]): string | undefined => {
+    const rt = hardenedRuntimeFor(engineOf(kind), config, c);
+    return rt === undefined ? undefined : [c.host, kind, c.engineSocket ?? '', rt].join('\0');
+  };
+  for (const kind of kinds) {
+    const factory = make[kind];
+    if (!factory) continue;
+    factories[kind] = (c) => {
+      const key = keyOf(c, kind);
+      return (key !== undefined ? ready.get(key) : undefined) ?? factory(c);
+    };
   }
+  const preparing = new Map<string, Promise<void>>();
+  return {
+    async prepare({ connection, backends, engine }) {
+      for (const kind of kinds) {
+        const factory = make[kind];
+        const key = keyOf(connection, kind);
+        if (!factory || key === undefined || ready.has(key)) continue;
+        if (backends && !backends.includes(kind)) continue; // an engine the host does not offer
+        // concurrent resolutions of one host (GUI polling) prepare and report once
+        let job = preparing.get(key);
+        if (!job) {
+          job = (async () => {
+            const provider = factory(connection) as SandboxProvider & {
+              init?: () => Promise<void>;
+            };
+            try {
+              await provider.init?.();
+            } catch {
+              // local: the unreachable engine is reported by doctor; isolation stays "container"
+              if (connection.kind === 'local') ready.set(key, provider);
+              return;
+            }
+            ready.set(key, provider);
+            if (connection.kind === 'ssh' && provider.capabilities().isolation !== 'hardened') {
+              audit('host.runtime_missing', {
+                host: connection.host,
+                backend: kind,
+                runtime: hardenedRuntimeFor(engineOf(kind), config, connection),
+                ...(engine ? { engineRuntimes: engine.runtimes } : {}),
+              });
+            }
+          })().finally(() => preparing.delete(key));
+          preparing.set(key, job);
+        }
+        await job;
+      }
+    },
+  };
 }

@@ -44,6 +44,8 @@ function row(p: HostProfile): HostRow {
       authOk: null,
       remoteUser: null,
       backends: [],
+      engine: null,
+      runtimes: [],
       warnings: [],
     },
     forwardsRunning: 0,

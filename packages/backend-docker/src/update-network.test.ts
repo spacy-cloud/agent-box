@@ -8,13 +8,14 @@ import {
   TEST_LABEL,
   TEST_PID_LABEL,
   TEST_RUN,
+  TEST_SOCKET,
   dockerEnabled,
   newProvider,
   sweepTestObjects,
 } from './__tests__/harness.js';
 import { defaultProxyAssets } from './proxy.js';
 
-const raw = new Docker({ socketPath: '/var/run/docker.sock' });
+const raw = new Docker({ socketPath: TEST_SOCKET });
 const proxyAvailable =
   defaultProxyAssets !== undefined && existsSync(`${defaultProxyAssets.runtimeDir}/proxy.mjs`);
 

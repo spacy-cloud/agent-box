@@ -480,4 +480,9 @@ export interface HostConnection {
   engineSocket?: string;
   /** Working directory root on that host for backend data (process/vm backends). */
   dataDir?: string;
+  /**
+   * Stronger OCI runtime of the engine on THIS host (`runsc`, `kata`), per engine, from the host
+   * profile. The container backends report `hardened` only when the engine really lists it.
+   */
+  runtimes?: { docker?: string; podman?: string };
 }

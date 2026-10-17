@@ -8,7 +8,7 @@ import { AboxError, DEFAULT_POLICY_YAML } from '@abox/core';
 import type { Abox, AboxPaths, AuditFilter, Caller, CreateSandboxRequest } from '@abox/core';
 import type { z } from 'zod';
 import type { IPC, IpcChannel } from '../shared/ipc';
-import type { McpConfig, Outputs } from '../shared/types';
+import type { McpConfig, McpContextStatus, McpStatus, Outputs } from '../shared/types';
 import { mcpClaudeCommand, mcpJsonConfig } from '../shared/mcp-config';
 import { describeBase } from '../shared/image-ref';
 import { templateTarget } from './approval-context';
@@ -67,7 +67,8 @@ export type ManagerChannel =
   | 'tokens:list'
   | 'tokens:create'
   | 'tokens:revoke'
-  | 'mcp:config';
+  | 'mcp:config'
+  | 'mcp:status';
 
 const HUMAN: Caller = { contextId: 'human' };
 const confirmedHuman = (confirmed: boolean | undefined): Caller =>
@@ -243,6 +244,51 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         contexts,
       };
       return cfg;
+    },
+    'mcp:status': async (): Promise<McpStatus> => {
+      // The MCP server is a process of its own (stdio per agent, or HTTP with tokens): the manager keeps no
+      // "running" flag. What is observable is who is configured, which tokens exist and when each agent last acted.
+      const [view, tokens] = await Promise.all([
+        abox.showPolicy(HUMAN),
+        abox.listAgentTokens(HUMAN),
+      ]);
+      const ids = Object.keys(view.contexts ?? {})
+        .filter((c) => c !== 'human')
+        .sort();
+      const contexts: McpContextStatus[] = [];
+      for (const id of ids) {
+        const last = (
+          await abox.queryAudit(HUMAN, { actor: `agent:${id}`, limit: 1, order: 'desc' })
+        )[0];
+        const mine = tokens.filter((k) => k.contextId === id);
+        const active = mine.filter((k) => k.revokedAt === null);
+        const used = mine.map((k) => k.lastUsedAt ?? 0).reduce((a, b) => Math.max(a, b), 0);
+        contexts.push({
+          id,
+          profile: view.contexts?.[id]?.profile ?? '',
+          lastActivityAt: last?.ts ?? null,
+          lastAction: last?.action ?? null,
+          lastDecision: last?.decision ?? null,
+          activeTokens: active.length,
+          lastTokenUseAt: used > 0 ? used : null,
+        });
+      }
+      const lastUsed = tokens.map((k) => k.lastUsedAt ?? 0).reduce((a, b) => Math.max(a, b), 0);
+      return {
+        contexts,
+        tokens: {
+          active: tokens.filter((k) => k.revokedAt === null).length,
+          revoked: tokens.filter((k) => k.revokedAt !== null).length,
+          lastUsedAt: lastUsed > 0 ? lastUsed : null,
+        },
+        lastActivityAt: contexts.reduce<number | null>(
+          (a, c) =>
+            c.lastActivityAt !== null && (a === null || c.lastActivityAt > a)
+              ? c.lastActivityAt
+              : a,
+          null,
+        ),
+      };
     },
   };
 }

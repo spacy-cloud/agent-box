@@ -3,7 +3,17 @@ import type { TemplateListEntry } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
 import { useQuery } from '../hooks';
-import { Banner, Dialog, ErrorBox, Field, IsolationBadge, Loading, Badge } from '../components/ui';
+import {
+  Banner,
+  Dialog,
+  ErrorBox,
+  Field,
+  IsolationBadge,
+  Loading,
+  Badge,
+  Safe,
+} from '../components/ui';
+import { safeInline, safeText } from '../../shared/format';
 import { ImageUseBlock, TemplateReviewPanel } from '../components/review';
 import { ProjectFolderPicker } from '../components/ProjectFolder';
 import { NETWORK_MODES, WORKSPACE_MODES } from '../../shared/constants';
@@ -171,7 +181,7 @@ export function NewSandboxDialog(props: {
         progressKey: key.current,
       });
       if (res.status === 'created') {
-        notify('ok', t('new.created', { name: res.sandbox.name }));
+        notify('ok', t('new.created', { name: safeInline(res.sandbox.name, 60) }));
         props.onCreated(res.sandbox.id);
       } else if (res.status === 'confirmation_required') {
         setConfirmation({ reasons: res.reasons, risks: res.risks, items: res.items });
@@ -292,8 +302,10 @@ export function NewSandboxDialog(props: {
                     onChange={() => set('template', tpl.name)}
                   />
                   <span className="template-main">
-                    <strong className="plain">{tpl.name}</strong>
-                    <span className="plain muted">{tpl.description}</span>
+                    <strong>
+                      <Safe text={tpl.name} max={80} />
+                    </strong>
+                    <Safe text={tpl.description} max={240} className="muted" />
                     <span className="badges">
                       <Badge tone="neutral">{tpl.backend}</Badge>
                       <IsolationBadge level={tpl.isolation} />
@@ -558,14 +570,14 @@ export function NewSandboxDialog(props: {
           <ul className="item-list">
             {confirmation.items.map((it, i) => (
               <li key={i}>
-                <strong className="plain">{it.reason}</strong>
-                <div className="danger-text plain">{it.risk}</div>
+                <strong className="plain">{safeText(it.reason)}</strong>
+                <div className="danger-text plain">{safeText(it.risk)}</div>
               </li>
             ))}
             {confirmation.items.length === 0
               ? [...confirmation.reasons, ...confirmation.risks].map((x, i) => (
                   <li key={i} className="plain">
-                    {x}
+                    {safeText(x)}
                   </li>
                 ))
               : null}
@@ -583,7 +595,9 @@ export function NewSandboxDialog(props: {
               {review.error ? (
                 <Banner tone="warn">
                   <span className="plain">
-                    {t('new.review.unavailable', { message: review.error.message })}
+                    {t('new.review.unavailable', {
+                      message: safeInline(review.error.message, 300),
+                    })}
                   </span>
                 </Banner>
               ) : null}

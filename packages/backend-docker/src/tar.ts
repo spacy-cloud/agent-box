@@ -294,6 +294,7 @@ export interface SingleFile {
   mode: number;
   /** Owner of the entry as recorded in the archive. */
   uid: number;
+  gid: number;
   linkname?: string;
   /** First `maxBytes` of the content (files only). */
   data: Buffer;
@@ -333,6 +334,7 @@ export async function readFirstEntry(
         size,
         mode: h.mode ?? 0,
         uid: h.uid ?? 0,
+        gid: h.gid ?? 0,
         data: Buffer.concat(chunks),
         truncated: size > got,
       };
@@ -341,6 +343,7 @@ export async function readFirstEntry(
       size: h.size ?? 0,
       mode: h.mode ?? 0,
       uid: h.uid ?? 0,
+      gid: h.gid ?? 0,
       data: Buffer.alloc(0),
       truncated: false,
     };
@@ -383,6 +386,43 @@ async function lstatOrUndefined(p: string): Promise<Stats | undefined> {
 }
 
 /**
+ * Would the symlink `linkname`, placed in the directory `dirSegs` (relative to `root`, a real
+ * directory chain), lead out of `root` once the tree is complete? The target is resolved against
+ * what is on disk, the way the kernel does: a component that is itself a symlink is followed (its
+ * target spliced in), `..` after such a link goes up from where the link leads, so a chain such as
+ * `d/sub -> ..`, `s -> d/sub`, `t -> s/..` is caught although every single target looks harmless.
+ * Components that do not exist (yet) count as plain directories. A chain longer than the kernel's
+ * limit of 40 links cannot be followed at all and is not an escape.
+ */
+async function linkLeavesRoot(root: string, dirSegs: string[], linkname: string): Promise<boolean> {
+  if (linkname.startsWith('/')) return true;
+  const real = [...dirSegs];
+  let pending = linkname.split('/').filter((s) => s !== '' && s !== '.');
+  let hops = 0;
+  while (pending.length > 0) {
+    const comp = pending.shift() as string;
+    if (comp === '..') {
+      if (real.length === 0) return true;
+      real.pop();
+      continue;
+    }
+    const st = await lstatOrUndefined(path.join(root, ...real, comp));
+    if (st?.isSymbolicLink()) {
+      if (++hops > 40) return false;
+      const next = await fs.readlink(path.join(root, ...real, comp));
+      if (next.startsWith('/')) return true;
+      pending = [...next.split('/').filter((s) => s !== '' && s !== '.'), ...pending];
+      continue;
+    }
+    real.push(comp);
+  }
+  return false;
+}
+
+/** Hardlinks are materialized as extra links or copies; what they add up to is limited. */
+export const MAX_HARDLINK_BYTES = 1024 ** 3;
+
+/**
  * Extract an archive produced by the engine for ONE path into `hostPath`: the single top-level
  * entry of the archive becomes `hostPath` itself (a directory's content is merged into it).
  *
@@ -392,17 +432,46 @@ async function lstatOrUndefined(p: string): Promise<Stats | undefined> {
  * symlinks must be relative and stay inside the destination; hardlinks are copied; special
  * files are skipped; setuid/setgid bits are dropped.
  *
+ * Symlinks are checked in two steps: each target must be harmless on its own when the entry is
+ * read, and once the whole archive is extracted every link is resolved again against the tree as it
+ * ended up (see `linkLeavesRoot`), because a later link can redirect an earlier one. A link that
+ * leads out is removed and refused. Hardlinks become real hardlinks of the already extracted file
+ * (a copy where the file system cannot link), so a file with many names is stored once; their
+ * logical sizes add up to at most `opts.maxHardlinkBytes` (default `MAX_HARDLINK_BYTES`), because
+ * everything later reads each name again.
+ *
  * `opts.symlinks: 'preserve'` is for a private scratch tree that abox only inspects (the export
  * compares it with its baseline): symlinks are then recreated as they are, including absolute and
  * escaping targets (the empty or NUL target still fails). That does not weaken the rules above:
- * no entry is ever written through a link, and the links are never followed.
+ * no entry is ever written through a link, and the links are never followed. Because the tree is
+ * only inspected, entries that cannot be extracted safely do not abort it either: a name with a
+ * backslash (it would be a path separator on some hosts), a hardlink to something that was not
+ * extracted or beyond the hardlink budget are left out and reported through `opts.onSkip` (relative
+ * path, reason). With `'refuse'` (a copy for the user) they remain errors.
  */
 export async function extractArchiveSafe(
   source: Readable,
   hostPath: string,
-  opts: { symlinks?: 'refuse' | 'preserve' } = {},
+  opts: {
+    symlinks?: 'refuse' | 'preserve';
+    onSkip?: (path: string, reason: string) => void;
+    maxHardlinkBytes?: number;
+  } = {},
 ): Promise<void> {
   const preserveLinks = opts.symlinks === 'preserve';
+  const maxHardlinkBytes = opts.maxHardlinkBytes ?? MAX_HARDLINK_BYTES;
+  let hardlinkBytes = 0;
+  const links: Array<{ dir: string[]; linkname: string; target: string; name: string }> = [];
+  const skip = (name: string, reason: string): void => {
+    opts.onSkip?.(
+      name
+        .split('/')
+        .filter((s) => s !== '' && s !== '.')
+        .slice(1)
+        .join('/'),
+      reason,
+    );
+  };
   const dest = path.resolve(hostPath);
   let top: string | undefined;
   let rootKind: 'dir' | 'file' | undefined;
@@ -436,6 +505,11 @@ export async function extractArchiveSafe(
   try {
     for await (const entry of gen) {
       const h = entry.header;
+      if (preserveLinks && h.name.includes('\\') && !h.name.includes('\0')) {
+        await drain(entry);
+        skip(h.name, 'file name contains a backslash (not extracted)');
+        continue;
+      }
       const segs = entrySegments(h.name);
       if (segs.length === 0) {
         await drain(entry);
@@ -522,22 +596,53 @@ export async function extractArchiveSafe(
             await fs.unlink(target);
           }
           await fs.symlink(linkname, target);
+          if (!preserveLinks) links.push({ dir: rel.slice(0, -1), linkname, target, name: h.name });
           break;
         }
         case 'link': {
           await drain(entry);
-          const lsegs = entrySegments(h.linkname ?? '');
-          if (lsegs[0] !== top || lsegs.length < 2)
-            throw escapes(`hardlink "${h.name}" targets outside the archive root`);
+          const refuse = (why: string): void => {
+            if (!preserveLinks) throw escapes(`hardlink "${h.name}" ${why}`);
+            skip(h.name, `hardlink ${why} (not extracted)`);
+          };
+          const linkTo = h.linkname ?? '';
+          if (preserveLinks && (linkTo.includes('\\') || linkTo.includes('\0'))) {
+            refuse('targets a name that was not extracted');
+            break;
+          }
+          const lsegs = entrySegments(linkTo);
+          if (lsegs[0] !== top || lsegs.length < 2) {
+            refuse('targets outside the archive root');
+            break;
+          }
           const lparent = await safeParent(lsegs.slice(1));
           const src = path.join(lparent, lsegs[lsegs.length - 1] as string);
           const sst = await lstatOrUndefined(src);
-          if (!sst || !sst.isFile())
-            throw escapes(`hardlink "${h.name}" does not target an extracted file`);
+          if (!sst || !sst.isFile() || src === target) {
+            refuse('does not target an extracted file');
+            break;
+          }
+          if (hardlinkBytes + sst.size > maxHardlinkBytes) {
+            if (!preserveLinks)
+              throw new AboxError(
+                'policy_denied',
+                `Refusing to extract archive: its hardlinks add up to more than ${maxHardlinkBytes} bytes`,
+                { hint: 'A file with very many names is expanded into every one of them.' },
+              );
+            skip(h.name, 'hardlink beyond the limit for hardlinked data (not extracted)');
+            break;
+          }
+          hardlinkBytes += sst.size;
           const st = await lstatOrUndefined(target);
           if (st) await fs.unlink(target);
-          await fs.copyFile(src, target, fsc.COPYFILE_EXCL);
-          await fs.chmod(target, (h.mode ?? 0o644) & 0o777);
+          try {
+            await fs.link(src, target); // one copy of the data; the mode is the file's
+          } catch (e) {
+            const code = (e as NodeJS.ErrnoException).code;
+            if (code === 'EEXIST') throw e;
+            await fs.copyFile(src, target, fsc.COPYFILE_EXCL);
+            await fs.chmod(target, (h.mode ?? 0o644) & 0o777);
+          }
           break;
         }
         case 'file':
@@ -553,6 +658,14 @@ export async function extractArchiveSafe(
     }
     if (top === undefined)
       throw new AboxError('not_found', 'The sandbox returned an empty archive');
+    // Every link again, against the finished tree (a link made later can redirect an earlier one).
+    for (const l of links) {
+      if (!(await linkLeavesRoot(rootReal, l.dir, l.linkname))) continue;
+      await fs.unlink(l.target).catch(() => undefined);
+      throw escapes(
+        `symlink "${l.name}" -> "${l.linkname}" leads outside the destination through other links`,
+      );
+    }
     for (const d of dirModes.reverse()) {
       await fs.chmod(d.p, d.mode);
       if (d.mtime) await fs.utimes(d.p, d.mtime, d.mtime);

@@ -169,6 +169,67 @@ describe('manager handlers are thin: always the human caller, confirmation only 
     expect(lines).toEqual([['abc', 'step 1']]);
   });
 
+  it('mcp:status combines the policy contexts, the token table and the last audited action of each agent', async () => {
+    const queried: unknown[] = [];
+    const abox = {
+      showPolicy: () =>
+        Promise.resolve({
+          contexts: {
+            human: { profile: 'human' },
+            sim: { profile: 'agent' },
+            other: { profile: 'agent' },
+          },
+        }),
+      listAgentTokens: () =>
+        Promise.resolve([
+          { id: 't1', contextId: 'sim', label: 'a', createdAt: 1, lastUsedAt: 50, revokedAt: null },
+          { id: 't2', contextId: 'sim', label: 'b', createdAt: 1, lastUsedAt: 70, revokedAt: 5 },
+          {
+            id: 't3',
+            contextId: 'other',
+            label: 'c',
+            createdAt: 1,
+            lastUsedAt: null,
+            revokedAt: null,
+          },
+        ]),
+      queryAudit: (_c: unknown, f: { actor: string }) => {
+        queried.push(f);
+        return Promise.resolve(
+          f.actor === 'agent:sim' ? [{ ts: 900, action: 'sandbox.exec', decision: 'allow' }] : [],
+        );
+      },
+    } as unknown as Abox;
+    const h = createManagerHandlers({ abox, paths });
+    const s = await h['mcp:status'](undefined, {});
+    expect(queried).toEqual([
+      { actor: 'agent:other', limit: 1, order: 'desc' },
+      { actor: 'agent:sim', limit: 1, order: 'desc' },
+    ]);
+    expect(s.contexts).toEqual([
+      {
+        id: 'other',
+        profile: 'agent',
+        lastActivityAt: null,
+        lastAction: null,
+        lastDecision: null,
+        activeTokens: 1,
+        lastTokenUseAt: null,
+      },
+      {
+        id: 'sim',
+        profile: 'agent',
+        lastActivityAt: 900,
+        lastAction: 'sandbox.exec',
+        lastDecision: 'allow',
+        activeTokens: 1,
+        lastTokenUseAt: 70,
+      },
+    ]);
+    expect(s.tokens).toEqual({ active: 2, revoked: 1, lastUsedAt: 70 });
+    expect(s.lastActivityAt).toBe(900);
+  });
+
   it('live usage is asked as the human for exactly the ids the view names', async () => {
     const { abox, calls } = fakeAbox();
     const h = createManagerHandlers({ abox, paths });

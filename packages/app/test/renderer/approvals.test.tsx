@@ -11,6 +11,17 @@ afterEach(cleanup);
 const XSS =
   '<img src=x onerror="window.__pwned=1"><script>window.__pwned=2</script> **bold** [link](javascript:alert(1))';
 
+const POLICY_DOC = {
+  text: 'version: 1\nprofiles:\n  agent:\n    approval: medium\n',
+  source: 'file',
+  path: '/p/policy.yaml',
+  view: {
+    policy: { contentHash: 'h1', revision: 1, source: 'file' },
+    profiles: {},
+    contexts: {},
+  },
+};
+
 function approval(over: Partial<ApprovalView> = {}): ApprovalView {
   return {
     id: 'ap1',
@@ -50,21 +61,16 @@ function mount(a: ApprovalView) {
   const calls = installBridge((channel) => {
     if (channel === 'approvals:approve' || channel === 'approvals:deny') return { approval: a };
     if (channel === 'approvals:image') return null; // context for the details, not a decision
+    if (channel === 'policy:get') return POLICY_DOC; // read by the "allow permanently" dialog
+    if (channel === 'policy:validate') return { ok: true, contentHash: 'h2', issues: [] };
     throw new Error(`unexpected ${channel}`);
   });
   const onApproved = vi.fn();
   const onDenied = vi.fn();
-  const onPermanent = vi.fn();
   renderApp(
-    <ApprovalDialog
-      approval={a}
-      now={Date.now()}
-      onApproved={onApproved}
-      onDenied={onDenied}
-      onPermanent={onPermanent}
-    />,
+    <ApprovalDialog approval={a} now={Date.now()} onApproved={onApproved} onDenied={onDenied} />,
   );
-  return { calls, onApproved, onDenied, onPermanent, dialog: screen.getByRole('dialog') };
+  return { calls, onApproved, onDenied, dialog: screen.getByRole('dialog') };
 }
 
 describe('ApprovalDialog', () => {
@@ -96,13 +102,25 @@ describe('ApprovalDialog', () => {
     expect(within(dialog).getByText('Code runs with your user rights on the host.')).toBeTruthy();
   });
 
-  it('offers deny and allow-once; "allow permanently" only navigates (no hidden toggle)', async () => {
-    const { calls, onPermanent, dialog } = mount(approval());
+  it('offers deny and allow-once; "allow permanently" opens the policy change dialog (no hidden toggle, no decision)', async () => {
+    const { calls, dialog } = mount(approval());
     expect(within(dialog).getByRole('button', { name: 'Ablehnen' })).toBeTruthy();
     expect(within(dialog).getByRole('button', { name: 'Einmal erlauben' })).toBeTruthy();
     expect(dialog.querySelector('input[type=checkbox]')).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: /Dauerhaft erlauben/ }));
-    expect(onPermanent).toHaveBeenCalled();
+    expect(
+      await screen.findByRole('dialog', { name: /Dauerhaft erlauben: Policy ändern/ }),
+    ).toBeTruthy();
+    expect(decisions(calls)).toHaveLength(0);
+    expect(calls.some((c) => c.channel === 'policy:set')).toBe(false);
+  });
+
+  it('Esc inside the policy change dialog closes it and does not deny the request', async () => {
+    const { calls, onDenied, dialog } = mount(approval());
+    fireEvent.click(within(dialog).getByRole('button', { name: /Dauerhaft erlauben/ }));
+    const modal = await screen.findByRole('dialog', { name: /Dauerhaft erlauben: Policy ändern/ });
+    fireEvent.keyDown(modal, { key: 'Escape' });
+    expect(onDenied).not.toHaveBeenCalled();
     expect(decisions(calls)).toHaveLength(0);
   });
 
@@ -143,7 +161,6 @@ describe('ApprovalDialog', () => {
         now={Date.now()}
         onApproved={vi.fn()}
         onDenied={vi.fn()}
-        onPermanent={vi.fn()}
       />,
       { locale: 'en' },
     );
@@ -195,13 +212,7 @@ describe('ApprovalDialog: request kinds', () => {
       throw new Error(`unexpected ${channel}`);
     });
     renderApp(
-      <ApprovalDialog
-        approval={a}
-        now={Date.now()}
-        onApproved={vi.fn()}
-        onDenied={vi.fn()}
-        onPermanent={vi.fn()}
-      />,
+      <ApprovalDialog approval={a} now={Date.now()} onApproved={vi.fn()} onDenied={vi.fn()} />,
       { locale: 'en' },
     );
     const dialog = screen.getByRole('dialog');
@@ -237,13 +248,7 @@ describe('ApprovalDialog: request kinds', () => {
       return null;
     });
     renderApp(
-      <ApprovalDialog
-        approval={a}
-        now={Date.now()}
-        onApproved={vi.fn()}
-        onDenied={vi.fn()}
-        onPermanent={vi.fn()}
-      />,
+      <ApprovalDialog approval={a} now={Date.now()} onApproved={vi.fn()} onDenied={vi.fn()} />,
       { locale: 'en' },
     );
     const alert = await screen.findByRole('alert');
@@ -257,13 +262,7 @@ describe('ApprovalDialog: request kinds', () => {
       throw new Error('template "proj-tpl" not found');
     });
     renderApp(
-      <ApprovalDialog
-        approval={a}
-        now={Date.now()}
-        onApproved={vi.fn()}
-        onDenied={vi.fn()}
-        onPermanent={vi.fn()}
-      />,
+      <ApprovalDialog approval={a} now={Date.now()} onApproved={vi.fn()} onDenied={vi.fn()} />,
       { locale: 'en' },
     );
     expect(
@@ -280,7 +279,6 @@ describe('ApprovalDialog: request kinds', () => {
         now={Date.now()}
         onApproved={vi.fn()}
         onDenied={vi.fn()}
-        onPermanent={vi.fn()}
       />,
     );
     await new Promise((r) => setTimeout(r, 20));
@@ -303,13 +301,7 @@ describe('ApprovalDialog: request kinds', () => {
       throw new Error(`unexpected ${channel}`);
     });
     renderApp(
-      <ApprovalDialog
-        approval={a}
-        now={Date.now()}
-        onApproved={vi.fn()}
-        onDenied={vi.fn()}
-        onPermanent={vi.fn()}
-      />,
+      <ApprovalDialog approval={a} now={Date.now()} onApproved={vi.fn()} onDenied={vi.fn()} />,
       { locale: 'en' },
     );
     const block = await screen.findByTestId('image-use');
@@ -324,13 +316,7 @@ describe('ApprovalDialog: request kinds', () => {
     const a = approval({ kind: 'image_registry', request: TRUST_REQUEST });
     installBridge(() => IMAGE);
     const { unmount } = renderApp(
-      <ApprovalDialog
-        approval={a}
-        now={Date.now()}
-        onApproved={vi.fn()}
-        onDenied={vi.fn()}
-        onPermanent={vi.fn()}
-      />,
+      <ApprovalDialog approval={a} now={Date.now()} onApproved={vi.fn()} onDenied={vi.fn()} />,
     );
     expect(
       screen.getByRole('heading', { name: 'Image aus nicht freigegebener Registry' }),
@@ -339,13 +325,7 @@ describe('ApprovalDialog: request kinds', () => {
     await screen.findByTestId('image-use');
     unmount();
     renderApp(
-      <ApprovalDialog
-        approval={a}
-        now={Date.now()}
-        onApproved={vi.fn()}
-        onDenied={vi.fn()}
-        onPermanent={vi.fn()}
-      />,
+      <ApprovalDialog approval={a} now={Date.now()} onApproved={vi.fn()} onDenied={vi.fn()} />,
       { locale: 'en' },
     );
     expect(screen.getByRole('heading', { name: 'Image from an unlisted registry' })).toBeTruthy();
@@ -366,13 +346,7 @@ describe('ApprovalDialog: request kinds', () => {
     });
     installBridge(() => null);
     const { unmount } = renderApp(
-      <ApprovalDialog
-        approval={a}
-        now={Date.now()}
-        onApproved={vi.fn()}
-        onDenied={vi.fn()}
-        onPermanent={vi.fn()}
-      />,
+      <ApprovalDialog approval={a} now={Date.now()} onApproved={vi.fn()} onDenied={vi.fn()} />,
       { locale: 'en' },
     );
     const list = screen.getByRole('list', { name: 'Why approval is needed' });
@@ -386,7 +360,6 @@ describe('ApprovalDialog: request kinds', () => {
         now={Date.now()}
         onApproved={vi.fn()}
         onDenied={vi.fn()}
-        onPermanent={vi.fn()}
       />,
       { locale: 'en' },
     );
@@ -408,7 +381,6 @@ describe('ApprovalDialog: request kinds', () => {
         now={Date.now()}
         onApproved={vi.fn()}
         onDenied={vi.fn()}
-        onPermanent={vi.fn()}
       />,
       { locale: 'en' },
     );
@@ -427,13 +399,7 @@ describe('ApprovalDialog: request kinds', () => {
       throw new Error('no channel for unknown kinds');
     });
     renderApp(
-      <ApprovalDialog
-        approval={a}
-        now={Date.now()}
-        onApproved={vi.fn()}
-        onDenied={vi.fn()}
-        onPermanent={vi.fn()}
-      />,
+      <ApprovalDialog approval={a} now={Date.now()} onApproved={vi.fn()} onDenied={vi.fn()} />,
       { locale: 'en' },
     );
     const dialog = screen.getByRole('dialog');

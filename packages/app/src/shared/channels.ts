@@ -5,6 +5,7 @@ export const IPC_CHANNEL_NAMES = [
   'app:copy',
   'app:settings',
   'dialog:pickDirectory',
+  'askpass:answer',
   'sandboxes:list',
   'sandboxes:inspect',
   'sandboxes:stats',
@@ -48,6 +49,7 @@ export const IPC_CHANNEL_NAMES = [
   'tokens:create',
   'tokens:revoke',
   'mcp:config',
+  'mcp:status',
   'tty:open',
   'tty:input',
   'tty:resize',
@@ -80,4 +82,6 @@ export const EVENT_CHANNELS = [
   'evt:navigate',
   'evt:tty-data',
   'evt:tty-exit',
+  'evt:askpass',
+  'evt:askpass-end',
 ] as const;

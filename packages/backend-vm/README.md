@@ -135,6 +135,10 @@ paths are limited to about 100 characters).
 - **`copyOut` treats the archive as hostile** (it comes from the guest): the extractor rejects absolute
   and `..` paths, never writes through symlinks, drops setuid/setgid bits, skips devices/FIFOs/sockets and
   hard links, and skips symlinks that point outside the copied tree (absolute targets, `..` escapes).
+  Symlinks are also checked again against the finished tree: a chain such as `d/sub -> ..`, `s -> d/sub`,
+  `t -> s/..` leads out although every target looks harmless, and the last link is removed and reported
+  (`onSkip`). Names with a backslash are left out and reported, too (also reported through
+  `CopyOutOptions.onSkip`, so the export flags them instead of failing).
   This is what `export` uses; "export a directory" works as `copyOut(dir, hostPath)`.
 - The user for `exec` is the template user; `user: 'root'` is accepted for internal use.
 

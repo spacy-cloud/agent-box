@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MemorySecretStore, defaultConfig, type ProviderFactory } from '@abox/core';
 import {
@@ -238,5 +239,134 @@ describe('hardened runtime from config', () => {
     expect(rt(f.podman!(host))).toBe('kata');
     expect(rt(f.python!(host))).toBe('runsc');
     expect(rt(providerFactories({ env, config: cfg({}) }).docker!(host))).toBeUndefined();
+  });
+});
+
+describe('hardened runtime of remote hosts', () => {
+  // A fake ssh (core/src/hosts/__tests__/fake-ssh.mjs) forwards a socket that answers like a
+  // Docker engine: /_ping, /version and the /info this test configures.
+  const FAKE_SSH = fileURLToPath(
+    new URL('../../core/src/hosts/__tests__/fake-ssh.mjs', import.meta.url),
+  );
+  const info = (runtimes: string[], rootless = true) =>
+    JSON.stringify({
+      SecurityOptions: ['name=seccomp', ...(rootless ? ['name=rootless'] : [])],
+      Runtimes: Object.fromEntries(runtimes.map((r) => [r, {}])),
+    });
+  const open = () =>
+    openAbox({
+      env,
+      secretStore: new MemorySecretStore(),
+      hostsEnv: { sshBinary: FAKE_SSH, sshConfigFile: null, connectTimeoutSec: 3 },
+    });
+  const isolationOf = (p: unknown) =>
+    (p as { capabilities(): { isolation: string } }).capabilities().isolation;
+  const runtimeOf = (p: unknown) => (p as { hardenedRuntime?: string }).hardenedRuntime;
+
+  beforeEach(() => {
+    mkdirSync(join(root, 'abox', 'config'), { recursive: true });
+    writeFileSync(
+      join(root, 'abox', 'config', 'hosts.yaml'),
+      [
+        'hosts:',
+        '  srv:',
+        '    hostname: srv.example.org',
+        '    zone: shared',
+        '    backends: [docker]',
+        '    engine_socket: /run/user/1001/docker.sock',
+        '    runtimes: { docker: runsc }',
+        '  plain:',
+        '    hostname: plain.example.org',
+        '    zone: lab',
+        '    backends: [docker]',
+        '    engine_socket: /run/user/1001/docker.sock',
+        '',
+      ].join('\n'),
+    );
+    // the local engine configuration must not leak to remote hosts
+    writeFileSync(
+      join(root, 'abox', 'config', 'config.yaml'),
+      'backends:\n  docker:\n    runtime: kata\n    socket: /nonexistent/local-engine.sock\n',
+    );
+  });
+  afterEach(() => {
+    delete process.env['FAKE_SSH_INFO'];
+  });
+
+  it('a runtime the remote engine knows makes that host hardened, nobody else', async () => {
+    process.env['FAKE_SSH_INFO'] = info(['runc', 'runsc']);
+    const rt = await open();
+    try {
+      const srv = await rt.providerFor('srv', 'docker');
+      expect(runtimeOf(srv)).toBe('runsc');
+      expect(isolationOf(srv)).toBe('hardened');
+      expect(await rt.providerFor('srv', 'docker')).toBe(srv);
+      // no `runtimes` entry: no hardened runtime, and not the "kata" of the local config.yaml
+      const plain = await rt.providerFor('plain', 'docker');
+      expect(runtimeOf(plain)).toBeUndefined();
+      expect(isolationOf(plain)).toBe('container');
+      // the local host keeps using config.yaml
+      expect(runtimeOf(await rt.providerFor('local', 'docker'))).toBe('kata');
+      // the manager no longer stops at the isolation check: a shared host asks for confirmation
+      const created = await rt.abox.createSandbox(rt.caller, {
+        template: 'alpine-min',
+        host: 'srv',
+        workspace: { mode: 'empty' },
+      });
+      expect(created.status).not.toBe('created');
+      expect(await rt.abox.queryAudit(rt.caller, { action: 'host.runtime_missing' })).toEqual([]);
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it('a runtime the remote engine lacks is reported, and the denial names it', async () => {
+    process.env['FAKE_SSH_INFO'] = info(['runc']);
+    const rt = await open();
+    try {
+      const srv = await rt.providerFor('srv', 'docker');
+      expect(runtimeOf(srv)).toBe('runsc');
+      expect(isolationOf(srv)).toBe('container');
+      const audit = await rt.abox.queryAudit(rt.caller, { action: 'host.runtime_missing' });
+      expect(audit).toHaveLength(1);
+      expect(audit[0]!.details).toMatchObject({
+        host: 'srv',
+        backend: 'docker',
+        runtime: 'runsc',
+        engineRuntimes: ['runc'],
+      });
+      const err = await rt.abox
+        .createSandbox(rt.caller, {
+          template: 'alpine-min',
+          host: 'srv',
+          workspace: { mode: 'empty' },
+        })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'policy_denied' });
+      expect((err as Error).message).toMatch(/isolation "container" is below "hardened"/);
+      expect((err as { hint: string }).hint).toMatch(
+        /hardened runtime "runsc".*host 'srv'.*not available/,
+      );
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it('a rootful engine on a shared host is refused, the host is listed as unusable', async () => {
+    process.env['FAKE_SSH_INFO'] = info(['runc', 'runsc'], false);
+    const rt = await open();
+    try {
+      await expect(rt.providerFor('srv', 'docker')).rejects.toMatchObject({
+        code: 'policy_denied',
+        details: { reason: 'engine_rootful' },
+      });
+      const list = await rt.abox.listSandboxes(rt.caller, { host: 'srv' });
+      expect(list.unreachableHosts).toEqual(['srv']);
+      expect(list.hostProblems?.['srv']).toMatch(/rootless/);
+      // a lab host (zone without the requirement) is usable
+      expect(isolationOf(await rt.providerFor('plain', 'docker'))).toBe('container');
+    } finally {
+      await rt.close();
+    }
   });
 });

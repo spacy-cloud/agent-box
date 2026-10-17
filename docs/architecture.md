@@ -50,11 +50,13 @@ because the npm name `abox` is taken; the binary is `abox`.
 | `packages/backend-vm`      | QEMU/KVM virtual machine backend (isolation `vm`)                             |
 | `packages/contract-tests`  | Shared contract suite that every backend must pass                            |
 | `packages/proxy`           | Egress proxy sidecar: domain allowlist, private-address blocking, injection   |
+| `packages/runtime`         | Wires config, hosts, backends and the manager together for CLI, MCP and GUI   |
 | `packages/cli`             | The `abox` command; text or `--json` output                                   |
 | `packages/mcp`             | MCP server on the official TypeScript SDK; stdio and local HTTP               |
 | `packages/app`             | Electron GUI; the main process uses the core, the renderer uses React         |
 | `packages/agent-kit`       | Claude Code plugin: skills, slash commands, `.mcp.json`                       |
 | `packages/orca-plugin`     | Orca manifest and panel                                                       |
+| `packages/e2e`             | End-to-end and security tests against real Docker (opt-in)                    |
 
 Tooling: pnpm workspaces, strict TypeScript (ESM, `NodeNext`), Zod for schemas, Vitest,
 ESLint, Prettier, Node.js >= 24.
@@ -162,9 +164,18 @@ same locally and remotely.
   SSH. Only an engine and SSH access are needed on the remote side. Policy and audit run locally,
   and the remote host trusts the controller. A possible later model (M2) would run abox headless on
   the remote host with its own policy and audit.
-- The image cache, the proxy sidecar and TTL enforcement live on the target host.
-- Workspace modes `mount` and `worktree` are not available remotely (the manager rejects them);
-  use `clone`, `copy` or `sync`.
+- The image cache and the proxy sidecar live on the target host. The sandbox ends itself at its
+  deadline there; the TTL sweep of every open abox process covers the registry rows of all hosts
+  and stops overdue remote sandboxes through the provider of their host (and retries a host that
+  was down).
+- Workspace modes `mount` and `worktree` are not available remotely (the manager rejects them with
+  a message that names the remote host); use `clone`, `copy` or `sync`. `clone` is made locally and
+  uploaded, and `sync` is a one-shot copy; see
+  [differences from the design](hosts-ssh.md#differences-from-the-design).
+- What a host can deliver is its own: a profile's `runtimes` entry plus the engine's `/info` decide
+  `hardened`, and the host resolver refuses a rootful engine on `shared`/`restricted` hosts. The
+  runtime package prepares the providers of a remote host when its tunnel is up, because
+  `capabilities()` is synchronous.
 - Hosts have a **zone** and an optional minimum isolation level. See
   [security.md](security.md#remote-hosts-and-ssh).
 

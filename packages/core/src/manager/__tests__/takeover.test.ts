@@ -65,6 +65,54 @@ describe('human takeover of an agent sandbox', () => {
     expect(['completed', 'pending_approval']).toContain(r.status);
   });
 
+  it('pauses every mutating agent tool of the sandbox: stop, start, delete, snapshot, restore, access_request, ttl', async () => {
+    const a = await setup();
+    const id = await agentBox(a);
+    const session = await a.attach(HUMAN, id, { cols: 80, rows: 24 });
+    const paused = { code: 'conflict', message: expect.stringContaining('paused: a human') };
+    await expect(a.stopSandbox(A, id)).rejects.toMatchObject(paused);
+    await expect(a.startSandbox(A, id)).rejects.toMatchObject(paused);
+    await expect(a.removeSandbox(A, id)).rejects.toMatchObject(paused);
+    await expect(a.snapshot(A, id, 'before')).rejects.toMatchObject(paused);
+    await expect(a.restore(A, id, 'before')).rejects.toMatchObject(paused);
+    await expect(
+      a.accessRequest(A, id, { kind: 'resources', details: { cpus: 1 }, reason: 'more' }),
+    ).rejects.toMatchObject(paused);
+    await expect(a.extendTtl(A, id, '10m')).rejects.toMatchObject(paused);
+    // each refused attempt is audited as a denial with the reason, once per action
+    for (const action of [
+      'sandbox.stop',
+      'sandbox.start',
+      'sandbox.remove',
+      'sandbox.snapshot',
+      'sandbox.restore',
+      'sandbox.access_request',
+    ]) {
+      const rows = await audited(a, action);
+      expect(rows, action).toHaveLength(1);
+      expect(rows[0], action).toMatchObject({
+        decision: 'deny',
+        reason: 'human_attached',
+        sandboxId: id,
+        actor: 'agent:agent-a',
+      });
+    }
+    // nothing happened to the sandbox the human is working in
+    const view = await a.inspectSandbox(HUMAN, id);
+    expect(view.state).toBe('running');
+    expect(fakeOf(env).sandboxes.get(id as never)?.state).toBe('running');
+    // reading is still possible
+    await expect(a.inspectSandbox(A, id)).resolves.toMatchObject({ id });
+    await expect(a.listDir(A, id, '/workspace')).resolves.toBeDefined();
+    // the human can still stop it
+    await expect(a.stopSandbox(HUMAN, id)).resolves.toMatchObject({ state: 'stopped' });
+    await session.close();
+    // after the terminal is gone the agent can do all of it again
+    await expect(a.startSandbox(A, id)).resolves.toMatchObject({ state: 'running' });
+    await expect(a.stopSandbox(A, id)).resolves.toMatchObject({ state: 'stopped' });
+    await expect(a.removeSandbox(A, id)).resolves.toMatchObject({ removed: true });
+  });
+
   it('audits start and end of the takeover and the paused attempts (once per burst)', async () => {
     const a = await setup();
     const id = await agentBox(a);

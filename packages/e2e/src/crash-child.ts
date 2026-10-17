@@ -15,7 +15,9 @@ const hang = (): Promise<never> => {
 };
 
 const factory: ProviderFactory = (host) => {
+  const socket = process.env['ABOX_TEST_ENGINE_SOCKET'];
   const real = createDockerProvider(host, {
+    ...(socket ? { socketPath: socket } : {}),
     instanceId: `${run}${inst}`, // = instanceIdOf(inst) of the harness
     extraLabels: { 'abox.test': 'e2e', 'abox.e2e': run, 'abox.e2e-inst': inst },
     stopTimeoutSec: 1,

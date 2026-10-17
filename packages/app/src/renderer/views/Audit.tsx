@@ -3,6 +3,7 @@ import { call } from '../api';
 import { useApp } from '../context';
 import { useQuery } from '../hooks';
 import { Banner, ErrorBox, Loading } from '../components/ui';
+import { safeInline } from '../../shared/format';
 import { AuditTable } from './Detail';
 import { AUDIT_DECISIONS } from '../../shared/constants';
 import type { IpcInput } from '../../shared/ipc';
@@ -41,9 +42,10 @@ export function toAuditFilter(f: Filters): NonNullable<IpcInput<'audit:query'>> 
 }
 
 export function AuditView() {
-  const { t, navigate, notify } = useApp();
-  const [form, setForm] = useState<Filters>(EMPTY);
-  const [applied, setApplied] = useState<Filters>(EMPTY);
+  const { t, navigate, notify, route } = useApp();
+  const initial: Filters = route.actor ? { ...EMPTY, actor: route.actor } : EMPTY;
+  const [form, setForm] = useState<Filters>(initial);
+  const [applied, setApplied] = useState<Filters>(initial);
   const q = useQuery('audit:query', toAuditFilter(applied), { pollMs: 5000 });
   const [chain, setChain] = useState<ChainVerification | null>(null);
 
@@ -83,7 +85,7 @@ export function AuditView() {
           {chain.ok
             ? t('audit.chainOk', { count: chain.checked })
             : t('audit.chainBroken', { seq: chain.brokenAt ?? 0 })}
-          {chain.reason ? <span className="plain"> ({chain.reason})</span> : null}
+          {chain.reason ? <span className="plain"> ({safeInline(chain.reason, 200)})</span> : null}
         </Banner>
       ) : null}
       <form

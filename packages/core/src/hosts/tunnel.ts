@@ -1,10 +1,11 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { request } from 'node:http';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { AboxError } from '../errors.js';
+import { verifyForwardings } from './forwardings.js';
 import type { HostConnection } from '../types.js';
 import type { HostProfile } from './model.js';
 import { isSafeAbsPath } from './schema.js';
@@ -12,6 +13,35 @@ import { buildSshArgs, sshBinary, type HostsEnv } from './ssh-args.js';
 
 /** Max length of a unix socket path (`sun_path` is 108 bytes on Linux, 104 on BSD/macOS). */
 const SOCKET_PATH_MAX = 103;
+
+/**
+ * The tunnel's ssh runs below this tiny supervisor (`sh -c`, argv only, no user input in the
+ * script). A hard kill of the abox process (`kill -9`, OOM, power button of the terminal) gives
+ * Node no chance to stop its children, and an `ssh -N` would keep the engine socket forwarded for
+ * ever. The supervisor polls its owner and takes ssh down once the owner is gone; it also records
+ * `<ssh pid> <owner pid>` in the pid file so a later abox run can tell stale tunnels from the live
+ * tunnels of another abox process (CLI and GUI share the runtime directory).
+ *
+ * Arguments: owner pid, pid file, then the ssh command line.
+ */
+export const TUNNEL_SUPERVISOR = [
+  'umask 077',
+  'owner=$1; pidfile=$2; shift 2',
+  'child=',
+  'trap \'kill "$child" 2>/dev/null\' TERM INT HUP',
+  '"$@" &',
+  'child=$!',
+  'printf "%s %s\\n" "$child" "$owner" > "$pidfile"',
+  '(',
+  '  while kill -0 "$owner" 2>/dev/null && kill -0 "$child" 2>/dev/null; do sleep 1; done',
+  '  kill "$child" 2>/dev/null',
+  ') &',
+  'guard=$!',
+  'wait "$child"; status=$?',
+  'if kill -0 "$child" 2>/dev/null; then wait "$child"; status=$?; fi',
+  'kill "$guard" 2>/dev/null',
+  'exit "$status"',
+].join('\n');
 
 export type HealthCheck = 'ping' | 'connect' | 'none' | ((socketPath: string) => Promise<boolean>);
 
@@ -143,14 +173,35 @@ class TunnelImpl extends EventEmitter implements EngineTunnel {
     this.setState('connecting');
     killStale(this.pidFile, this.localSocket);
     rmSync(this.localSocket, { force: true });
-    const args = buildSshArgs(this.profile, this.env, {
-      mode: 'tunnel',
-      rawForwards: [{ flag: '-L', spec: `${this.localSocket}:${this.opts.remoteSocket}` }],
-    });
-    const child = spawn(sshBinary(this.env), args, {
-      stdio: ['ignore', 'ignore', 'pipe'],
-      env: { ...process.env, LC_ALL: 'C' },
-    });
+    const rawForwards = [
+      { flag: '-L' as const, spec: `${this.localSocket}:${this.opts.remoteSocket}` },
+    ];
+    const args = buildSshArgs(this.profile, this.env, { mode: 'tunnel', rawForwards });
+    try {
+      // `ClearAllForwardings=yes` would also drop our own -L, so the user's ssh config cannot be
+      // neutralised that way: ask ssh what it would forward and refuse anything else.
+      await verifyForwardings(sshBinary(this.env), args, rawForwards, this.profile.id);
+    } catch (e) {
+      live.delete(this);
+      this.setState('failed', (e as Error).message);
+      throw e;
+    }
+    const child = spawn(
+      '/bin/sh',
+      [
+        '-c',
+        TUNNEL_SUPERVISOR,
+        'abox-tunnel',
+        String(process.pid),
+        this.pidFile,
+        sshBinary(this.env),
+        ...args,
+      ],
+      {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        env: { ...process.env, LC_ALL: 'C' },
+      },
+    );
     this.child = child;
     this.stderrTail = '';
     child.stderr!.setEncoding('utf8').on('data', (d: string) => {
@@ -177,7 +228,6 @@ class TunnelImpl extends EventEmitter implements EngineTunnel {
       this.stderrTail += String(e.message);
       this.setState('failed', e.message);
     });
-    if (child.pid) writeFileSync(this.pidFile, String(child.pid), { mode: 0o600 });
 
     const deadline = Date.now() + (this.opts.readyTimeoutMs ?? 15_000);
     for (;;) {
@@ -328,21 +378,96 @@ class TunnelImpl extends EventEmitter implements EngineTunnel {
   }
 }
 
-/** Kills an ssh left behind by a crashed abox (pid file + command line check, Linux only). */
-function killStale(pidFile: string, socket: string): void {
+interface PidRecord {
+  /** The ssh process. */
+  pid: number;
+  /** The abox process that opened the tunnel (absent in files of older versions). */
+  owner?: number;
+}
+
+function readPidRecord(file: string): PidRecord | undefined {
   try {
-    const pid = Number(readFileSync(pidFile, 'utf8'));
-    if (!Number.isInteger(pid) || pid <= 1) return;
-    const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-    if (cmdline.includes(socket) && cmdline.includes('ssh')) process.kill(pid, 'SIGTERM');
+    const [pid, owner] = readFileSync(file, 'utf8').trim().split(/\s+/).map(Number);
+    if (!Number.isInteger(pid) || pid === undefined || pid <= 1) return undefined;
+    return { pid, ...(Number.isInteger(owner) && owner! > 1 ? { owner: owner! } : {}) };
   } catch {
-    /* no stale process */
+    return undefined;
   }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Kills `rec.pid` when it still is the ssh of that socket (command line check, Linux only). */
+function killIfTunnel(rec: PidRecord, socket: string): void {
+  try {
+    const cmdline = readFileSync(`/proc/${rec.pid}/cmdline`, 'utf8');
+    if (cmdline.includes(socket) && cmdline.includes('ssh')) process.kill(rec.pid, 'SIGTERM');
+  } catch {
+    /* no such process, or no /proc */
+  }
+}
+
+/**
+ * Kills an ssh left behind by a crashed abox (pid file + command line check) and removes its files.
+ * A tunnel whose owner is another LIVE abox process is not stale and is left alone.
+ */
+function killStale(pidFile: string, socket: string): void {
+  const rec = readPidRecord(pidFile);
+  if (rec && rec.owner !== undefined && rec.owner !== process.pid && isAlive(rec.owner)) return;
+  if (rec) killIfTunnel(rec, socket);
   rmSync(pidFile, { force: true });
+}
+
+/**
+ * Cleans up after abox processes that died without closing their tunnels (`kill -9`): ssh
+ * processes of tunnels whose owner is gone are stopped, their sockets and pid files removed.
+ * Tunnels of live abox processes (CLI, GUI and MCP server share the runtime directory) stay.
+ * Returns the sockets that were cleaned.
+ */
+export function sweepStaleTunnels(env: Pick<HostsEnv, 'runtimeDir'>): string[] {
+  const dir = join(env.runtimeDir, 'tunnels');
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith('.sock.pid'));
+  } catch {
+    return [];
+  }
+  const cleaned: string[] = [];
+  for (const name of names) {
+    const pidFile = join(dir, name);
+    const socket = pidFile.slice(0, -'.pid'.length);
+    const rec = readPidRecord(pidFile);
+    if (rec?.owner !== undefined && isAlive(rec.owner)) continue;
+    if (rec) killIfTunnel(rec, socket);
+    rmSync(pidFile, { force: true });
+    rmSync(socket, { force: true });
+    cleaned.push(socket);
+  }
+  return cleaned;
 }
 
 export function tunnelSocketPath(env: HostsEnv, host: string): string {
   return join(env.runtimeDir, 'tunnels', `${host}.sock`);
+}
+
+/**
+ * The default socket of a host, unless another live abox process owns a tunnel there: then this
+ * process gets its own (`<host>.<pid>.sock`) instead of tearing the other one down.
+ */
+function freeTunnelSocket(env: HostsEnv, host: string): string {
+  const dflt = tunnelSocketPath(env, host);
+  const rec = readPidRecord(`${dflt}.pid`);
+  if (rec?.owner !== undefined && rec.owner !== process.pid && isAlive(rec.owner)) {
+    return join(env.runtimeDir, 'tunnels', `${host}.${process.pid}.sock`);
+  }
+  return dflt;
 }
 
 /**
@@ -366,7 +491,7 @@ export async function openEngineTunnel(
   mkdirSync(env.runtimeDir, { recursive: true, mode: 0o700 });
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
-  const local = opts.localSocket ?? tunnelSocketPath(env, profile.id);
+  const local = opts.localSocket ?? freeTunnelSocket(env, profile.id);
   if (local.length > SOCKET_PATH_MAX) {
     throw new AboxError(
       'invalid_input',
@@ -398,9 +523,15 @@ export class TunnelManager {
   private readonly tunnels = new Map<string, EngineTunnel>();
   private readonly pending = new Map<string, Promise<EngineTunnel>>();
 
+  private swept = false;
+
   constructor(readonly env: HostsEnv) {}
 
   async get(profile: HostProfile, opts: OpenTunnelOptions): Promise<EngineTunnel> {
+    if (!this.swept) {
+      this.swept = true;
+      sweepStaleTunnels(this.env);
+    }
     const inflight = this.pending.get(profile.id);
     if (inflight) return inflight;
     const p = this.getInner(profile, opts).finally(() => this.pending.delete(profile.id));

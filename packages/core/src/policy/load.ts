@@ -134,6 +134,15 @@ export function defaultPolicy(): Policy {
 }
 
 /**
+ * The most restrictive policy: only the built-in `human` context, no agent context and no agent
+ * profile. Used by the manager when policy.yaml is invalid and no valid revision was ever recorded
+ * (degraded mode), so the human can still look at things and clean up while no agent can do anything.
+ */
+export function restrictivePolicy(): Policy {
+  return parsePolicy('version: 1\n', { kind: 'default' });
+}
+
+/**
  * Loads policy.yaml. A missing file yields the built-in default policy
  * (`source.kind === 'default'`); any other problem (unreadable, invalid YAML,
  * schema violation, inheritance cycle) throws `AboxError('invalid_input')`

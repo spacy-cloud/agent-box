@@ -97,6 +97,11 @@ and tested with abox, so the `hardened` level itself is untested.
 - Snapshots commit the container layer to an image `abox-snap/<id>:<name>`; volumes, tmpfs and
   bind mounts are not part of a snapshot, and snapshots do not work with a read-only root.
 - Files that a template places under `/tmp` are re-copied at every start (`/tmp` is a tmpfs).
+- File reads and listings of a **stopped** sandbox apply the sandbox user's permissions (owner, group,
+  mode of every directory on the path, symlinks resolved by abox), like a running one; the engine's
+  archive API itself would read as root. `/etc/shadow` is refused either way.
+- When a sandbox expires, the stopped container stays for export until `abox gc`, but its proxy
+  sidecar (which holds injected secrets) and internal network are removed at once.
 - Remote engines support only the `none` and `copy` deliveries and no extra mounts.
 - abox only sees containers that carry the label and the instance id of its own installation;
   objects of another installation on the same engine are reported by `abox doctor` and never touched,
@@ -108,6 +113,45 @@ and tested with abox, so the `hardened` level itself is untested.
 **Podman and rootless engines have not been verified** (see
 [known limitations](security.md#known-limitations-and-not-verified)). The Podman test part is
 skipped without a Podman socket.
+
+### Podman: what is expected to work
+
+Podman is not installed on the development machine, so **nothing below has been run against a real
+Podman**. The provider is the Docker provider with Podman's socket, and it only uses Engine API calls
+that Podman's Docker-compatible endpoint documents; "expected" means exactly that, not "tested". Where
+the code or the engine is known to differ, the table says so.
+
+| Feature (Docker backend)                                                                                                                                     | On Podman                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create, start, stop, remove, list, inspect by labels; instance ids; backend kind `podman`                                                                    | Expected to work (plain container API and label filters)                                                                                                                                     |
+| Mandatory hardening (no privileges, `CapDrop ALL`, `no-new-privileges`, default seccomp, pids/memory/cpu, private IPC, init, tmpfs `/tmp`, read-only rootfs) | Expected to work. A limit the engine cannot enforce is refused at creation rather than ignored; in a rootless engine cpu/memory/pids limits need cgroup v2 delegation (unverified)           |
+| `exec`, `spawn`, `attach` (TTY), timeouts and abort (wrapper, process tree kill), the `PATH` rule                                                            | Expected to work (exec API with hijacked streams)                                                                                                                                            |
+| Files: `readFile`, `writeFile`, `listDir`, `copyIn`, `copyOut` of running sandboxes, `/tmp` through `tar` in the container                                   | Expected to work                                                                                                                                                                             |
+| Files of **stopped** sandboxes (archive API, headers with owner and mode, permission check as the sandbox user)                                              | Expected to work if Podman's archive endpoint reports owner, group and mode like Docker's; for a rootless engine the ids may be container-side ids (unverified)                              |
+| Image build (`prepare`, own Dockerfiles, `--force-rm` semantics), image cache by template hash, `gcImages`                                                   | Expected to work with Podman's compat build endpoint; build-log format and step caching differ (unverified)                                                                                  |
+| Network `none` and `open` (`abox-open` bridge)                                                                                                               | Expected to work                                                                                                                                                                             |
+| Network `allowlist` (internal network, proxy sidecar, `abox-egress`, alias `abox-proxy`)                                                                     | Needs container DNS on user-defined networks (netavark with aardvark-dns; the old CNI backend needs its dnsname plugin). Unverified, a likely first failure on a new Podman                  |
+| Cleanup of the sidecar, its secret volume and the internal network at expiry                                                                                 | Expected to work (container and network removal)                                                                                                                                             |
+| `extendExpiry`, TTL entrypoint, `abox.expires` labels                                                                                                        | Expected to work                                                                                                                                                                             |
+| Snapshots (`commit`) and restore                                                                                                                             | Expected to work                                                                                                                                                                             |
+| `stats` (cpu, memory, pids)                                                                                                                                  | Expected to work; the cpu reading falls back to wall-clock time where Podman omits the host cpu time                                                                                         |
+| `updateResources` (live cpu/memory change)                                                                                                                   | Older Podman versions lack the endpoint: answered `unsupported` (handled in the code); newer ones unverified                                                                                 |
+| Workspace `copy` and `none` delivery; export                                                                                                                 | Expected to work                                                                                                                                                                             |
+| Workspace `bind` and extra mounts                                                                                                                            | Rootful Podman: expected like rootful Docker. **Rootless: the host user is container root, user mapping is not attempted, writable binds can be read-only for the sandbox user; use `copy`** |
+| Disk limits (`resources.disk`)                                                                                                                               | Not offered: the quota detection looks for Docker's `overlay2` driver on xfs, so a template with `resources.disk` is rejected as `unsupported` (derived from the code)                       |
+| Hardened runtimes (`runsc`, `kata`)                                                                                                                          | Unverified on every engine                                                                                                                                                                   |
+| Remote engines over an SSH tunnel to a Podman socket (`docs/hosts-ssh.md`)                                                                                   | Unverified                                                                                                                                                                                   |
+| `abox doctor` rootful warning                                                                                                                                | Expected to work if Podman's `/info` lists `name=rootless` in `SecurityOptions` (unverified)                                                                                                 |
+
+Run the suite against a Podman socket to turn "expected" into "verified" (switches in
+[CONTRIBUTING](../CONTRIBUTING.md#opt-in-test-switches)):
+
+```sh
+systemctl --user enable --now podman.socket
+export ABOX_TEST_DOCKER=1 ABOX_TEST_ENGINE_SOCKET=$XDG_RUNTIME_DIR/podman/podman.sock
+ABOX_TEST_ENGINE=podman npx vitest run packages/backend-docker --no-file-parallelism
+npx vitest run packages/e2e/src/contract-docker.test.ts packages/e2e/src/security.test.ts --no-file-parallelism
+```
 
 ## Python
 
@@ -221,12 +265,12 @@ for every use, a warning on every validation.
 
 ## What is verified
 
-| Backend | Evidence                                                                                                                                                       | Not verified                                                                                                          |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| docker  | contract suite and the end-to-end security suite (`packages/e2e`) against a local **rootful** Docker engine (overlayfs, containerd snapshotter); CI on Node 24 | rootless Docker; remote engines over SSH with a real engine; disk quotas on a quota-capable driver; hardened runtimes |
-| podman  | code shared with Docker                                                                                                                                        | **everything against a real Podman**; rootless                                                                        |
-| python  | unit tests, venv mode with host uv, container mode against Docker                                                                                              | Podman; Alpine bases                                                                                                  |
-| vm      | contract suite and an integration suite that boots real VMs, run on the developer machine with `ABOX_TEST_VM=1` (not in CI)                                    | other hosts and QEMU versions; image checksum list signatures                                                         |
-| process | contract suite                                                                                                                                                 | n/a (no isolation to verify)                                                                                          |
+| Backend | Evidence                                                                                                                                                        | Not verified                                                                                                          |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| docker  | contract suite and the end-to-end security suite (`packages/e2e`) against a local **rootful** Docker engine (overlayfs, containerd snapshotter); CI on Node 24  | rootless Docker; remote engines over SSH with a real engine; disk quotas on a quota-capable driver; hardened runtimes |
+| podman  | code shared with Docker; the suite can be pointed at a Podman socket (`ABOX_TEST_ENGINE=podman`, `ABOX_TEST_ENGINE_SOCKET`), but has never been run against one | **everything against a real Podman** (see the [feature table](#podman-what-is-expected-to-work)); rootless            |
+| python  | unit tests, venv mode with host uv, container mode against Docker                                                                                               | Podman; Alpine bases                                                                                                  |
+| vm      | contract suite and an integration suite that boots real VMs, run on the developer machine with `ABOX_TEST_VM=1` (not in CI)                                     | other hosts and QEMU versions; image checksum list signatures                                                         |
+| process | contract suite                                                                                                                                                  | n/a (no isolation to verify)                                                                                          |
 
 Full detail and the list of open items: [security: known limitations](security.md#known-limitations-and-not-verified).

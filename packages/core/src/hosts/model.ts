@@ -34,6 +34,9 @@ export interface PortForward {
   target?: string;
 }
 
+/** Hardened runtime per container engine. */
+export type HostRuntimes = Partial<Record<'docker' | 'podman', string>>;
+
 export interface HostLimits {
   cpus?: number;
   /** Size string such as `4g`, `512m`. */
@@ -66,6 +69,18 @@ export interface HostProfile {
   engineSocket?: string;
   /** Working directory root on that host (process/vm backends). */
   dataDir?: string;
+  /**
+   * Stronger OCI runtime (`runsc`, `kata`) of the engine ON THIS HOST, per engine. The container
+   * backends report isolation `hardened` for this host only when the engine lists the runtime
+   * (`docker info` / `/info` `Runtimes`). `python` uses the `docker` entry. Remote hosts never
+   * inherit the runtime configured for the local engine in `config.yaml`.
+   */
+  runtimes?: HostRuntimes;
+  /**
+   * Explicit opt-in to use a rootful engine on a host of a zone that requires a rootless one
+   * (`shared`, `restricted`). Access to a rootful engine socket is root-equivalent on that host.
+   */
+  allowRootful?: boolean;
   tags: string[];
   favorite: boolean;
   limits?: HostLimits;
@@ -90,12 +105,13 @@ export interface ResolvedHostLimits {
 /** Zone defaults. `minIsolation` of `none` means the zone itself imposes no minimum. */
 export const ZONE_DEFAULTS: Record<
   HostZone,
-  { minIsolation: IsolationLevel; requiresApproval: boolean }
+  { minIsolation: IsolationLevel; requiresApproval: boolean; requiresRootless: boolean }
 > = {
-  workstation: { minIsolation: 'none', requiresApproval: false },
-  lab: { minIsolation: 'none', requiresApproval: false },
-  shared: { minIsolation: 'hardened', requiresApproval: true },
-  restricted: { minIsolation: 'vm', requiresApproval: true },
+  workstation: { minIsolation: 'none', requiresApproval: false, requiresRootless: false },
+  lab: { minIsolation: 'none', requiresApproval: false, requiresRootless: false },
+  // hosts with their own services or data: a rootful engine socket is root on those
+  shared: { minIsolation: 'hardened', requiresApproval: true, requiresRootless: true },
+  restricted: { minIsolation: 'vm', requiresApproval: true, requiresRootless: true },
 };
 
 export interface ResolvedHostProfile {

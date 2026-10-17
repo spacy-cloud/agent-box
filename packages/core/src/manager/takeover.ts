@@ -14,8 +14,10 @@ import { errMessage } from './util.js';
  * shared state database marks it. The GUI and the MCP server are separate processes, so the database
  * is the only place both see. The holder refreshes the row every few seconds; a row without a recent
  * heartbeat (the GUI crashed or was killed) counts as gone. Meanwhile the agent's tools that run
- * code or change files in the sandbox answer `conflict` ("paused"); reading tools keep working, so
- * the agent can see what happens. The human's own commands are never blocked.
+ * code, change files or change the sandbox itself (exec, process start/stop, write_file, snapshot,
+ * restore, stop, start, delete, access_request incl. a TTL extension) answer `conflict` ("paused");
+ * reading tools (logs, files, list_dir, export, inspect) keep working, so the agent can see what
+ * happens. The human's own commands are never blocked.
  */
 
 export interface Takeover {
@@ -98,7 +100,7 @@ export function beginTakeover(
 
 /**
  * Agents only: refuses (`conflict`, "paused") while a human holds a terminal in the sandbox.
- * Audited once per burst so a retrying agent does not flood the log.
+ * Audited once per burst and action, so a retrying agent does not flood the log.
  */
 export function requireNotTakenOver(
   I: Internals,
@@ -115,7 +117,7 @@ export function requireNotTakenOver(
   }
   const first = live[0];
   if (!first) return;
-  if (I.firstWithin(`takeover|${ctx.owner}|${rec.id}`, 10_000)) {
+  if (I.firstWithin(`takeover|${ctx.owner}|${rec.id}|${action}`, 10_000)) {
     I.audit(ctx.owner, action, {
       sandboxId: rec.id,
       decision: 'deny',

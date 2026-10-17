@@ -65,6 +65,8 @@ labels:
 export function mcpSnippet(agent: AgentName): {
   description: string;
   command?: string;
+  /** Config file snippet for agents whose configuration is TOML (printed instead of the JSON). */
+  toml?: string;
   json: unknown;
 } {
   const server = { command: 'abox', args: ['mcp', 'serve', '--agent', agent] };
@@ -78,8 +80,9 @@ export function mcpSnippet(agent: AgentName): {
       };
     case 'codex':
       return {
-        description:
-          'Codex: add this MCP server to the Codex configuration (JSON form; TOML: [mcp_servers.abox]).',
+        description: 'Codex: run the command below, or put the TOML into ~/.codex/config.toml.',
+        command: `codex mcp add abox -- abox mcp serve --agent ${agent}`,
+        toml: `[mcp_servers.abox]\ncommand = "abox"\nargs = ["mcp", "serve", "--agent", "${agent}"]`,
         json: { mcpServers: { abox: server } },
       };
     case 'cursor':
@@ -203,7 +206,7 @@ export function registerInit(program: Command, cli: Cli): void {
         if (agentInfo.command) lines.push('', `  ${agentInfo.command}`);
         lines.push(
           '',
-          ...JSON.stringify(agentInfo.json, null, 2)
+          ...(agentInfo.toml ?? JSON.stringify(agentInfo.json, null, 2))
             .split('\n')
             .map((l) => `  ${l}`),
         );
@@ -247,6 +250,7 @@ export function registerInit(program: Command, cli: Cli): void {
                 agent: o.agent,
                 mcp: agentInfo.json,
                 mcpCommand: agentInfo.command,
+                ...(agentInfo.toml ? { mcpToml: agentInfo.toml } : {}),
                 contextDefined,
                 ...(projectCheck ? { workspace: projectCheck } : {}),
               }

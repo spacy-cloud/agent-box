@@ -105,6 +105,26 @@ export interface McpConfig {
   contexts: string[];
 }
 
+/** What the settings view shows about MCP (derived from the policy, the token table and the audit log). */
+export interface McpContextStatus {
+  /** Agent context id (what `abox mcp serve --agent <id>` and a token are bound to). */
+  id: string;
+  profile: string;
+  /** Last audited action of this agent (null: none yet). */
+  lastActivityAt: number | null;
+  lastAction: string | null;
+  lastDecision: string | null;
+  activeTokens: number;
+  /** Last time one of its HTTP tokens authenticated a request. */
+  lastTokenUseAt: number | null;
+}
+export interface McpStatus {
+  contexts: McpContextStatus[];
+  tokens: { active: number; revoked: number; lastUsedAt: number | null };
+  /** Newest audited agent action across all contexts. */
+  lastActivityAt: number | null;
+}
+
 export interface TokenCreated {
   token: string;
   view: AgentTokenView | null;
@@ -236,6 +256,10 @@ export interface HostStatus {
   authOk: boolean | null;
   remoteUser: string | null;
   backends: HostBackendStatus[];
+  /** What the engine behind the profile's `engine_socket` reports about itself (null: not asked or no answer). */
+  engine: { rootless: boolean; runtimes: string[] } | null;
+  /** The `runtimes` of the profile and whether the engine of the host knows each of them. */
+  runtimes: Array<{ engine: 'docker' | 'podman'; runtime: string; available: boolean }>;
   warnings: string[];
 }
 export interface HostRow {
@@ -288,6 +312,7 @@ export interface Outputs {
   'app:copy': void;
   'app:settings': { closeToTray: boolean };
   'dialog:pickDirectory': string | null;
+  'askpass:answer': void;
   'sandboxes:list': SandboxList;
   'sandboxes:inspect': InspectResult;
   'sandboxes:stats': SandboxStatsResult;
@@ -331,6 +356,7 @@ export interface Outputs {
   'tokens:create': TokenCreated;
   'tokens:revoke': boolean;
   'mcp:config': McpConfig;
+  'mcp:status': McpStatus;
   'tty:open': TtyOpened;
   'tty:input': void;
   'tty:resize': void;

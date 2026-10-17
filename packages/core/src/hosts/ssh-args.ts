@@ -65,6 +65,12 @@ export interface SshArgsOptions {
   forwardings?: readonly PortForward[];
   /** Raw `-L local:remote` style specs produced by this package (engine tunnel). */
   rawForwards?: ReadonlyArray<{ flag: '-L' | '-R' | '-D'; spec: string }>;
+  /**
+   * The command a HUMAN typed after `abox ssh <host> --`, passed to ssh as separate arguments after
+   * the destination (ssh joins them with spaces for the remote shell, like `ssh host cmd args`).
+   * Interactive mode only; never fill it from anything an agent or a server sent.
+   */
+  userCommand?: readonly string[];
   noMultiplex?: boolean;
   /** `ssh -G` (print effective config): no connection options, user config only. */
   printConfig?: boolean;
@@ -177,6 +183,10 @@ export function renderHardenedConfig(
   }
   const user = userConfigPath(env);
   if (user) lines.push('', 'Match all', `Include ${optValue(user)}`);
+  // SendEnv accumulates over all config sources instead of "first value wins", and a user config
+  // (or a distribution's `SendEnv LANG LC_*`) must not hand local variables to the server. A
+  // clearing entry only works AFTER everything it has to clear, hence last, behind the Include.
+  lines.push('', 'Match all', '  SendEnv -*');
   return `${lines.join('\n')}\n`;
 }
 
@@ -230,6 +240,9 @@ export function buildSshArgs(profile: HostProfile, env: HostsEnv, opts: SshArgsO
     throw new AboxError('invalid_input', `host "${profile.id}" is not an ssh host`);
   }
   validateHostProfile(profile);
+  if (opts.userCommand !== undefined && (opts.mode !== 'interactive' || opts.remoteCommand)) {
+    throw new AboxError('internal', 'userCommand is only for interactive sessions');
+  }
   const dest = sshDestination(profile);
   const args: string[] = [];
   const o = (key: string, value: string) => args.push('-o', `${key}=${value}`);
@@ -322,6 +335,10 @@ export function buildSshArgs(profile: HostProfile, env: HostsEnv, opts: SshArgsO
 
   args.push('--', dest);
   if (opts.remoteCommand !== undefined) args.push(opts.remoteCommand);
+  // The destination ends ssh's option parsing, so what follows is the command even when it
+  // starts with a dash (`abox ssh host -- uptime -a`). No second `--`: the remote shell would
+  // receive it as part of the command line.
+  if (opts.userCommand !== undefined) args.push(...opts.userCommand);
   return args;
 }
 
@@ -329,14 +346,19 @@ export function buildSshArgs(profile: HostProfile, env: HostsEnv, opts: SshArgsO
  * Argv for an interactive session (terminal tab / `abox ssh <host>`): tty, passphrase and
  * FIDO prompts work, host keys are still strict, agent forwarding stays off. Run the
  * returned args with `env.sshBinary ?? 'ssh'` (e.g. in a pty). Optional forwards apply to
- * this session only.
+ * this session only. `command` is what a human typed after `--`: it follows the destination
+ * as it is (no extra `--`).
  */
 export function sshSessionArgs(
   profile: HostProfile,
   env: HostsEnv,
-  opts: { forwardings?: readonly PortForward[] } = {},
+  opts: { forwardings?: readonly PortForward[]; command?: readonly string[] } = {},
 ): string[] {
-  return buildSshArgs(profile, env, { mode: 'interactive', forwardings: opts.forwardings });
+  return buildSshArgs(profile, env, {
+    mode: 'interactive',
+    forwardings: opts.forwardings,
+    ...(opts.command?.length ? { userCommand: opts.command } : {}),
+  });
 }
 
 /**

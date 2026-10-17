@@ -205,6 +205,7 @@ async function doExport(
   const { record } = input;
   const flagged: FlaggedPath[] = [];
   const warnings: string[] = [];
+  const copySkipped: Array<{ path: string; reason: string }> = [];
 
   // 1. obtain the sandbox tree -------------------------------------------------
   let treeRoot: string;
@@ -247,8 +248,11 @@ async function doExport(
     // Private scratch tree: links (also absolute ones the project already had) are kept as links so
     // they can be compared with the baseline; the tree is only read with lstat/readlink and removed
     // afterwards, nothing in it is followed, and the user never receives it as is.
+    // Entries the backend leaves out (file names that must not reach the host, links that point
+    // nowhere) do not stop the export; they are reported like other skipped paths and flagged.
     await input.provider.copyOut(input.sandboxId, record.sandboxPath, treeRoot, {
       symlinks: 'preserve',
+      onSkip: (path, reason) => copySkipped.push({ path, reason }),
     });
     if (!(await isRealDirectory(treeRoot))) {
       throw new AboxError(
@@ -299,7 +303,8 @@ async function doExport(
     gitMode: 'skip',
   });
   const sandboxEntries: Map<string, SnapshotEntry> = snap.entries;
-  const skipped = [...snap.walk.skipped];
+  const skipped = [...snap.walk.skipped, ...copySkipped];
+  for (const s of copySkipped) flagged.push({ path: s.path, reason: `not exported: ${s.reason}` });
   // files below a submodule path cannot be represented next to the gitlink: ignore them
   if (gitlinks.length > 0) {
     for (const p of [...sandboxEntries.keys()]) {

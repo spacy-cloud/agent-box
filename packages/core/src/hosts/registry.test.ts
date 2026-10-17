@@ -174,4 +174,24 @@ describe('zone defaults (resolve)', () => {
       sandboxes: 3,
     });
   });
+
+  it('keeps runtimes and allow_rootful through a write and an update', () => {
+    const r = new HostRegistry({ file });
+    r.add({
+      id: 'srv',
+      hostname: 'srv.example.org',
+      backends: ['docker'],
+      runtimes: { docker: 'runsc' },
+      allowRootful: true,
+    });
+    const text = readFileSync(file, 'utf8');
+    expect(text).toMatch(/runtimes: \{ docker: runsc \}/);
+    expect(text).toMatch(/allow_rootful: true/);
+    const again = new HostRegistry({ file }).require('srv');
+    expect(again).toMatchObject({ runtimes: { docker: 'runsc' }, allowRootful: true });
+    const patched = r.update('srv', { runtimes: null, allowRootful: null });
+    expect(patched.runtimes).toBeUndefined();
+    expect(patched.allowRootful).toBeUndefined();
+    expect(readFileSync(file, 'utf8')).not.toMatch(/runtimes|allow_rootful/);
+  });
 });

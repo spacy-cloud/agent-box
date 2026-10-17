@@ -1160,3 +1160,88 @@ dialog.modal h2 {
 .tpl-validation .banner {
   margin: 0.4rem 0;
 }
+
+/* ---- agent text: capped in height, scrolls instead of pushing the page -------------------------------- */
+.scroll-text {
+  max-height: 9rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.scroll-text[tabindex] {
+  border-radius: var(--radius);
+}
+.agent-text blockquote.scroll-text {
+  max-height: 12rem;
+}
+.log.scroll-text {
+  max-height: 420px;
+}
+td > .scroll-text,
+dd > .scroll-text {
+  min-width: 8rem;
+  max-width: 36rem;
+}
+
+/* ---- file tree ----------------------------------------------------------------------------------------- */
+.file-tree {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  max-height: 420px;
+  overflow: auto;
+  margin: 0.4rem 0 1rem;
+  padding: 0.25rem 0;
+}
+.tree-row,
+.tree-note {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr) 6rem 11rem;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding-top: 0.15rem;
+  padding-bottom: 0.15rem;
+  padding-right: 0.6rem;
+  cursor: default;
+}
+.tree-note {
+  grid-template-columns: minmax(0, 1fr);
+}
+.tree-row:hover {
+  background: var(--surface-2);
+}
+.tree-row.selected {
+  background: var(--info-bg);
+  color: var(--info-fg);
+}
+.tree-row.selected .muted {
+  color: var(--info-fg);
+}
+.tree-row:focus-visible {
+  outline-offset: -3px;
+}
+.tree-size {
+  text-align: right;
+}
+
+/* ---- hosts: utilisation -------------------------------------------------------------------------------------- */
+.util-meter {
+  width: 100%;
+  min-width: 8rem;
+  height: 0.9rem;
+}
+.with-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.check-list {
+  list-style: none;
+  padding: 0;
+}
+.policy-form fieldset {
+  margin: 0.8rem 0;
+}
+.policy-form legend {
+  font-weight: 700;
+}

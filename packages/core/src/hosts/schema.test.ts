@@ -300,3 +300,46 @@ hosts:
     ).toThrow(/duplicate/);
   });
 });
+
+describe('hardened runtimes and the rootful opt-in', () => {
+  const yaml = (extra: string) =>
+    `hosts:\n  srv:\n    hostname: srv.example.org\n    backends: [docker, podman]\n${extra}`;
+
+  it('reads runtimes per engine and allow_rootful from hosts.yaml', () => {
+    const h = parseHostsYaml(
+      yaml('    runtimes: { docker: runsc, podman: kata }\n    allow_rootful: true\n'),
+    ).get('srv')!;
+    expect(h.runtimes).toEqual({ docker: 'runsc', podman: 'kata' });
+    expect(h.allowRootful).toBe(true);
+    const plain = parseHostsYaml(yaml('')).get('srv')!;
+    expect(plain.runtimes).toBeUndefined();
+    expect(plain.allowRootful).toBeUndefined();
+  });
+
+  it('rejects unsafe runtime names, unknown engines and a runtime for an engine the host lacks', () => {
+    expect(() => parseHostsYaml(yaml('    runtimes: { docker: "runsc --privileged" }\n'))).toThrow(
+      /runtime name/,
+    );
+    expect(() => parseHostsYaml(yaml('    runtimes: { docker: "-x" }\n'))).toThrow(/runtime name/);
+    expect(() => parseHostsYaml(yaml('    runtimes: { lxc: runsc }\n'))).toThrow(/unknown key/);
+    expect(() =>
+      parseHostsYaml(
+        'hosts:\n  srv:\n    hostname: srv.example.org\n    backends: [podman]\n    runtimes: { docker: runsc }\n',
+      ),
+    ).toThrow(/needs the backend docker/);
+  });
+
+  it('allow_rootful is for ssh hosts only; validateHostProfile checks the same grammar', () => {
+    expect(() =>
+      parseHostsYaml('hosts:\n  local:\n    kind: local\n    allow_rootful: true\n'),
+    ).toThrow(/not allowed/);
+    expect(() =>
+      validateHostProfile(ssh({ backends: ['docker'], runtimes: { docker: 'a b' } })),
+    ).toThrow(/runtime name/);
+    expect(
+      validateHostProfile(
+        ssh({ backends: ['docker'], runtimes: { docker: 'io.containerd.kata.v2' } }),
+      ),
+    ).toBeDefined();
+  });
+});

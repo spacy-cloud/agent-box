@@ -62,6 +62,26 @@ describe('i18n catalogs', () => {
     for (const s of c.APPROVAL_STATUSES) expect(keys.has(`approvals.status.${s}`), s).toBe(true);
   });
 
+  it('German strings use proper umlauts and ß, never the ae/oe/ue/ss transliterations', () => {
+    // Words that are written with an umlaut in German and show up in the catalog; a transliteration
+    // ("fuer", "Aenderung") would be a typo, so the catalog may not contain any of them.
+    const transliterated =
+      /\b(fuer|ueber|koennen?|koennte|muessen|muesste|moechte|waehlen|Aenderung\w*|aender\w*|Loesch\w*|loesch\w*|Groesse|Pruef\w*|pruef\w*|Oeffn\w*|oeffn\w*|Verlaeng\w*|ungueltig\w*|gueltig\w*|zurueck|Rueck\w*|Schluessel\w*|Naechste\w*|waehrend|natuerlich|haeufig|Laeuft|laeuft|Ausfuehr\w*|ausfuehr\w*|Verfuegbar\w*|verfuegbar\w*|Vertrauenswuerdig\w*|vertrauenswuerdig\w*|Beruehr\w*|beruehr\w*)\b/;
+    const bad = Object.entries(de as Record<string, string>)
+      .filter(([, v]) => transliterated.test(v))
+      .map(([k]) => k);
+    expect(bad).toEqual([]);
+  });
+
+  it('the new strings are German with umlauts where they belong (spot checks)', () => {
+    const d = de as Record<string, string>;
+    expect(d['perm.title']).toContain('ändern');
+    expect(d['askpass.title.refused']).toContain('Schlüssel');
+    expect(d['hosts.util.unknown']).toContain('zählen');
+    expect(d['policy.f.isolationHint']).toContain('Mindest-Isolation');
+    expect(d['settings.mcpStatus.contexts']).toContain('Agentenkontexte');
+  });
+
   it('translate substitutes params, picks plural forms and falls back to German', () => {
     expect(translate('de', 'approvals.pending', { count: 1 })).toBe('1 offene Anfrage');
     expect(translate('de', 'approvals.pending', { count: 3 })).toBe('3 offene Anfragen');

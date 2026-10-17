@@ -11,6 +11,7 @@ import {
   ErrorBox,
   Field,
   Loading,
+  Safe,
 } from '../components/ui';
 import { hostColor } from '../components/Terminal';
 import { useSshTabs } from './ssh-tabs';
@@ -21,7 +22,15 @@ import {
   initialHostKeyState,
   primaryFingerprint,
 } from '../../shared/host-key-flow';
-import { formatDuration, formatTimestamp } from '../../shared/format';
+import {
+  formatBytes,
+  formatDuration,
+  formatTimestamp,
+  safeInline,
+  safeText,
+} from '../../shared/format';
+import { groupHosts, groupsOf, hostUtilisation, plainTags } from '../../shared/host-usage';
+import type { HostUtilisation } from '../../shared/host-usage';
 import { FORWARD_KINDS, HOST_BACKENDS, HOST_ZONES, ISOLATION_LEVELS } from '../../shared/constants';
 import type {
   ForwardState,
@@ -36,6 +45,8 @@ export function HostsView() {
   const ssh = useSshTabs();
   const q = useQuery('hosts:list', undefined, { pollMs: 5000 });
   const fw = useQuery('hosts:forwards', undefined, { pollMs: 2500, live: false });
+  // Utilisation comes from the sandbox list (the same answer the Sandboxes view shows): nothing is measured on the host.
+  const sb = useQuery('sandboxes:list', {}, { pollMs: 5000 });
   const [edit, setEdit] = useState<HostProfile | 'new' | null>(null);
   const [importing, setImporting] = useState(false);
   const [keyFor, setKeyFor] = useState<{ host: HostProfile; then?: 'terminal' | 'test' } | null>(
@@ -47,6 +58,7 @@ export function HostsView() {
   const [createOn, setCreateOn] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [groupFilter, setGroupFilter] = useState('');
   const now = useNow(15_000);
 
   const rows = q.data ?? [];
@@ -54,18 +66,22 @@ export function HostsView() {
     const f = filter.trim().toLowerCase();
     const list = rows.filter(
       (r) =>
-        f === '' ||
-        [
-          r.profile.id,
-          r.profile.hostname,
-          r.profile.sshConfigAlias,
-          r.profile.user,
-          ...r.profile.tags,
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase()
-          .includes(f),
+        (groupFilter === '' ||
+          (groupFilter === '\0none'
+            ? groupsOf(r.profile.tags).length === 0
+            : groupsOf(r.profile.tags).includes(groupFilter))) &&
+        (f === '' ||
+          [
+            r.profile.id,
+            r.profile.hostname,
+            r.profile.sshConfigAlias,
+            r.profile.user,
+            ...r.profile.tags,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase()
+            .includes(f)),
     );
     return [...list].sort((a, b) => {
       if (a.profile.kind === 'local') return -1;
@@ -73,7 +89,17 @@ export function HostsView() {
       if (a.profile.favorite !== b.profile.favorite) return a.profile.favorite ? -1 : 1;
       return a.profile.id.localeCompare(b.profile.id);
     });
-  }, [rows, filter]);
+  }, [rows, filter, groupFilter]);
+  const sections = useMemo(
+    () => groupHosts(shown.map((r) => ({ row: r, tags: r.profile.tags }))),
+    [shown],
+  );
+  const allGroups = useMemo(
+    () => [...new Set(rows.flatMap((r) => groupsOf(r.profile.tags)))].sort(),
+    [rows],
+  );
+  const sandboxes = sb.data?.sandboxes ?? [];
+  const unreachable = sb.data?.unreachableHosts ?? [];
 
   async function test(row: HostRow) {
     setBusy(row.profile.id);
@@ -167,6 +193,20 @@ export function HostsView() {
                 autoComplete="off"
               />
             </label>
+            {allGroups.length > 0 ? (
+              <label>
+                {t('hosts.group')}
+                <select value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)}>
+                  <option value="">{t('common.all')}</option>
+                  {allGroups.map((g) => (
+                    <option key={g} value={g}>
+                      {safeInline(g, 60)}
+                    </option>
+                  ))}
+                  <option value="\0none">{t('hosts.group.none')}</option>
+                </select>
+              </label>
+            ) : null}
           </form>
           <div className="table-wrap">
             <table>
@@ -178,27 +218,41 @@ export function HostsView() {
                   <th scope="col">{t('hosts.col.zone')}</th>
                   <th scope="col">{t('hosts.col.backends')}</th>
                   <th scope="col">{t('hosts.col.status')}</th>
+                  <th scope="col">{t('hosts.col.utilisation')}</th>
                   <th scope="col">{t('sandboxes.col.actions')}</th>
                 </tr>
               </thead>
-              <tbody>
-                {shown.map((r) => (
-                  <HostLine
-                    key={r.profile.id}
-                    row={r}
-                    now={now}
-                    busy={busy === r.profile.id}
-                    onCreate={() => setCreateOn(r.profile.id)}
-                    onFavorite={() => void toggleFavorite(r)}
-                    onTest={() => void test(r)}
-                    onTerminal={() => void terminal(r)}
-                    onKey={() => setKeyFor({ host: r.profile })}
-                    onForwards={() => setForwardsFor(r.profile.id)}
-                    onEdit={() => setEdit(r.profile)}
-                    onRemove={() => setRemoveFor(r)}
-                  />
-                ))}
-              </tbody>
+              {sections.map((g) => (
+                <tbody key={g.name ?? '\0none'}>
+                  {sections.length > 1 || g.name !== null ? (
+                    <tr className="group-head">
+                      <th scope="colgroup" colSpan={7}>
+                        {g.name === null
+                          ? t('hosts.group.none')
+                          : t('hosts.group.named', { group: safeInline(g.name, 60) })}
+                      </th>
+                    </tr>
+                  ) : null}
+                  {g.hosts.map(({ row: r }) => (
+                    <HostLine
+                      key={r.profile.id}
+                      row={r}
+                      util={hostUtilisation(r.profile.id, sandboxes, r.profile.limits)}
+                      utilKnown={sb.data !== undefined && !unreachable.includes(r.profile.id)}
+                      now={now}
+                      busy={busy === r.profile.id}
+                      onCreate={() => setCreateOn(r.profile.id)}
+                      onFavorite={() => void toggleFavorite(r)}
+                      onTest={() => void test(r)}
+                      onTerminal={() => void terminal(r)}
+                      onKey={() => setKeyFor({ host: r.profile })}
+                      onForwards={() => setForwardsFor(r.profile.id)}
+                      onEdit={() => setEdit(r.profile)}
+                      onRemove={() => setRemoveFor(r)}
+                    />
+                  ))}
+                </tbody>
+              ))}
             </table>
           </div>
         </>
@@ -298,6 +352,8 @@ const ZONE_TONE = {
 
 function HostLine(props: {
   row: HostRow;
+  util: HostUtilisation;
+  utilKnown: boolean;
   now: number;
   busy: boolean;
   onCreate(): void;
@@ -337,11 +393,11 @@ function HostLine(props: {
             </button>
           ) : null}
         </span>
-        {p.tags.length > 0 ? (
+        {plainTags(p.tags).length > 0 ? (
           <span className="tags">
-            {p.tags.map((tag) => (
+            {plainTags(p.tags).map((tag) => (
               <Badge key={tag} tone="neutral">
-                {tag}
+                {safeInline(tag, 40)}
               </Badge>
             ))}
           </span>
@@ -365,9 +421,26 @@ function HostLine(props: {
           </div>
         ) : null}
       </td>
-      <td className="plain">{p.backends.join(', ') || '—'}</td>
+      <td className="plain">
+        {p.backends
+          .map((b) => {
+            const rt = b === 'docker' || b === 'podman' ? p.runtimes?.[b] : undefined;
+            return rt ? `${b} (${safeInline(rt, 40)})` : b;
+          })
+          .join(', ') || '—'}
+        {p.allowRootful ? (
+          <div>
+            <Badge tone="danger" title={t('hosts.allowRootful.hint')}>
+              {t('hosts.allowRootful')}
+            </Badge>
+          </div>
+        ) : null}
+      </td>
       <td>
         <StatusCell row={row} now={props.now} />
+      </td>
+      <td>
+        <UtilisationCell util={props.util} known={props.utilKnown} host={p.id} />
       </td>
       <td>
         <div className="row-actions">
@@ -412,6 +485,60 @@ function HostLine(props: {
   );
 }
 
+/** Sandboxes, cpu and memory reserved on the host against its limits (the quotas of the profile), from the sandbox list. */
+export function UtilisationCell(props: { util: HostUtilisation; known: boolean; host: string }) {
+  const { t } = useApp();
+  const u = props.util;
+  const cpu = Number(u.cpusReserved.toFixed(2));
+  const meter = (value: number | undefined, what: string) =>
+    value === undefined ? null : (
+      <meter
+        className="util-meter"
+        min={0}
+        max={1}
+        low={0.7}
+        high={0.9}
+        optimum={0}
+        value={value}
+        aria-label={t('hosts.util.meter', { host: props.host, what })}
+      />
+    );
+  return (
+    <div data-testid={`util-${props.host}`}>
+      <div>
+        {u.sandboxLimit !== undefined
+          ? t('hosts.util.sandboxesOf', { count: u.sandboxes, limit: u.sandboxLimit })
+          : t('hosts.util.sandboxes', { count: u.sandboxes })}
+        {u.full ? (
+          <>
+            {' '}
+            <Badge tone="warn" title={t('hosts.util.full.hint')}>
+              {t('hosts.util.full')}
+            </Badge>
+          </>
+        ) : null}
+      </div>
+      {meter(u.sandboxFraction, t('hosts.util.what.sandboxes'))}
+      <div className="muted small">
+        {u.cpuLimit !== undefined
+          ? t('hosts.util.cpuOf', { used: cpu, limit: u.cpuLimit })
+          : t('hosts.util.cpuPlain', { used: cpu })}
+      </div>
+      {meter(u.cpuFraction, t('hosts.util.what.cpu'))}
+      <div className="muted small">
+        {u.memoryLimitBytes !== undefined
+          ? t('hosts.util.memoryOf', {
+              used: formatBytes(u.memoryReservedBytes),
+              limit: formatBytes(u.memoryLimitBytes),
+            })
+          : t('hosts.util.memoryPlain', { used: formatBytes(u.memoryReservedBytes) })}
+      </div>
+      {meter(u.memoryFraction, t('hosts.util.what.memory'))}
+      {!props.known ? <div className="warn-text small">{t('hosts.util.unknown')}</div> : null}
+    </div>
+  );
+}
+
 function StatusCell(props: { row: HostRow; now: number }) {
   const { t } = useApp();
   const s = props.row.status;
@@ -440,14 +567,35 @@ function StatusCell(props: { row: HostRow; now: number }) {
           ? ` · ${s.backends
               .map((b) =>
                 b.ok
-                  ? `${b.name} ${b.version ?? ''}${b.rootless ? ' (rootless)' : ''}`
+                  ? `${b.name} ${safeInline(b.version ?? '', 40)}${b.rootless ? ' (rootless)' : ''}`
                   : `${b.name}: ${t('hosts.backend.unusable')}`,
               )
               .join(', ')}`
           : null}
       </div>
+      {s.engine ? (
+        <div className={s.engine.rootless ? 'muted small' : 'warn-text small'}>
+          {s.engine.rootless ? t('hosts.engine.rootless') : `⚠ ${t('hosts.engine.rootful')}`}
+          {s.engine.runtimes.length > 0
+            ? ` · ${t('hosts.engine.runtimes', { list: safeInline(s.engine.runtimes.join(', '), 120) })}`
+            : ''}
+        </div>
+      ) : null}
+      {s.runtimes.map((r) => (
+        <div
+          key={`${r.engine}/${r.runtime}`}
+          className={r.available ? 'muted small' : 'warn-text small'}
+        >
+          {t(r.available ? 'hosts.runtime.available' : 'hosts.runtime.missing', {
+            engine: r.engine,
+            runtime: safeInline(r.runtime, 40),
+          })}
+        </div>
+      ))}
       {s.state === 'unreachable' && s.error ? (
-        <div className="danger-text small plain">{s.error}</div>
+        <div className="danger-text small">
+          <Safe text={s.error} max={300} />
+        </div>
       ) : null}
       {s.stale || s.state === 'unreachable' ? (
         <div className="muted small">
@@ -460,7 +608,7 @@ function StatusCell(props: { row: HostRow; now: number }) {
       )}
       {s.warnings.map((w, i) => (
         <div key={i} className="warn-text small plain">
-          {w}
+          {safeText(w)}
         </div>
       ))}
     </>
@@ -481,6 +629,9 @@ interface Draft {
   minIsolation: string;
   backends: string[];
   engineSocket: string;
+  runtimeDocker: string;
+  runtimePodman: string;
+  allowRootful: boolean;
   tags: string;
   favorite: boolean;
 }
@@ -498,6 +649,9 @@ function draftOf(p: HostProfile | null): Draft {
     minIsolation: p?.minIsolation ?? '',
     backends: [...(p?.backends ?? [])],
     engineSocket: p?.engineSocket ?? '',
+    runtimeDocker: p?.runtimes?.docker ?? '',
+    runtimePodman: p?.runtimes?.podman ?? '',
+    allowRootful: p?.allowRootful ?? false,
     tags: (p?.tags ?? []).join(', '),
     favorite: p?.favorite ?? false,
   };
@@ -522,6 +676,11 @@ function HostDialog(props: {
       .split(/[,\s]+/)
       .map((x) => x.trim())
       .filter(Boolean);
+    const runtimes = {
+      ...(d.runtimeDocker.trim() ? { docker: d.runtimeDocker.trim() } : {}),
+      ...(d.runtimePodman.trim() ? { podman: d.runtimePodman.trim() } : {}),
+    };
+    const hasRuntimes = Object.keys(runtimes).length > 0;
     try {
       if (!editing) {
         const r = await call('hosts:add', {
@@ -538,6 +697,8 @@ function HostDialog(props: {
             : {}),
           backends: d.backends as Array<(typeof HOST_BACKENDS)[number]>,
           ...(d.engineSocket.trim() ? { engineSocket: d.engineSocket.trim() } : {}),
+          ...(hasRuntimes ? { runtimes } : {}),
+          ...(d.allowRootful ? { allowRootful: true } : {}),
           tags,
           favorite: d.favorite,
         });
@@ -558,6 +719,8 @@ function HostDialog(props: {
               : null,
             backends: d.backends as Array<(typeof HOST_BACKENDS)[number]>,
             engineSocket: d.engineSocket.trim() || null,
+            runtimes: hasRuntimes ? runtimes : null,
+            allowRootful: d.allowRootful ? true : null,
             tags,
             favorite: d.favorite,
           },
@@ -741,6 +904,52 @@ function HostDialog(props: {
               />
             )}
           </Field>
+          <Field label={t('hosts.form.runtimeDocker')} hint={t('hosts.form.runtimeHint')}>
+            {(id) => (
+              <input
+                id={id}
+                type="text"
+                value={d.runtimeDocker}
+                placeholder="runsc"
+                onChange={(e) => set('runtimeDocker', e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            )}
+          </Field>
+          <Field label={t('hosts.form.runtimePodman')} hint={t('hosts.form.runtimeHint')}>
+            {(id) => (
+              <input
+                id={id}
+                type="text"
+                value={d.runtimePodman}
+                placeholder="runsc"
+                onChange={(e) => set('runtimePodman', e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            )}
+          </Field>
+          <div className="wide-col">
+            <label className="inline">
+              <input
+                type="checkbox"
+                checked={d.allowRootful}
+                aria-describedby="allow-rootful-hint"
+                onChange={(e) => set('allowRootful', e.target.checked)}
+              />
+              {t('hosts.form.allowRootful')}
+            </label>
+            <div id="allow-rootful-hint" className="muted small">
+              {t('hosts.form.allowRootfulHint')}
+            </div>
+            {d.allowRootful ? (
+              <Banner tone="danger">
+                <strong>{t('hosts.form.allowRootfulWarningTitle')}</strong>{' '}
+                {t('hosts.form.allowRootfulWarning')}
+              </Banner>
+            ) : null}
+          </div>
           <fieldset className="wide-col">
             <legend>{t('hosts.form.backends')}</legend>
             {HOST_BACKENDS.map((b) => (
@@ -847,7 +1056,7 @@ function ImportDialog(props: { onClose(): void; onDone(count: number): void }) {
           <p className="muted plain">{t('hosts.import.file', { path: preview.path })}</p>
           {preview.warnings.map((w, i) => (
             <Banner key={i} tone="warn">
-              <span className="plain">{w}</span>
+              <span className="plain">{safeText(w)}</span>
             </Banner>
           ))}
           {preview.hosts.length === 0 ? <p>{t('hosts.import.none')}</p> : null}
@@ -903,7 +1112,7 @@ function ImportDialog(props: { onClose(): void; onDone(count: number): void }) {
                         <td>
                           {h.warnings.map((w, i) => (
                             <div key={i} className="warn-text small plain">
-                              {w}
+                              {safeText(w)}
                             </div>
                           ))}
                         </td>
@@ -1233,7 +1442,7 @@ function ForwardsDialog(props: {
                       ) : st?.state === 'failed' ? (
                         <>
                           <Badge tone="danger">{t('hosts.fw.failed')}</Badge>
-                          <div className="danger-text small plain">{st.error}</div>
+                          <div className="danger-text small plain">{safeText(st.error ?? '')}</div>
                         </>
                       ) : (
                         <Badge tone="neutral">{t('hosts.fw.stopped')}</Badge>

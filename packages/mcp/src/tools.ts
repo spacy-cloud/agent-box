@@ -334,7 +334,7 @@ export function registerTools(register: Register): void {
         .optional()
         .describe('Host id; default local. Only hosts your context allows.'),
       workspace: z
-        .object({
+        .strictObject({
           mode: z
             .enum(WORKSPACE_MODES)
             .optional()
@@ -357,7 +357,7 @@ export function registerTools(register: Register): void {
         })
         .optional(),
       overrides: z
-        .object({
+        .strictObject({
           cpus: z.number().positive().max(1024).optional(),
           memory: z
             .union([z.string().max(32), z.number().positive()])
@@ -365,7 +365,7 @@ export function registerTools(register: Register): void {
             .describe('e.g. "4g" or bytes.'),
           ttl: duration.optional().describe('Duration string like "2h" or seconds.'),
           network: z
-            .object({
+            .strictObject({
               mode: z.enum(NETWORK_MODES).optional(),
               allow: z
                 .array(z.string().min(1).max(260))
@@ -382,7 +382,7 @@ export function registerTools(register: Register): void {
             .optional(),
           mounts: z
             .array(
-              z.object({
+              z.strictObject({
                 source: z.string().min(1).max(4096),
                 target: z.string().min(1).max(4096),
                 access: z.enum(['ro', 'rw']).optional(),
@@ -1021,7 +1021,7 @@ export function registerTools(register: Register): void {
       id: sandboxId,
       kind: z.enum(['network', 'mount', 'resources', 'ttl']),
       details: z
-        .object({
+        .strictObject({
           mode: z.enum(NETWORK_MODES).optional(),
           domains: z
             .array(z.string().min(1).max(260))

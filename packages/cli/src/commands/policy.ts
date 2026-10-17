@@ -72,7 +72,7 @@ export function registerPolicy(program: Command, cli: Cli): void {
               '',
               cli.style(
                 'yellow',
-                `warning: policy.yaml is invalid (${v.policy.reloadError.message}); this older policy stays in force until the file is fixed (\`abox policy validate\`)`,
+                `warning: policy.yaml is invalid (${v.policy.reloadError.message}); creating sandboxes, granting access, approvals and every agent are refused until the file is fixed (\`abox policy validate\`, \`abox policy edit\`). ${v.policy.reloadError.fallback === 'last_valid' ? 'Shown here is the last valid policy.' : 'No valid policy was ever recorded; shown here is the restrictive built-in one.'}`,
               ),
             );
           }
