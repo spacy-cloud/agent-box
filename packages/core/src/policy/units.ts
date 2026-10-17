@@ -100,6 +100,19 @@ export function formatSize(bytes: number): string {
   return `${bytes}b`;
 }
 
+/** Human-readable size for messages (`3.2 GiB`, `512 KiB`, `17 B`), binary units, one decimal below 10. */
+export function formatBytesHuman(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '-';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let v = bytes;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${i === 0 ? v : v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`;
+}
+
 /** Human-readable duration, exact where possible (`4h`, `90m`), otherwise ms. */
 export function formatDuration(ms: number): string {
   const units: Array<[number, string]> = [

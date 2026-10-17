@@ -215,6 +215,8 @@ profiles:
     workspace:
       roots: [~/projects]
       modes: [worktree, clone, copy, empty]
+      max_copy_bytes: 1g # soft limit of a copy: above it a human confirms, an agent is denied
+      max_copy_entries: 50000
     network:
       modes: [none, allowlist]
       allow_presets: [npm, pypi, github]

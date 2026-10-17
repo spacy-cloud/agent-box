@@ -34,6 +34,14 @@ export interface ResolvedProfile {
     /** As written (`~` unexpanded); see `AgentContext.workspaceRoots` for canonical roots. */
     roots: string[];
     modes: WorkspaceMode[];
+    /**
+     * Soft limit of a `copy` / `sync` workspace, as written (`1g`). A folder above it (or above
+     * `max_copy_entries` entries) is only copied after the human confirmed it; agents are denied.
+     * The hard copy limit (64 GiB, 2 million entries) applies to everybody on top.
+     */
+    max_copy_bytes: string;
+    maxCopyBytes: number;
+    max_copy_entries: number;
   };
   network: {
     modes: NetworkMode[];

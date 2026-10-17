@@ -55,6 +55,12 @@ export const createRequestSchema = z.strictObject({
   projectDir: hostPathStr.optional(),
 });
 
+export const workspaceEstimateSchema = z.strictObject({
+  path: hostPathStr,
+  mode: z.enum(WORKSPACE_MODES).optional(),
+  exclude: z.array(z.string().min(1).max(512)).max(256).optional(),
+});
+
 const envSchema = z
   .record(
     z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/, 'invalid variable name'),

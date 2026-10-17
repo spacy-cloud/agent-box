@@ -21,7 +21,7 @@ import {
   type CheckHostPathOptions,
   type PathCheck,
 } from './paths.js';
-import { formatDuration, formatSize, tryParseSize } from './units.js';
+import { formatBytesHuman, formatDuration, formatSize, tryParseSize } from './units.js';
 
 /**
  * Decision engine: pure functions over request data. One policy check for CLI,
@@ -63,7 +63,16 @@ export interface CreateRequest {
    * is the path as typed (not symlink-resolved, see `lexicalPath()`); only a human's explicit
    * roots look at it, never an agent's.
    */
-  workspace?: { mode: WorkspaceMode; hostPath?: string; lexicalPath?: string };
+  workspace?: {
+    mode: WorkspaceMode;
+    hostPath?: string;
+    lexicalPath?: string;
+    /**
+     * What the pre-scan of a `copy` / `sync` folder found (`scanTree`; lower bounds when the scan
+     * stopped early). Absent: the size is not checked.
+     */
+    copy?: { bytes: number; entries: number };
+  };
   /**
    * Additional mounts (template + overrides); `hostPath` canonical, `target` inside the sandbox,
    * `lexicalPath` as for the workspace.
@@ -101,6 +110,7 @@ export type ApprovalKind =
   | 'network_open'
   | 'network_domains'
   | 'image_registry'
+  | 'workspace_size'
   | 'secret_env'
   | 'secret_file'
   | 'private_address'
@@ -453,6 +463,54 @@ function digestBase(template: CreateRequest['template']): Record<string, string>
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * Soft limit of a copied workspace (`workspace.max_copy_bytes` / `max_copy_entries`). Copying a
+ * big folder takes long and needs several times its size in disk space, so it is never silent: a
+ * human confirms it (an invariant item, also in approval mode `open`), an agent is denied with the
+ * alternatives its profile offers. The hard copy limit is enforced by the copy itself.
+ */
+function checkCopySize(
+  ctx: AgentContext,
+  mode: WorkspaceMode,
+  hostPath: string | undefined,
+  found: { bytes: number; entries: number },
+  f: Findings,
+): void {
+  const p = ctx.profile;
+  const limitBytes = p.workspace.maxCopyBytes;
+  const limitEntries = p.workspace.max_copy_entries;
+  const overBytes = found.bytes > limitBytes;
+  const overEntries = found.entries > limitEntries;
+  if (!overBytes && !overEntries) return;
+  const folder = hostPath ? `workspace folder ${hostPath}` : 'workspace folder';
+  const foundText = `${formatBytesHuman(found.bytes)} in ${found.entries} ${found.entries === 1 ? 'entry' : 'entries'}`;
+  const limitText = `${formatBytesHuman(limitBytes)} / ${limitEntries} entries`;
+  if (ctx.kind === 'agent') {
+    const alternatives = (['clone', 'worktree', 'mount'] as const).filter((m) =>
+      p.workspace.modes.includes(m),
+    );
+    f.deny(
+      `${folder} is too large to copy (mode ${mode}): ${foundText}; profile "${p.name}" allows ${limitText} (workspace.max_copy_bytes / max_copy_entries)`,
+      [
+        'Choose the project folder itself, not a parent directory.',
+        alternatives.length > 0
+          ? `Use workspace mode ${alternatives.map((m) => `"${m}"`).join(' or ')} for big repositories.`
+          : undefined,
+        'Exclude large directories with workspace.exclude (for example ["node_modules"]).',
+        'Only the human can raise workspace.max_copy_bytes in policy.yaml (abox policy edit).',
+      ]
+        .filter(Boolean)
+        .join(' '),
+    );
+    return;
+  }
+  invariant(f, {
+    kind: 'workspace_size',
+    reason: `${folder} is large for a copy (mode ${mode}): ${foundText}, more than the ${limitText} that is copied without asking (workspace.max_copy_bytes / max_copy_entries)`,
+    risk: 'Copying takes a while and needs several times the size in free disk space on this machine; the sandbox sees everything in the folder. Choose the project folder itself, use workspace mode "mount" or "clone" for big repositories, or exclude large directories (node_modules, build output).',
+  });
+}
+
 function elevated(f: Findings, ctx: AgentContext, item: Omit<ApprovalItem, 'invariant'>): void {
   // Elevated-but-within-rights items are auto-allowed only in approval mode `open`.
   if (ctx.profile.approval !== 'open') f.need({ ...item, invariant: false });
@@ -657,6 +715,9 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
           strictlyBelowRoots: ctx.kind === 'agent',
         });
         if (!res.ok) f.deny(res.reason, res.hint);
+      }
+      if (ws.copy && (ws.mode === 'copy' || ws.mode === 'sync')) {
+        checkCopySize(ctx, ws.mode, ws.hostPath, ws.copy, f);
       }
     }
   }

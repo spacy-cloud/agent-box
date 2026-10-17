@@ -160,6 +160,24 @@ code.
 `create` can override mode, path and ref (`--mode`, `--workspace`, `--ref`); the policy decides
 which modes and which host directories are allowed.
 
+`copy` and `sync` copy the directory **as it is**: there is no template key for exclusions and
+`.gitignore` is not honoured (so `node_modules`, build output and `.git` are copied unless left
+out). Exclusions are a property of the create request: `abox create --exclude <patterns>`, MCP
+`workspace.exclude`, the **Exclude** field in the GUI. Patterns are comma separated and
+gitignore-like, without negation:
+
+| Pattern  | Matches                                                   |
+| -------- | --------------------------------------------------------- |
+| `name`   | an entry called `name` at any depth (`node_modules`)      |
+| `/build` | only at the top of the project; `src/gen` (inner `/`) too |
+| `dir/`   | directories only                                          |
+| `*` `?`  | within one path segment (`*.log`)                         |
+| `**`     | any number of directories (`a/**/b`, `**/cache`)          |
+
+An excluded directory is left out with everything below it. The size limits that apply to a
+copy (soft limit of the policy, hard limit) are described in
+[quickstart](quickstart.md#what-copy-and-sync-copy-and-how-big-it-may-be).
+
 ### `resources`
 
 | Key      | Default | Constraints                                                                                                                                                                     |

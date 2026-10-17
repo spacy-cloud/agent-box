@@ -16,6 +16,11 @@ import {
 import { safeInline, safeText } from '../../shared/format';
 import { ImageUseBlock, TemplateReviewPanel } from '../components/review';
 import { ProjectFolderPicker } from '../components/ProjectFolder';
+import {
+  WorkspaceEstimateNote,
+  estimateBlocksCreate,
+  useWorkspaceEstimate,
+} from '../components/WorkspaceEstimate';
 import { NETWORK_MODES, WORKSPACE_MODES } from '../../shared/constants';
 import { describeBase } from '../../shared/image-ref';
 import type { IpcInput } from '../../shared/ipc';
@@ -33,6 +38,8 @@ interface Form {
   projectDir?: string;
   workspaceMode: string;
   workspacePath: string;
+  /** Exclude patterns of a copy workspace (space or comma separated). */
+  exclude?: string;
   cpus: string;
   memory: string;
   ttl: string;
@@ -48,6 +55,7 @@ const EMPTY_FORM: Form = {
   projectDir: '',
   workspaceMode: '',
   workspacePath: '',
+  exclude: '',
   cpus: '',
   memory: '',
   ttl: '',
@@ -68,6 +76,9 @@ export function buildCreateInput(f: Form): IpcInput<'sandboxes:create'> {
   if (f.workspaceMode) workspace.mode = f.workspaceMode as (typeof WORKSPACE_MODES)[number];
   if (f.workspacePath.trim() && f.workspaceMode !== 'empty')
     workspace.path = f.workspacePath.trim();
+  const exclude = splitList(f.exclude ?? '');
+  if (exclude.length > 0 && !['empty', 'mount', 'clone', 'worktree'].includes(f.workspaceMode))
+    workspace.exclude = exclude;
   const net: NonNullable<NonNullable<IpcInput<'sandboxes:create'>['overrides']>['network']> = {};
   if (f.networkMode) net.mode = f.networkMode as (typeof NETWORK_MODES)[number];
   const allow = splitList(f.allow);
@@ -107,6 +118,11 @@ export function NewSandboxDialog(props: {
   const policy = useQuery('policy:get', undefined, { live: false });
   const hosts = useQuery('hosts:list', undefined, { live: false });
   const [progress, setProgress] = useState<string[]>([]);
+  /** Bar of the workspace scan / copy: determinate once the total is known. */
+  const [bar, setBar] = useState<{ done?: number; total?: number } | null>(null);
+  const lastPhase = useRef<string | undefined>(undefined);
+  const cancelled = useRef(false);
+  const [cancelling, setCancelling] = useState(false);
   const [confirmation, setConfirmation] = useState<{
     reasons: string[];
     risks: string[];
@@ -139,6 +155,15 @@ export function NewSandboxDialog(props: {
     },
     { enabled: needsReview, live: false },
   );
+  const effectiveMode =
+    form.workspaceMode ||
+    (details.data?.template.workspace as { mode?: string } | undefined)?.mode ||
+    '';
+  const estimate = useWorkspaceEstimate({
+    path: workspacePath,
+    mode: step === 'options' || step === 'summary' ? effectiveMode : '',
+    exclude: splitList(form.exclude ?? ''),
+  });
   const baseImage =
     step === 'confirm' &&
     confirmation?.items.some((it) => it.kind === 'image_registry') &&
@@ -152,7 +177,17 @@ export function NewSandboxDialog(props: {
 
   useEffect(() => {
     return window.abox.on('evt:progress', (ev) => {
-      if (ev.key === key.current) setProgress((p) => [...p.slice(-400), ev.line]);
+      if (ev.key !== key.current) return;
+      // scan / copy lines repeat every second: the newest replaces the previous one of the same step
+      const replace = ev.phase !== undefined && ev.phase === lastPhase.current;
+      lastPhase.current = ev.phase;
+      setProgress((p) => (replace ? [...p.slice(-400, -1), ev.line] : [...p.slice(-400), ev.line]));
+      if (ev.phase === 'scan' || ev.phase === 'deliver') setBar({});
+      else if (ev.phase)
+        setBar({
+          ...(ev.done !== undefined ? { done: ev.done } : {}),
+          ...(ev.total !== undefined ? { total: ev.total } : {}),
+        });
     });
   }, []);
   useEffect(() => {
@@ -173,6 +208,10 @@ export function NewSandboxDialog(props: {
   async function create(confirmed: boolean) {
     setStep('creating');
     setProgress([]);
+    setBar(null);
+    lastPhase.current = undefined;
+    cancelled.current = false;
+    setCancelling(false);
     setError(undefined);
     try {
       const res = await call('sandboxes:create', {
@@ -192,9 +231,22 @@ export function NewSandboxDialog(props: {
         setStep('error');
       }
     } catch (e) {
+      if (cancelled.current) {
+        // the human cancelled: back to the summary, nothing was created
+        notify('info', t('new.cancelled'));
+        setStep('summary');
+        return;
+      }
       setError(e);
       setStep('error');
     }
+  }
+
+  /** Stops the create: the main process aborts the scan / copy / image build; the manager removes what exists. */
+  function cancelCreate() {
+    cancelled.current = true;
+    setCancelling(true);
+    void call('jobs:cancel', { key: key.current }).catch(() => undefined);
   }
 
   const stepIndex = STEPS.indexOf(step as Step);
@@ -202,14 +254,20 @@ export function NewSandboxDialog(props: {
     step === 'template'
       ? Boolean(chosen && chosen.allowed && chosen.backendAvailable)
       : step === 'options'
-        ? validOptions(form)
+        ? validOptions(form) && !estimateBlocksCreate(estimate)
         : true;
 
   const footer = (
     <>
-      <button type="button" onClick={props.onClose} disabled={step === 'creating'}>
-        {t('common.cancel')}
-      </button>
+      {step === 'creating' ? (
+        <button type="button" onClick={cancelCreate} disabled={cancelling}>
+          {t('common.cancel')}
+        </button>
+      ) : (
+        <button type="button" onClick={props.onClose}>
+          {t('common.cancel')}
+        </button>
+      )}
       {step === 'options' || step === 'summary' ? (
         <button type="button" onClick={() => setStep(STEPS[stepIndex - 1] ?? 'template')}>
           {t('common.back')}
@@ -226,7 +284,12 @@ export function NewSandboxDialog(props: {
         </button>
       ) : null}
       {step === 'summary' ? (
-        <button type="button" className="primary" onClick={() => void create(false)}>
+        <button
+          type="button"
+          className="primary"
+          disabled={estimateBlocksCreate(estimate)}
+          onClick={() => void create(false)}
+        >
           {t('new.create')}
         </button>
       ) : null}
@@ -407,6 +470,29 @@ export function NewSandboxDialog(props: {
               )}
             </Field>
           ) : null}
+          {form.workspaceMode !== 'empty' ? (
+            <div className="wide-col">
+              <WorkspaceEstimateNote
+                state={estimate}
+                modes={profile?.workspace.modes ?? WORKSPACE_MODES}
+                onUseMode={(m) => set('workspaceMode', m)}
+              />
+            </div>
+          ) : null}
+          {form.workspaceMode !== 'empty' &&
+          !['mount', 'clone', 'worktree'].includes(effectiveMode) ? (
+            <Field label={t('new.exclude')} hint={t('new.excludeHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={form.exclude ?? ''}
+                  placeholder="node_modules"
+                  onChange={(e) => set('exclude', e.target.value)}
+                />
+              )}
+            </Field>
+          ) : null}
           <Field label={t('new.cpus')} hint={t('new.templateDefaultHint')}>
             {(id) => (
               <input
@@ -514,6 +600,9 @@ export function NewSandboxDialog(props: {
             <dd className="plain">
               {form.workspaceMode ? t(`workspace.${form.workspaceMode}`) : t('new.templateDefault')}{' '}
               {form.workspacePath}
+              {splitList(form.exclude ?? '').length > 0 && effectiveMode !== 'mount'
+                ? ` (− ${splitList(form.exclude ?? '').join(', ')})`
+                : ''}
             </dd>
             <dt>
               {t('new.cpus')} / {t('new.memory')} / {t('new.ttl')}
@@ -548,13 +637,30 @@ export function NewSandboxDialog(props: {
           {chosen?.isolation === 'none' ? (
             <Banner tone="danger">{t('new.isolationNoneWarning')}</Banner>
           ) : null}
+          <WorkspaceEstimateNote
+            state={estimate}
+            modes={profile?.workspace.modes ?? WORKSPACE_MODES}
+            onUseMode={(m) => {
+              set('workspaceMode', m);
+              setStep('options');
+            }}
+          />
           <p className="muted">{t('new.summaryHint')}</p>
         </>
       ) : null}
 
       {step === 'creating' ? (
         <>
-          <p role="status">{t('new.creating')}</p>
+          <p role="status">{cancelling ? t('new.cancelling') : t('new.creating')}</p>
+          {bar ? (
+            <progress
+              aria-label={t('new.progressBar')}
+              className="progress-bar"
+              {...(bar.total !== undefined && bar.done !== undefined
+                ? { max: bar.total, value: Math.min(bar.done, bar.total) }
+                : {})}
+            />
+          ) : null}
           <pre className="log plain" ref={logRef} aria-live="polite" aria-label={t('new.progress')}>
             {progress.join('\n')}
           </pre>
