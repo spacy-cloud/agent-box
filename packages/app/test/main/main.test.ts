@@ -93,6 +93,7 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       listSandboxes: rec('listSandboxes', { sandboxes: [], orphans: [], unreachableHosts: [] }),
       createSandbox: rec('createSandbox', { status: 'created' }),
       extendTtl: rec('extendTtl'),
+      sandboxStats: rec('sandboxStats', { usage: {} }),
       approve: rec('approve'),
       deny: rec('deny'),
       queryAudit: rec('queryAudit', []),
@@ -166,6 +167,17 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       { onProgress: (k, l) => lines.push([k, l]) },
     );
     expect(lines).toEqual([['abc', 'step 1']]);
+  });
+
+  it('live usage is asked as the human for exactly the ids the view names', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await expect(h['sandboxes:stats']({ ids: ['local/a', 'local/b'] }, {})).resolves.toEqual({
+      usage: {},
+    });
+    expect(calls).toEqual([
+      { fn: 'sandboxStats', args: [{ contextId: 'human' }, ['local/a', 'local/b']] },
+    ]);
   });
 
   it('extend, approve and deny use the human caller', async () => {

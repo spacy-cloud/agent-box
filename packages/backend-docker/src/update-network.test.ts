@@ -6,6 +6,7 @@ import { simpleExec } from './exec.js';
 import { makeSpec, makeTemplate } from './__tests__/helpers.js';
 import {
   TEST_LABEL,
+  TEST_PID_LABEL,
   TEST_RUN,
   dockerEnabled,
   newProvider,
@@ -84,7 +85,7 @@ describe.skipIf(!dockerEnabled || !proxyAvailable)('updateNetwork (real docker)'
     upstream = await raw.createContainer({
       name: `abox-dtest-upstream-${TEST_RUN}`,
       Image: proxyImage,
-      Labels: { [TEST_LABEL]: TEST_RUN },
+      Labels: { [TEST_LABEL]: TEST_RUN, [TEST_PID_LABEL]: String(process.pid) },
       Entrypoint: [
         'node',
         '-e',

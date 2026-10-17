@@ -13,6 +13,7 @@ import type {
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
+  ResourceUsage,
   ResolvedTemplate,
   SandboxFilter,
   SandboxId,
@@ -21,6 +22,17 @@ import type {
   TtyOptions,
   TtySession,
 } from './types.js';
+
+export interface CopyOutOptions {
+  /**
+   * `'refuse'` (default): a symlink with an absolute, empty or escaping target aborts the copy.
+   * `'preserve'`: such links are recreated as links. Only for a private scratch tree that abox
+   * merely inspects (lstat/readlink, never followed, executed or handed to the user), as the
+   * export does to compare the tree with its baseline. Entries are still never written through
+   * a link, and a backend that copies links verbatim anyway may ignore the option.
+   */
+  symlinks?: 'refuse' | 'preserve';
+}
 
 /**
  * Backend interface. Every backend (docker, podman, process, python, vm)
@@ -66,8 +78,17 @@ export interface SandboxProvider {
 
   /** Copy a host file or directory (recursively) into the sandbox. */
   copyIn(id: SandboxId, hostPath: string, sandboxPath: string): Promise<void>;
-  /** Copy a sandbox file or directory (recursively) to the host. */
-  copyOut(id: SandboxId, sandboxPath: string, hostPath: string): Promise<void>;
+  /**
+   * Copy a sandbox file or directory (recursively) to the host. By default a symlink must stay
+   * inside the copied tree (an absolute, empty or escaping target is refused), because the result
+   * may be handed to the user.
+   */
+  copyOut(
+    id: SandboxId,
+    sandboxPath: string,
+    hostPath: string,
+    opts?: CopyOutOptions,
+  ): Promise<void>;
   readFile(
     id: SandboxId,
     sandboxPath: string,
@@ -124,6 +145,13 @@ export interface SandboxProvider {
    * `unsupported`.
    */
   updateResources?(id: SandboxId, limits: { cpus?: number; memoryBytes?: number }): Promise<void>;
+
+  /**
+   * One sample of the live resource usage of a running sandbox (cpu %, memory, pids). Takes about a
+   * second on engines that need two readings for the cpu rate. A sandbox that is not running is
+   * `conflict`. Optional (see `capabilities().stats`); absent = `unsupported`.
+   */
+  stats?(id: SandboxId): Promise<ResourceUsage>;
 
   /** Egress decisions recorded by the proxy since `sinceTs` (allowlist mode only). */
   networkEvents?(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]>;

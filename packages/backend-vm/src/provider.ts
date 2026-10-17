@@ -8,6 +8,7 @@ import {
   isolationAtLeast,
   parseSize,
   type BackendStatus,
+  type CopyOutOptions,
   type DirEntry,
   type ExecEvent,
   type ExecRequest,
@@ -1617,13 +1618,20 @@ export class VmProvider implements SandboxProvider {
     );
   }
 
-  async copyOut(id: SandboxId, sandboxPath: string, hostPath: string): Promise<void> {
+  async copyOut(
+    id: SandboxId,
+    sandboxPath: string,
+    hostPath: string,
+    opts?: CopyOutOptions,
+  ): Promise<void> {
     const { meta, qga } = await this.runningSandbox(id);
     await guestCopyOut(
       qga,
       meta.user.name,
       normSandboxPath(sandboxPath, meta.workspacePath),
       hostPath,
+      undefined,
+      opts?.symlinks,
     );
   }
 

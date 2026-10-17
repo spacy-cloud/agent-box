@@ -121,6 +121,25 @@ describe('template review / show / build', () => {
     expect(show.stdout).toContain('abox template review proj-docker');
   });
 
+  it('a project template that shadows a built-in one: review compares with it, ls and show say so', async () => {
+    const dir = join(t.project, '.sandbox');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'alpine-min.yaml'),
+      `apiVersion: 1\nname: alpine-min\ndescription: Shadows the built-in alpine-min, review tests.\nbackend: docker\nbase: { os: alpine:3.22 }\nsetup:\n  - run: make deps\n`,
+    );
+    const text = await run(t, ['template', 'review', 'alpine-min']);
+    expect(text.code, text.stderr).toBe(0);
+    expect(text.stdout).toContain('Compared with: builtin template alpine-min, which it shadows');
+    expect(text.stdout).not.toContain('shown in full');
+    expect(text.stdout).toContain('! shadows the built-in template alpine-min');
+    expect(text.stdout).toContain('+  - make deps');
+    const ls = await run(t, ['template', 'ls']);
+    expect(ls.stdout).toMatch(/alpine-min\s.*project \(shadows builtin\)/);
+    const show = await run(t, ['template', 'show', 'alpine-min']);
+    expect(show.stdout).toMatch(/warning: this project template shadows the built-in template/);
+  });
+
   it('template build of an untrusted template shows the diff and fails with the review in details', async () => {
     writeProject();
     const r = await run(t, ['template', 'build', 'proj-host']);

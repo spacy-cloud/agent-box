@@ -10,6 +10,7 @@ import { NETWORK_PRESETS } from '../template/network-presets.js';
 import type { ContextDef, Policy, PolicySource, ResolvedProfile } from './model.js';
 import { PolicyFileSchema, type RawPolicy, type RawProfile } from './schema.js';
 import { DEFAULT_IMAGE_REGISTRIES } from './images.js';
+import { ANY_ROOT } from './paths.js';
 import { parseDuration, parseSize } from './units.js';
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,9 @@ import { parseDuration, parseSize } from './units.js';
 
 /**
  * Built-in profile of the human operator. Broad rights, but:
+ * - the roots are `*` (any directory, `ANY_ROOT`): a human is not limited to a part of the file
+ *   system, so a project below a symlink that leads off `$HOME` works. An explicit `roots` list
+ *   in a `human` profile of policy.yaml replaces it,
  * - forbidden host paths (see paths.ts) stay forbidden for everyone,
  * - isolation `none`, untrusted templates, shared hosts and secret env/file
  *   injection still need an explicit confirmation (`humanConfirmed`).
@@ -27,14 +31,14 @@ export const BUILTIN_HUMAN_PROFILE: RawProfile = {
   approval: 'open',
   templates: ['*'],
   limits: { sandboxes: 50, cpus: 64, memory: '512g', ttl: '30d' },
-  workspace: { roots: ['~'], modes: [...WORKSPACE_MODES] },
+  workspace: { roots: [ANY_ROOT], modes: [...WORKSPACE_MODES] },
   network: {
     modes: ['none', 'allowlist', 'open'],
     allow_presets: Object.keys(NETWORK_PRESETS),
     allow: ['*'],
   },
   images: { registries: ['*'] },
-  mounts: { roots: ['~'], access: ['ro', 'rw'] },
+  mounts: { roots: [ANY_ROOT], access: ['ro', 'rw'] },
   secrets: { allowed: ['*'], inject: ['proxy', 'env', 'file'] },
   isolation: { min: 'none', network_open: 'none', mounts: 'none', secrets_env: 'none' },
   hosts: ['*'],

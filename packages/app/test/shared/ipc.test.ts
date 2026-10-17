@@ -40,6 +40,8 @@ describe('IPC contract', () => {
   it('accepts well-formed input', () => {
     expect(ok('sandboxes:inspect', { id: 'local/ab12cd34' })).toBe(true);
     expect(ok('sandboxes:list', undefined)).toBe(true);
+    expect(ok('sandboxes:stats', { ids: ['local/ab12cd34'] })).toBe(true);
+    expect(ok('sandboxes:stats', { ids: [] })).toBe(true);
     expect(ok('sandboxes:list', { state: ['running'], owner: 'agent:x' })).toBe(true);
     expect(ok('sandboxes:extend', { id: 'local/x', ttl: '90m' })).toBe(true);
     expect(ok('approvals:approve', { id: 'abc' })).toBe(true);
@@ -65,6 +67,13 @@ describe('IPC contract', () => {
     expect(ok('sandboxes:inspect', { id: '' })).toBe(false);
     expect(ok('sandboxes:inspect', { id: 'x', extra: true })).toBe(false);
     expect(ok('sandboxes:inspect', undefined)).toBe(false);
+    expect(ok('sandboxes:stats', undefined)).toBe(false);
+    expect(ok('sandboxes:stats', { ids: 'local/x' })).toBe(false);
+    expect(ok('sandboxes:stats', { ids: [''] })).toBe(false);
+    expect(
+      ok('sandboxes:stats', { ids: Array.from({ length: 201 }, (_, i) => `local/${i}`) }),
+    ).toBe(false);
+    expect(ok('sandboxes:stats', { ids: [], all: true })).toBe(false);
     expect(ok('sandboxes:extend', { id: 'x', ttl: 'forever' })).toBe(false);
     expect(ok('sandboxes:extend', { id: 'x', ttl: '1h; rm -rf /' })).toBe(false);
     expect(ok('export:run', { id: 'x', format: 'branch', branchName: 'main' })).toBe(false);

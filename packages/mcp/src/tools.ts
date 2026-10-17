@@ -9,6 +9,7 @@ import type {
 } from '@abox/core';
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { BIG_FILE_HINT, WRITE_CONTENT_MAX_CHARS, WRITE_FILE_MAX_BYTES } from './limits.js';
 import { durationMs } from './runtime.js';
 import type { Runtime } from './runtime.js';
 import { fail, invalidInput, ok, truncateText } from './results.js';
@@ -136,13 +137,15 @@ function briefSandbox(s: SandboxView): Record<string, unknown> {
     network: s.network,
     mounts: s.mounts,
     resources: s.resources,
+    ...(s.humanAttached ? { humanAttached: s.humanAttached } : {}),
   };
 }
 
 function sandboxLine(s: SandboxView): string {
   const ws = s.workspace ? ` workspace=${s.workspace.mode}:${s.workspace.sandboxPath}` : '';
   const net = ` network=${s.network.mode}${s.network.allow.length ? `(${s.network.allow.length} allowed)` : ''}`;
-  return `${s.id} "${s.name}" [${s.state}${s.stale ? ',stale' : ''}] template=${s.template} isolation=${s.isolation} ttl_left=${fmtMs(s.ttlRemainingMs)}${net}${ws}`;
+  const paused = s.humanAttached ? ' PAUSED: a human is working in this sandbox' : '';
+  return `${s.id} "${s.name}" [${s.state}${s.stale ? ',stale' : ''}] template=${s.template} isolation=${s.isolation} ttl_left=${fmtMs(s.ttlRemainingMs)}${net}${ws}${paused}`;
 }
 
 function processLine(p: ProcessView): string {
@@ -201,7 +204,7 @@ export function registerTools(register: Register): void {
     name: 'template_list',
     title: 'List templates',
     description:
-      "List sandbox templates you may use (language/tooling, isolation, network). Call this first and pick one by its description; never invent a template name. Pass workspace_path (the project you will share) to include that project's own templates from its .sandbox directory; they are marked project=true and need human approval until trusted.",
+      "List sandbox templates you may use (language/tooling, isolation, network). Call this first and pick one by its description; never invent a template name. Pass workspace_path (the project you will share) to include that project's own templates from its .sandbox directory; they are marked project=true and need human approval until trusted. A project template named like a built-in one hides it (shadows=[builtin]).",
     input: {
       filter: z
         .string()
@@ -245,6 +248,8 @@ export function registerTools(register: Register): void {
         project: t.source.kind === 'project',
         trusted: t.trusted,
         needsApproval: !t.trusted,
+        // a template that hides one of the same name from a lower level (a project `alpine-min` over the built-in one)
+        ...(t.shadows ? { shadows: [...new Set(t.shadows.map((x) => x.kind))] } : {}),
         allowed: t.allowed,
         backendAvailable: t.backendAvailable,
         ready: t.ready,
@@ -257,7 +262,7 @@ export function registerTools(register: Register): void {
         shown
           .map(
             (t) =>
-              `- ${t.name}${t.project ? ' (project template)' : ''}${t.usable ? '' : ` (not usable${t.notReadyReason && t.allowed ? `: ${t.notReadyReason}` : ''})`}${t.needsApproval ? ' (needs human approval first)' : ''}: ${t.description} [isolation=${t.isolation}, network=${t.networkMode}]`,
+              `- ${t.name}${t.project ? ' (project template)' : ''}${t.shadows ? ` (SHADOWS the ${t.shadows.join('/')} template of the same name: this is not the standard one)` : ''}${t.usable ? '' : ` (not usable${t.notReadyReason && t.allowed ? `: ${t.notReadyReason}` : ''})`}${t.needsApproval ? ' (needs human approval first)' : ''}: ${t.description} [isolation=${t.isolation}, network=${t.networkMode}]`,
           )
           .join('\n'),
       );
@@ -295,6 +300,7 @@ export function registerTools(register: Register): void {
             : ''),
         {
           template: d.template,
+          ...(d.shadows ? { shadows: [...new Set(d.shadows.map((x) => x.kind))] } : {}),
           trusted: d.trusted,
           allowed: d.allowed,
           backendAvailable: d.backendAvailable,
@@ -572,7 +578,7 @@ export function registerTools(register: Register): void {
     name: 'sandbox_exec',
     title: 'Run command',
     description:
-      'Run a command in the sandbox and wait for it to finish. Output is capped (~64 KiB per stream) and marked truncated; redirect long output to a file and read it with sandbox_read_file. For servers or long jobs use sandbox_process_start.',
+      'Run a command in the sandbox and wait for it to finish. Output is capped (~64 KiB per stream) and marked truncated; redirect long output to a file and read it with sandbox_read_file. For servers or long jobs use sandbox_process_start. If a human has taken over the sandbox in a terminal this answers conflict "paused": wait and retry later.',
     input: {
       id: sandboxId,
       argv: argvSchema,
@@ -790,11 +796,16 @@ export function registerTools(register: Register): void {
     name: 'sandbox_write_file',
     title: 'Write file',
     description:
-      'Write a file inside the sandbox (sandbox paths only; creates or overwrites). Never write secrets. Use encoding=base64 for binary content.',
+      'Write a file inside the sandbox (sandbox paths only; creates or overwrites). Never write secrets. Use encoding=base64 for binary content. Up to 8 MiB of content per call; for bigger files put them in the project workspace or create them inside the sandbox with sandbox_exec. Writes run as the sandbox user: root-owned and abox-managed paths are refused.',
     input: {
       id: sandboxId,
       path: z.string().min(1).max(4096).describe('Path inside the sandbox.'),
-      content: z.string().max(24 * 1024 * 1024),
+      content: z
+        .string()
+        .max(
+          WRITE_CONTENT_MAX_CHARS,
+          `content is too large (limit ${WRITE_FILE_MAX_BYTES / (1024 * 1024)} MiB of decoded content). ${BIG_FILE_HINT}`,
+        ),
       mode: z
         .string()
         .regex(/^(?:0o?)?[0-7]{3,4}$/, 'octal permission string such as "644" or "755"')
@@ -815,6 +826,17 @@ export function registerTools(register: Register): void {
         args.mode !== undefined
           ? Number.parseInt(args.mode.replace(/^0o?/, '') || '0', 8)
           : undefined;
+      const bytes =
+        args.encoding === 'base64'
+          ? Math.floor((args.content.length * 3) / 4) -
+            (args.content.endsWith('==') ? 2 : args.content.endsWith('=') ? 1 : 0)
+          : Buffer.byteLength(args.content, 'utf8');
+      if (bytes > WRITE_FILE_MAX_BYTES) {
+        throw invalidInput(
+          `content is ${bytes} bytes; sandbox_write_file writes at most ${WRITE_FILE_MAX_BYTES} bytes (${WRITE_FILE_MAX_BYTES / (1024 * 1024)} MiB) per call`,
+          BIG_FILE_HINT,
+        );
+      }
       const r = await rt.abox.writeFile(rt.caller, args.id, args.path, args.content, {
         ...(mode !== undefined ? { mode } : {}),
         ...(args.encoding ? { encoding: args.encoding } : {}),

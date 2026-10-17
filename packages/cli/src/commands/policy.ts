@@ -3,12 +3,25 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command } from 'commander';
-import { AboxError, DEFAULT_POLICY_YAML } from '@abox/core';
+import {
+  ANY_ROOT,
+  AboxError,
+  DEFAULT_POLICY_YAML,
+  resolvePaths,
+  validatePolicyText,
+} from '@abox/core';
 import type { Cli } from '../cli.js';
 import { formatIssue } from '../cli.js';
 import { CliError } from '../errors.js';
 import { renderKeyValues, safe } from '../format.js';
 import { invalid } from '../parse.js';
+
+/** `below a, b` for a roots list; `*` (the built-in human profile) = anywhere the forbidden-path list allows. */
+function rootsText(roots: readonly string[]): string {
+  return roots.includes(ANY_ROOT)
+    ? 'anywhere (forbidden paths excluded)'
+    : `below ${roots.join(', ')}`;
+}
 
 export function registerPolicy(program: Command, cli: Cli): void {
   const p = program.command('policy').description('What agents may do (human only)');
@@ -54,6 +67,15 @@ export function registerPolicy(program: Command, cli: Cli): void {
               ['hash', v.policy.contentHash.slice(0, 16)],
             ]),
           ];
+          if (v.policy.reloadError) {
+            lines.push(
+              '',
+              cli.style(
+                'yellow',
+                `warning: policy.yaml is invalid (${v.policy.reloadError.message}); this older policy stays in force until the file is fixed (\`abox policy validate\`)`,
+              ),
+            );
+          }
           if (!o.context) {
             lines.push('', 'Agent contexts:');
             for (const [id, c] of Object.entries(v.contexts ?? {})) {
@@ -76,7 +98,7 @@ export function registerPolicy(program: Command, cli: Cli): void {
                   ],
                   [
                     'workspace',
-                    `${prof.workspace.modes.join('|')} below ${prof.workspace.roots.join(', ')}`,
+                    `${prof.workspace.modes.join('|')} ${rootsText(prof.workspace.roots)}`,
                   ],
                   [
                     'network',
@@ -86,7 +108,7 @@ export function registerPolicy(program: Command, cli: Cli): void {
                   [
                     'mounts',
                     prof.mounts
-                      ? `${prof.mounts.access.join('|')} below ${prof.mounts.roots.join(', ')}`
+                      ? `${prof.mounts.access.join('|')} ${rootsText(prof.mounts.roots)}`
                       : 'denied',
                   ],
                   [
@@ -107,19 +129,24 @@ export function registerPolicy(program: Command, cli: Cli): void {
     .description('Check a policy file without changing anything (default: the active policy.yaml)')
     .argument('[file]', 'policy file')
     .action(async (file?: string) => {
-      const rt = await cli.rt();
-      const path = file ? cli.resolvePath(file) : rt.paths.policyFile;
+      // No runtime here: validating must not create abox's directories.
+      const path = file ? cli.resolvePath(file) : resolvePaths(cli.env).policyFile;
       let text: string;
       try {
         text = await readFile(path, 'utf8');
       } catch (e) {
         if (!file && (e as NodeJS.ErrnoException).code === 'ENOENT') {
-          text = DEFAULT_POLICY_YAML;
-        } else {
-          throw new AboxError('not_found', `cannot read ${path}: ${(e as Error).message}`);
+          const v = validatePolicyText(DEFAULT_POLICY_YAML);
+          cli.success(
+            { ...v, file: path, exists: false, source: 'default' },
+            () =>
+              `no policy.yaml at ${path}: the built-in default policy applies (hash ${v.contentHash.slice(0, 16)}); \`abox policy edit\` creates one`,
+          );
+          return;
         }
+        throw new AboxError('not_found', `cannot read ${path}: ${(e as Error).message}`);
       }
-      const v = rt.abox.validatePolicy(text);
+      const v = validatePolicyText(text);
       if (!v.ok) {
         throw new CliError('invalid_input', `${path}: ${v.issues.length} problem(s)`, {
           issues: v.issues,
@@ -128,7 +155,7 @@ export function registerPolicy(program: Command, cli: Cli): void {
         });
       }
       cli.success(
-        { ...v, file: path },
+        { ...v, file: path, exists: true, source: 'file' },
         () => `${path}: valid (hash ${v.contentHash.slice(0, 16)})`,
       );
     });

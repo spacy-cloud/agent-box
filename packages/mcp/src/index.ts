@@ -6,3 +6,4 @@ export { serveHttp, isLoopbackBindHost, MCP_PATH } from './http.js';
 export type { ServeHttpOptions, HttpServerHandle, HttpAddress } from './http.js';
 export type { McpLimits } from './runtime.js';
 export { TOOL_NAMES } from './names.js';
+export { MAX_MESSAGE_BYTES, WRITE_FILE_MAX_BYTES } from './limits.js';

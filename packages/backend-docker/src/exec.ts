@@ -136,13 +136,19 @@ function envList(env: Record<string, string> | undefined): string[] | undefined 
   return Object.entries(env).map(([k, v]) => `${k}=${v}`);
 }
 
+export interface SimpleExecResult {
+  exitCode: number;
+  stdout: Buffer;
+  stderr: Buffer;
+}
+
 /** Run a command to completion without a wrapper; collects its output. Used for internal probes. */
 export async function simpleExec(
   docker: Docker,
   containerId: string,
   cmd: string[],
   opts: { user?: string; stdin?: Buffer; cwd?: string } = {},
-): Promise<{ exitCode: number; stdout: Buffer; stderr: Buffer }> {
+): Promise<SimpleExecResult> {
   const exec = await docker.getContainer(containerId).exec({
     Cmd: cmd,
     AttachStdin: opts.stdin !== undefined,

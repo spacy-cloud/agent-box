@@ -85,6 +85,26 @@ export function canonicalizePath(input: string, opts: CanonicalizeOptions): stri
   return finalizeExisting(walk(p)).normalize('NFC');
 }
 
+/**
+ * The path as the user wrote it, made absolute and normalized but *not* symlink-resolved (`~`
+ * expanded, relative paths against `cwd`, NFC, `.` and double slashes removed). `undefined` when the
+ * input contains `..`: its meaning depends on symlinks, so there is no trustworthy lexical form.
+ * Only used to additionally accept a human's explicit root when the project is reached through a
+ * symlink (see `CheckHostPathOptions.lexicalPath`); every other check runs on the canonical path.
+ */
+export function lexicalPath(input: string, opts: CanonicalizeOptions): string | undefined {
+  if (typeof input !== 'string' || input.length === 0 || input.length > MAX_PATH_LENGTH)
+    return undefined;
+  if (REJECTED_CHARS.test(input) || !isAbsolute(opts.home) || !isAbsolute(opts.cwd))
+    return undefined;
+  let p = input.normalize('NFC');
+  if (p === '~' || p.startsWith('~/')) p = opts.home.normalize('NFC') + p.slice(1);
+  else if (p.startsWith('~')) return undefined;
+  if (!isAbsolute(p)) p = `${opts.cwd.normalize('NFC')}/${p}`;
+  if (p.split('/').includes('..')) return undefined;
+  return `/${splitComponents(p).join('/')}`;
+}
+
 function splitComponents(p: string): string[] {
   return p.split('/').filter((c) => c !== '' && c !== '.');
 }
@@ -288,11 +308,27 @@ export type PathDenyCode = 'invalid' | 'forbidden' | 'socket' | 'outside_roots' 
 export type PathCheck =
   { ok: true } | { ok: false; code: PathDenyCode; reason: string; hint?: string };
 
+/**
+ * Root entry meaning "any directory": no roots check (the forbidden-path list still applies). The
+ * built-in `human` profile uses it; policy.yaml cannot spell it (roots must be paths).
+ */
+export const ANY_ROOT = '*';
+
 export interface CheckHostPathOptions {
   /** Absolute home directory of the user (forbidden entries are derived from it). */
   home: string;
-  /** Canonical allowed roots; the path must lie within one of them. */
+  /**
+   * Canonical allowed roots; the path must lie within one of them. `['*']` (`ANY_ROOT`) = any
+   * directory: no roots check, only the forbidden list.
+   */
   roots: readonly string[];
+  /**
+   * Humans with explicit roots: the path as typed (see `lexicalPath`, not symlink-resolved). It is
+   * accepted when it lies within a root even if the canonical path (which is what the forbidden
+   * list is checked on) does not, so a root `~/projects` still covers `~/projects/app` when that
+   * is a symlink to another disk. Never pass it for agents: their symlinks are not trusted.
+   */
+  lexicalPath?: string;
   kind: 'workspace' | 'mount';
   /** Additional canonical forbidden trees (abox config/data dirs, other sandboxes' dirs). */
   extraForbidden?: readonly string[];
@@ -412,6 +448,7 @@ export function checkHostPath(canonical: string, opts: CheckHostPathOptions): Pa
     }
   }
 
+  if (opts.roots.includes(ANY_ROOT)) return { ok: true };
   if (opts.roots.length === 0) {
     return {
       ok: false,
@@ -420,7 +457,9 @@ export function checkHostPath(canonical: string, opts: CheckHostPathOptions): Pa
       hint: `Ask the human to add ${opts.kind === 'mount' ? 'mounts.roots' : 'workspace.roots'} to the profile with \`abox policy edit\`.`,
     };
   }
-  if (!opts.roots.some((r) => isWithin(canonical, r))) {
+  const lexical = opts.lexicalPath;
+  const inRoots = (p: string): boolean => opts.roots.some((r) => isWithin(p, r));
+  if (!inRoots(canonical) && !(lexical !== undefined && inRoots(lexical))) {
     return {
       ok: false,
       code: 'outside_roots',

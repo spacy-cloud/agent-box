@@ -138,6 +138,28 @@ describe('tar writer and extractor', () => {
     expect(skipped.sort()).toEqual(['abs', 'sub/up']);
   });
 
+  it("symlinks: 'preserve' keeps absolute and escaping links (private scratch tree of the export)", async () => {
+    const src = join(root, 'guest-links');
+    await mkdir(join(src, 'sub'), { recursive: true });
+    await symlink('/etc/passwd', join(src, 'abs'));
+    await symlink('../../outside', join(src, 'sub', 'up'));
+    const r = spawnSync(
+      'tar',
+      ['--format=posix', '--hard-dereference', '-C', src, '-cf', '-', '.'],
+      { maxBuffer: 1 << 24 },
+    );
+    expect(r.status).toBe(0);
+    const dest = join(root, 'dest-links');
+    const skipped: string[] = [];
+    await extractTar(chunked(r.stdout), dest, {
+      symlinks: 'preserve',
+      onSkip: (p) => skipped.push(p),
+    });
+    expect(await readlink(join(dest, 'abs'))).toBe('/etc/passwd');
+    expect(await readlink(join(dest, 'sub', 'up'))).toBe('../../outside');
+    expect(skipped).toEqual([]);
+  });
+
   it('single-file mode writes the entry to the destination path', async () => {
     await writeFile(join(root, 'one.bin'), 'x'.repeat(1500), { mode: 0o640 });
     const dest = join(root, 'copy.bin');

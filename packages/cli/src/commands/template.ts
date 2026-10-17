@@ -23,7 +23,9 @@ export function registerTemplate(program: Command, cli: Cli): void {
             x.backend,
             x.isolation,
             x.networkMode,
-            x.source.kind,
+            x.shadows
+              ? `${x.source.kind} (shadows ${[...new Set(x.shadows.map((h) => h.kind))].join('/')})`
+              : x.source.kind,
             x.trusted ? 'yes' : 'NO',
             x.ready ? 'yes' : 'no',
             x.description,
@@ -121,7 +123,7 @@ export function registerTemplate(program: Command, cli: Cli): void {
 
   t.command('review')
     .description(
-      'Show what a (project) template does before you trust it: a diff against the template it extends or its last trusted version',
+      'Show what a (project) template does before you trust it: a diff against its last trusted version, the template it extends or the built-in/user template it shadows',
     )
     .argument('<name>', 'template name')
     .action(async (name: string) => {
@@ -170,13 +172,16 @@ export function registerTemplate(program: Command, cli: Cli): void {
           ...(file ? { file } : {}),
         }));
         const onlyPolicy = v.issues.length > 0 && v.issues.every((i) => i.kind === 'policy');
+        // The policy hint (e.g. about mount directories) belongs to policy problems only: next to a
+        // schema or name error it would send the user to the wrong place.
+        const hint = onlyPolicy ? v.policy?.hint : 'Fix the listed fields and validate again.';
         const reasons = v.policy?.reasons ?? [];
         throw new CliError(
           onlyPolicy ? 'policy_denied' : 'template_invalid',
           `${v.name ?? nameOrPath}: ${v.issues.length} problem(s)`,
           {
             issues: issues as never,
-            ...(v.policy?.hint ? { hint: v.policy.hint } : {}),
+            ...(hint ? { hint } : {}),
             details: { file, warnings: v.warnings, ...(onlyPolicy ? { reasons } : {}) },
           },
         );

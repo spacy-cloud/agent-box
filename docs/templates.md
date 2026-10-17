@@ -500,15 +500,23 @@ ask for mounts, network and secrets. So abox treats it like `direnv allow` does:
   (`abox template build` also needs `-y`). This confirmation applies to that single call and does
   not record trust.
 - Before you decide, abox shows what the template does: the resolved template as a unified diff
-  against the template it extends (or against the last version that was trusted, or in full when
-  there is nothing to compare with), plus the risky points in plain words (setup commands, mounts,
-  network, secrets, isolation). `abox create` prints it above the question, `abox template review
+  against (the first that exists) the last version of it that was trusted, the template it
+  extends, or the user or built-in template of the same name that it shadows (a project
+  `.sandbox/alpine-min.yaml` is compared with the built-in `alpine-min`; the comparison is named
+  "builtin template alpine-min, which it shadows"), or in full when there is nothing to compare
+  with, plus the risky points in plain words (setup commands, mounts, network, secrets,
+  isolation, and that the template shadows another one). `abox create` prints it above the question, `abox template review
 <name>` prints it on demand, `abox approvals show <id>` prints it for an agent's request (and warns
   when the file changed after the request), and with `--json` it is in `details.templateReview`.
 - When an agent wants to use it, a request of the kind `template_trust` appears in the approval
   queue. **Approving it records exactly that content hash** as trusted; a changed file asks again.
 - Even a trusted project template only works for agents if the profile lists its name in
   `templates` (or uses `*`).
+- **A project template with the name of a built-in or user template hides it** for that project:
+  creating from the name uses the project version once it is trusted. `abox template ls` shows
+  `project (shadows builtin)` in the SOURCE column, `abox template show` warns, the MCP tools
+  `template_list` and `template_show` return `shadows: ["builtin"]` (and `template_list` marks the
+  line), and the review starts with the line "shadows the built-in template ...".
 
 `abox init` creates an example project template to start from.
 

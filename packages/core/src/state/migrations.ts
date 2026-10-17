@@ -171,4 +171,21 @@ ALTER TABLE template_trust ADD COLUMN snapshot TEXT;
 ALTER TABLE approvals ADD COLUMN items TEXT;
 `,
   },
+  {
+    version: 6,
+    name: 'human_sessions',
+    // Interactive terminals a human holds in a sandbox (takeover marker). A row is alive while
+    // heartbeat_at is recent; rows of crashed processes expire on their own.
+    sql: `
+CREATE TABLE human_sessions (
+  id           TEXT PRIMARY KEY,
+  sandbox_id   TEXT NOT NULL,
+  actor        TEXT NOT NULL,
+  pid          INTEGER NOT NULL,
+  started_at   INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL
+);
+CREATE INDEX human_sessions_sandbox ON human_sessions(sandbox_id);
+`,
+  },
 ];

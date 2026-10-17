@@ -7,6 +7,7 @@ export const IPC_CHANNEL_NAMES = [
   'dialog:pickDirectory',
   'sandboxes:list',
   'sandboxes:inspect',
+  'sandboxes:stats',
   'sandboxes:start',
   'sandboxes:stop',
   'sandboxes:remove',

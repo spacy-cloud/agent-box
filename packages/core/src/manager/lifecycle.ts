@@ -5,6 +5,7 @@ import { hashJson } from '../state/canonical.js';
 import type { SandboxRecord } from '../state/sandbox-registry.js';
 import {
   canonicalizePath,
+  lexicalPath,
   evaluateCreate,
   isWithinFolded,
   type AgentContext,
@@ -167,18 +168,41 @@ function syncRecord(I: Internals, rec: SandboxRecord, info: SandboxInfo): Sandbo
 // create
 // ---------------------------------------------------------------------------
 
+/**
+ * Fingerprints of a create request. `raw` is the request as sent (cheap, known up front);
+ * `effective` is the request after template resolution and merging of the overrides (known once
+ * the template is loaded), so equivalent requests (`ttl: 30m` equal to the template default vs. no
+ * `ttl`) are the same request - the same view approvals are bound to.
+ */
+interface RequestHashes {
+  raw: string;
+  effective?: string;
+}
+
 async function waitForPeer(
   I: Internals,
   owner: string,
   requestId: string,
-  requestHash: string,
+  hashes: RequestHashes,
 ): Promise<SandboxRecord | undefined> {
   const deadline = Date.now() + WAIT_FOR_PEER_MS;
   for (;;) {
     const rec = I.state.sandboxes.findByRequestId(owner, requestId);
     if (!rec) return undefined;
-    const stored = (rec.effective as StoredEffective | null)?.requestHash;
-    if (stored && stored !== requestHash) {
+    const stored = rec.effective as StoredEffective | null;
+    const differs =
+      stored?.requestHash !== undefined &&
+      stored.requestHash !== hashes.raw &&
+      !(
+        hashes.effective !== undefined &&
+        stored.effectiveRequestHash !== undefined &&
+        stored.effectiveRequestHash === hashes.effective
+      );
+    if (differs && hashes.effective === undefined) {
+      // Not the same text; whether it is the same request needs the resolved request (see createSandbox).
+      return undefined;
+    }
+    if (differs) {
       throw new AboxError(
         'conflict',
         `request id '${requestId}' was already used for a different create request (sandbox ${rec.id})`,
@@ -239,7 +263,7 @@ export async function createSandbox(
 
   // 1. idempotency
   if (req.requestId) {
-    const existing = await waitForPeer(I, owner, req.requestId, requestHash);
+    const existing = await waitForPeer(I, owner, req.requestId, { raw: requestHash });
     if (existing) return existingResult(I, existing);
   }
 
@@ -330,18 +354,21 @@ export async function createSandbox(
   const privateExceptions = ov.network?.privateExceptions ?? [];
 
   const base = I.projectDir ?? process.cwd();
-  const mounts = [
+  const mountSpecs = [
     ...template.mounts.map((m) => ({ source: m.source, target: m.target, access: m.access })),
     ...(ov.mounts ?? []).map((m) => ({
       source: m.source,
       target: m.target,
       access: (m.access ?? 'ro') as AccessMode,
     })),
-  ].map((m) => ({
+  ];
+  const mounts = mountSpecs.map((m) => ({
     hostPath: canonicalizePath(m.source, { home: I.home, cwd: base }),
     target: m.target,
     access: m.access,
   }));
+  // As typed, for the policy check of a human's explicit roots only (see `lexicalPath`).
+  const mountsLexical = mountSpecs.map((m) => lexicalPath(m.source, { home: I.home, cwd: base }));
   if (mounts.length > 0 && !caps.mounts) {
     throw new AboxError(
       'unsupported',
@@ -353,6 +380,7 @@ export async function createSandbox(
   const wsMode: WorkspaceMode = wsRequested?.mode ?? template.workspace.mode;
   const wsAccess: AccessMode = wsRequested?.access ?? template.workspace.access;
   let wsHostPath: string | undefined;
+  let wsLexicalPath: string | undefined;
   if (wsMode !== 'empty') {
     const raw = wsRequested?.path ?? I.projectDir;
     if (!raw) {
@@ -365,6 +393,36 @@ export async function createSandbox(
       );
     }
     wsHostPath = canonicalizePath(raw, { home: I.home, cwd: base });
+    wsLexicalPath = lexicalPath(raw, { home: I.home, cwd: base });
+  }
+  // Idempotency by effective request: the same sandbox however the request spelled its defaults.
+  const effectiveRequestHash = hashJson({
+    template: template.name,
+    templateHash: template.hash,
+    backend: template.backend,
+    host: hostId,
+    name: req.name ?? null,
+    workspace: {
+      mode: wsMode,
+      access: wsAccess,
+      hostPath: wsHostPath ?? null,
+      ref: wsRequested?.ref ?? null,
+      exclude: [...(wsRequested?.exclude ?? [])].sort(),
+    },
+    resources: { cpus, memoryBytes, ttlMs },
+    network: {
+      mode: netMode,
+      allow: [...allow].sort(),
+      privateExceptions: [...privateExceptions].sort(),
+    },
+    mounts: mounts.map((m) => `${m.target}\0${m.hostPath}\0${m.access}`).sort(),
+  });
+  if (req.requestId) {
+    const existing = await waitForPeer(I, owner, req.requestId, {
+      raw: requestHash,
+      effective: effectiveRequestHash,
+    });
+    if (existing) return existingResult(I, existing);
   }
   if (wsHostPath) {
     const used = workspaceInUse(I, ctx, wsHostPath);
@@ -404,8 +462,15 @@ export async function createSandbox(
       templateSource: template.source,
       host: I.hostInfo(host, caps.remote),
       providerIsolation: caps.isolation,
-      workspace: { mode: wsMode, ...(wsHostPath ? { hostPath: wsHostPath } : {}) },
-      mounts,
+      workspace: {
+        mode: wsMode,
+        ...(wsHostPath ? { hostPath: wsHostPath } : {}),
+        ...(wsLexicalPath ? { lexicalPath: wsLexicalPath } : {}),
+      },
+      mounts: mounts.map((m, i) => {
+        const lexical = mountsLexical[i];
+        return lexical ? { ...m, lexicalPath: lexical } : m;
+      }),
       network: { mode: netMode, allow, privateExceptions },
       secrets: secretDecl,
       resources: { cpus, memoryBytes },
@@ -496,6 +561,7 @@ export async function createSandbox(
       ...(s.path ? { path: s.path } : {}),
     })),
     requestHash,
+    effectiveRequestHash,
     creator: I.creatorStamp(),
   };
   const claim = I.state.sandboxes.claim(
@@ -531,7 +597,10 @@ export async function createSandbox(
   );
   if (!claim.created) {
     // lost the race against a concurrent create with the same requestId
-    const winner = await waitForPeer(I, owner, req.requestId!, requestHash);
+    const winner = await waitForPeer(I, owner, req.requestId!, {
+      raw: requestHash,
+      effective: effectiveRequestHash,
+    });
     if (winner) return existingResult(I, winner);
     return createSandbox(I, caller, rawReq, opts);
   }
@@ -1066,6 +1135,7 @@ export async function destroySandbox(
   }
   await provider.remove(rec.id);
   I.state.snapshots.deleteAll(rec.id);
+  I.state.humanSessions.deleteAll(rec.id);
   const ws = rec.workspace as WorkspaceRecord | null;
   const problems: string[] = [];
   if (ws && ws.version === 1) {

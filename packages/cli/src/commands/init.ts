@@ -5,7 +5,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
 import { Option } from 'commander';
-import { canonicalizePath, checkHostPath, type PolicyView } from '@abox/core';
+import { ANY_ROOT, canonicalizePath, checkHostPath, type PolicyView } from '@abox/core';
 import type { Cli } from '../cli.js';
 import { safe } from '../format.js';
 
@@ -142,7 +142,7 @@ export function checkAgentProject(
     const canon = (p: string): string => canonicalizePath(p, { home, cwd: home });
     const res = checkHostPath(canon(projectDir), {
       home,
-      roots: roots.map(canon),
+      roots: roots.map((r) => (r === ANY_ROOT ? r : canon(r))),
       kind: 'workspace',
       scanSockets: false,
       denyHiddenHomeDirs: true,

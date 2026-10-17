@@ -67,6 +67,7 @@ import {
   showTemplate,
   validateTemplateOp,
 } from './templates.js';
+import { sandboxStats } from './usage.js';
 import type {
   AboxEvent,
   AccessResult,
@@ -110,6 +111,7 @@ import type {
   SandboxFilterInput,
   SandboxList,
   SandboxLogsOptions,
+  SandboxStatsResult,
   SandboxView,
   SetPolicyResult,
   SnapshotView,
@@ -233,6 +235,13 @@ export class Abox {
   }
   inspectSandbox(caller: Caller, id: string): Promise<InspectResult> {
     return inspectSandbox(this.I, caller, id);
+  }
+  /**
+   * Live cpu / memory / pids of running sandboxes (human only, best effort): ids without data
+   * (stopped, backend without `stats`, host unreachable) are left out of `usage`.
+   */
+  sandboxStats(caller: Caller, ids: string[]): Promise<SandboxStatsResult> {
+    return sandboxStats(this.I, caller, ids);
   }
   startSandbox(caller: Caller, id: string): Promise<SandboxView> {
     return startSandbox(this.I, caller, id);

@@ -16,6 +16,7 @@ import type {
   PrepareOptions,
   ProviderCapabilities,
   ResolvedTemplate,
+  ResourceUsage,
   SandboxFilter,
   SandboxId,
   SandboxInfo,
@@ -55,6 +56,8 @@ export interface FakeOptions {
   updateResources?: boolean;
   /** `updateResources` fails with this message (e.g. memory below what the sandbox uses). */
   failUpdateResources?: string;
+  /** Provide `stats`: the sample for a running sandbox (default: a fixed one); a sandbox that is not running is `conflict`. */
+  stats?: boolean | ((id: SandboxId) => ResourceUsage);
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -74,6 +77,8 @@ export class FakeProvider implements SandboxProvider {
   readonly gcCalls: string[][] = [];
   /** Every `extendExpiry` call that was accepted. */
   readonly expiryUpdates: Array<{ id: SandboxId; expiresAt: number }> = [];
+  /** Every `stats` call. */
+  readonly statsCalls: SandboxId[] = [];
   /** Every `updateResources` call that was accepted. */
   readonly resourceUpdates: Array<{ id: SandboxId; cpus?: number; memoryBytes?: number }> = [];
   /** Foreign objects that are still there / the refs `removeForeign` deleted. */
@@ -95,6 +100,7 @@ export class FakeProvider implements SandboxProvider {
   updateNetwork?: SandboxProvider['updateNetwork'];
   extendExpiry?: SandboxProvider['extendExpiry'];
   updateResources?: SandboxProvider['updateResources'];
+  stats?: SandboxProvider['stats'];
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
   networkEvents?: SandboxProvider['networkEvents'];
@@ -156,6 +162,25 @@ export class FakeProvider implements SandboxProvider {
         sb.spec = { ...sb.spec, resources: { ...sb.spec.resources, ...limits } };
         this.resourceUpdates.push({ id, ...limits });
         return Promise.resolve();
+      };
+    }
+    if (opts.stats) {
+      this.caps.stats = true;
+      const sample = typeof opts.stats === 'function' ? opts.stats : undefined;
+      this.stats = (id) => {
+        const sb = this.get(id);
+        this.statsCalls.push(id);
+        if (sb.state !== 'running')
+          return Promise.reject(new AboxError('conflict', `sandbox ${id} is not running`));
+        return Promise.resolve(
+          sample?.(id) ?? {
+            ts: Date.now(),
+            cpuPercent: 12.5,
+            memoryBytes: 64 * 1024 * 1024,
+            memoryLimitBytes: 256 * 1024 * 1024,
+            pids: 3,
+          },
+        );
       };
     }
     if (opts.updateNetwork) {

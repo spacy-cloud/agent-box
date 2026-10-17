@@ -230,6 +230,33 @@ export class TemplateCatalog {
     }
   }
 
+  /**
+   * Lower-precedence templates of the same name that the winner for `name` hides (a project
+   * template that shadows a user or builtin one), highest precedence first. The first one that
+   * resolves is returned together with its source; empty `hidden` when nothing is shadowed.
+   */
+  async getShadowed(name: string): Promise<{
+    hidden: Array<{ kind: TemplateSourceKind; path: string }>;
+    template?: ResolvedTemplate;
+    source?: { kind: TemplateSourceKind; path: string };
+  }> {
+    const { byName } = await this.load();
+    const rest = (byName.get(name) ?? []).slice(1);
+    const hidden = rest.map((e) => ({ kind: e.kind, path: e.path }));
+    for (const e of rest) {
+      try {
+        return {
+          hidden,
+          template: await this.resolveEntry(e),
+          source: { kind: e.kind, path: e.path },
+        };
+      } catch (err) {
+        if (!isAboxError(err)) throw err;
+      }
+    }
+    return { hidden };
+  }
+
   private async resolveEntry(entry: Entry): Promise<ResolvedTemplate> {
     const lookup: TemplateLookup = async (name, from): Promise<ParentTemplate | undefined> => {
       const found = await this.findParent(from, name);

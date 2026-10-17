@@ -8,6 +8,7 @@ import { AboxError, collectBuildContext, parseSandboxId } from '@abox/core';
 import type {
   BackendKind,
   BackendStatus,
+  CopyOutOptions,
   DirEntry,
   ExecEvent,
   ExecRequest,
@@ -21,6 +22,7 @@ import type {
   PrepareOptions,
   ProviderCapabilities,
   ResolvedTemplate,
+  ResourceUsage,
   SandboxFilter,
   SandboxId,
   SandboxInfo,
@@ -36,7 +38,13 @@ import { effectiveFromInspect, infoFromLabels } from './info.js';
 import { isAbortError, mapEngineError, statusOf } from './errors.js';
 import { Demux, openTty, runExec, simpleExec, streamExec } from './exec.js';
 import {
+  FILE_EXIT,
+  READ_FILE_SCRIPT,
+  UNPACK_SCRIPT,
+  WRITE_FILE_SCRIPT,
+  assertStoppedWriteAllowed,
   assertWritablePath,
+  fileScriptError,
   getFile,
   mkdirP,
   putArchiveStream,
@@ -78,6 +86,8 @@ import {
   proxyConfigJson,
   type ProxyAssets,
 } from './proxy.js';
+import { usageFromEngineStats } from './stats.js';
+import type { EngineStats } from './stats.js';
 import { extractArchiveSafe, packHostPath, tarFromEntries, tarEntries } from './tar.js';
 
 const MiB = 1024 * 1024;
@@ -154,6 +164,16 @@ function userIds(c: Docker.ContainerInspectInfo): { uid: number; gid: number } {
   return { uid, gid: Number.isInteger(gid) ? gid : uid };
 }
 
+/** `uid:gid` to run the read-only file scripts as, the container's own default when it has none. */
+function execUser(c: Docker.ContainerInspectInfo): string | undefined {
+  try {
+    const { uid, gid } = userIds(c);
+    return `${uid}:${gid}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Mount points of the sandbox's tmpfs mounts (always `/tmp`). The archive API cannot see them: it
  * reads and writes the image directory hidden below the mount.
@@ -171,8 +191,6 @@ function tmpfsRootOf(c: Docker.ContainerInspectInfo, p: string): string | undefi
   return tmpfsRoots(c).find((r) => p === r || p.startsWith(`${r}/`));
 }
 
-/** `sh -c` script: args are <dir>; creates it and unpacks a tar stream from stdin as the sandbox user. */
-const TMPFS_UNPACK_SCRIPT = 'mkdir -p -- "$1" && exec tar -xpof - -C "$1"';
 /** `sh -c` script: args are <path>; packs it as `./<basename>` (exit 3 when it does not exist). */
 const TMPFS_PACK_SCRIPT =
   '[ -e "$1" ] || [ -L "$1" ] || exit 3; d=${1%/*}; [ -n "$d" ] || d=/; exec tar -cf - -C "$d" -- "./${1##*/}"';
@@ -327,6 +345,7 @@ export class DockerProvider implements SandboxProvider {
       tty: true,
       extendExpiry: true,
       updateResources: true,
+      stats: true,
       limits: { cpus: true, memory: true, pids: true, disk: this.facts?.diskQuota ?? false },
       nonRootUser: true,
       secretInjection: ['proxy', 'env', 'file'],
@@ -1964,11 +1983,15 @@ export class DockerProvider implements SandboxProvider {
       const { uid, gid } = userIds(c);
       const dir = path.posix.dirname(dest);
       const tmpfs = tmpfsRootOf(c, dest);
-      if (tmpfs !== undefined) {
-        await this.copyInTmpfs(c, tmpfs, hostPath, dest, { uid, gid });
+      // A running sandbox unpacks as its own user: the kernel decides what may be replaced, so root-owned
+      // files (the proxy CA, the deadline) and symlinks planted by the sandbox are safe. The archive API
+      // would write as root.
+      if (c.State.Running || tmpfs !== undefined) {
+        await this.copyInExec(c, tmpfs, hostPath, dest, { uid, gid });
         return;
       }
       const ct = this.docker.getContainer(c.Id);
+      await assertStoppedWriteAllowed(ct, dest, uid);
       await mkdirP(ct, dir, uid, gid);
       await putArchiveStream(
         ct,
@@ -1978,20 +2001,25 @@ export class DockerProvider implements SandboxProvider {
     });
   }
 
-  async copyOut(id: SandboxId, sandboxSrc: string, hostPath: string): Promise<void> {
+  async copyOut(
+    id: SandboxId,
+    sandboxSrc: string,
+    hostPath: string,
+    opts?: CopyOutOptions,
+  ): Promise<void> {
     return this.guard(async () => {
       const c = await this.load(id);
       const src = sandboxPath(sandboxSrc, 'source');
       if (src === '/') throw new AboxError('invalid_input', 'Cannot copy out /');
       const tmpfs = tmpfsRootOf(c, src);
       if (tmpfs !== undefined) {
-        await this.copyOutTmpfs(c, tmpfs, src, hostPath);
+        await this.copyOutTmpfs(c, tmpfs, src, hostPath, opts);
         return;
       }
       const stream = (await this.docker
         .getContainer(c.Id)
         .getArchive({ path: src })) as unknown as Readable;
-      await extractArchiveSafe(stream, hostPath);
+      await extractArchiveSafe(stream, hostPath, { symlinks: opts?.symlinks ?? 'refuse' });
     });
   }
 
@@ -2017,18 +2045,21 @@ export class DockerProvider implements SandboxProvider {
     });
   }
 
-  private async copyInTmpfs(
+  /** Copies into a running sandbox as its user (`root`: the tmpfs mount point `dest` is below, if any). */
+  private async copyInExec(
     c: Docker.ContainerInspectInfo,
-    root: string,
+    root: string | undefined,
     hostPath: string,
     dest: string,
     ids: { uid: number; gid: number },
   ): Promise<void> {
-    this.requireRunningForTmpfs(c, root, dest);
-    if (dest === root)
-      throw new AboxError('invalid_input', `Cannot copy onto the tmpfs mount point ${root}`, {
-        hint: `Copy to a path below it, e.g. ${root}/${path.basename(hostPath) || 'name'}.`,
-      });
+    if (root !== undefined) {
+      this.requireRunningForTmpfs(c, root, dest);
+      if (dest === root)
+        throw new AboxError('invalid_input', `Cannot copy onto the tmpfs mount point ${root}`, {
+          hint: `Copy to a path below it, e.g. ${root}/${path.basename(hostPath) || 'name'}.`,
+        });
+    }
     const source = path.resolve(hostPath);
     await fs.lstat(source); // a missing source is not_found, before anything runs in the sandbox
     // Archived exactly like for the archive API: host symlinks stay symlinks and are never
@@ -2047,8 +2078,8 @@ export class DockerProvider implements SandboxProvider {
       const ex = await streamExec(
         this.docker,
         c.Id,
-        ['/bin/sh', '-c', TMPFS_UNPACK_SCRIPT, 'abox-copy-in', path.posix.dirname(dest)],
-        { stdin: archive },
+        ['/bin/sh', '-c', UNPACK_SCRIPT, 'abox-copy-in', path.posix.dirname(dest)],
+        { stdin: archive, user: `${ids.uid}:${ids.gid}` },
       );
       ex.stdout.resume();
       r = await ex.result;
@@ -2056,7 +2087,7 @@ export class DockerProvider implements SandboxProvider {
       archive.destroy();
     }
     if (sourceError) throw sourceError; // the host side failed (e.g. a symlink as source): the real reason
-    if (r.exitCode !== 0) throw this.tmpfsExecError(`Copying into ${dest}`, r);
+    if (r.exitCode !== 0) throw fileScriptError('Copying into', dest, r);
   }
 
   private async copyOutTmpfs(
@@ -2064,6 +2095,7 @@ export class DockerProvider implements SandboxProvider {
     root: string,
     src: string,
     hostPath: string,
+    opts?: CopyOutOptions,
   ): Promise<void> {
     this.requireRunningForTmpfs(c, root, src);
     const ex = await streamExec(this.docker, c.Id, [
@@ -2075,7 +2107,7 @@ export class DockerProvider implements SandboxProvider {
     ]);
     try {
       // Same host-side rules as for the archive API: nothing is written or linked outside the destination.
-      await extractArchiveSafe(ex.stdout, hostPath);
+      await extractArchiveSafe(ex.stdout, hostPath, { symlinks: opts?.symlinks ?? 'refuse' });
     } catch (e) {
       ex.stdout.destroy();
       const r = await ex.result.catch(() => undefined);
@@ -2095,8 +2127,9 @@ export class DockerProvider implements SandboxProvider {
     return this.guard(async () => {
       const c = await this.load(id);
       const p = sandboxPath(sandboxFile, 'file');
-      // /tmp is a tmpfs: the archive API only sees the (hidden) image directory behind it.
-      if (c.State.Running && tmpfsRootOf(c, p)) return this.readTmpFile(c.Id, p, maxBytes);
+      // A running sandbox reads as its own user (it also sees the /tmp tmpfs, which the archive API
+      // does not): root-only files stay unreadable and special files get an accurate error.
+      if (c.State.Running) return this.readFileAsUser(c, p, maxBytes);
       const { data, truncated, size } = await getFile(this.docker.getContainer(c.Id), p, maxBytes);
       return { data, truncated, size };
     });
@@ -2109,62 +2142,60 @@ export class DockerProvider implements SandboxProvider {
       if (p === '/') throw new AboxError('invalid_input', 'Invalid file path');
       // Abox-internal files (the deadline, the CA) are root's: never through this API, whatever the mode.
       assertWritablePath(p, 'File');
-      if (c.State.Running && tmpfsRootOf(c, p)) {
-        await this.writeTmpFile(c.Id, p, data, mode & 0o777);
+      const { uid, gid } = userIds(c);
+      // A running sandbox is written as its own user (see copyIn). The engine's archive API, used for a
+      // stopped one, writes as root, so the path is checked first (no symlinks, a directory the user owns).
+      if (c.State.Running) {
+        await this.writeFileAsUser(c, p, data, mode & 0o777, { uid, gid });
         return;
       }
-      const { uid, gid } = userIds(c);
-      await putFile(this.docker.getContainer(c.Id), p, data, { mode: mode & 0o777, uid, gid });
+      const ct = this.docker.getContainer(c.Id);
+      await assertStoppedWriteAllowed(ct, p, uid);
+      await putFile(ct, p, data, { mode: mode & 0o777, uid, gid });
     });
   }
 
-  /** Read a file of the /tmp tmpfs of a running sandbox through the container (as its user). */
-  private async readTmpFile(
-    containerId: string,
+  /** Read a regular file of a running sandbox through the container, as its user. */
+  private async readFileAsUser(
+    c: Docker.ContainerInspectInfo,
     file: string,
     maxBytes: number,
   ): Promise<{ data: Buffer; truncated: boolean; size: number }> {
-    const script =
-      '[ -e "$1" ] || exit 3; [ -f "$1" ] || exit 4; stat -c %s -- "$1" || exit 5; head -c "$2" -- "$1"';
-    const r = await simpleExec(this.docker, containerId, [
-      '/bin/sh',
-      '-c',
-      script,
-      'abox-read',
-      file,
-      String(Math.max(0, Math.floor(maxBytes))),
-    ]);
-    if (r.exitCode === 3) throw new AboxError('not_found', `No such file: ${file}`);
-    if (r.exitCode === 4) throw new AboxError('invalid_input', `Not a regular file: ${file}`);
-    if (r.exitCode !== 0)
-      throw new AboxError('backend_error', `Cannot read ${file}`, {
-        details: { stderr: r.stderr.toString('utf8').slice(0, 500) },
-      });
+    const r = await simpleExec(
+      this.docker,
+      c.Id,
+      [
+        '/bin/sh',
+        '-c',
+        READ_FILE_SCRIPT,
+        'abox-read',
+        file,
+        String(Math.max(0, Math.floor(maxBytes))),
+      ],
+      { user: execUser(c) },
+    );
+    if (r.exitCode !== 0) throw fileScriptError('Reading', file, r);
     const nl = r.stdout.indexOf(0x0a);
     const size = Number(r.stdout.subarray(0, nl).toString('utf8'));
     const data = r.stdout.subarray(nl + 1);
     return { data: Buffer.from(data), truncated: size > data.length, size };
   }
 
-  /** Write a file into the /tmp tmpfs of a running sandbox (content on stdin, never in argv). */
-  private async writeTmpFile(
-    containerId: string,
+  /** Write a file into a running sandbox as its user (content on stdin, never in argv). */
+  private async writeFileAsUser(
+    c: Docker.ContainerInspectInfo,
     file: string,
     data: Buffer,
     mode: number,
+    ids: { uid: number; gid: number },
   ): Promise<void> {
-    const script =
-      'umask 077; mkdir -p -- "$(dirname -- "$1")" && cat > "$1.abox-tmp" && chmod "$2" "$1.abox-tmp" && mv -f -- "$1.abox-tmp" "$1"';
     const r = await simpleExec(
       this.docker,
-      containerId,
-      ['/bin/sh', '-c', script, 'abox-write', file, mode.toString(8)],
-      { stdin: data },
+      c.Id,
+      ['/bin/sh', '-c', WRITE_FILE_SCRIPT, 'abox-write', file, mode.toString(8)],
+      { stdin: data, user: `${ids.uid}:${ids.gid}` },
     );
-    if (r.exitCode !== 0)
-      throw new AboxError('backend_error', `Cannot write ${file}`, {
-        details: { stderr: r.stderr.toString('utf8').slice(0, 500) },
-      });
+    if (r.exitCode !== 0) throw fileScriptError('Writing', file, r);
   }
 
   async listDir(id: SandboxId, dir: string): Promise<DirEntry[]> {
@@ -2172,14 +2203,19 @@ export class DockerProvider implements SandboxProvider {
       const c = await this.load(id);
       const p = sandboxPath(dir, 'directory');
       if (!c.State.Running) return this.listDirArchive(c.Id, p);
-      const script =
-        'cd -- "$1" || exit 3; find . -mindepth 1 -maxdepth 1 -exec stat -c "%Y %a %s %F %n" {} +';
-      const r = await simpleExec(this.docker, c.Id, ['/bin/sh', '-c', script, 'abox-ls', p]);
+      const script = `[ -e "$1" ] || exit ${FILE_EXIT.missing}; [ -d "$1" ] || exit ${FILE_EXIT.notDir}; cd -- "$1" || exit ${FILE_EXIT.resolve}; find . -mindepth 1 -maxdepth 1 -exec stat -c "%Y %a %s %F %n" {} +`;
+      const r = await simpleExec(this.docker, c.Id, ['/bin/sh', '-c', script, 'abox-ls', p], {
+        user: execUser(c),
+      });
+      if (r.exitCode === FILE_EXIT.missing)
+        throw new AboxError('not_found', `No such directory: ${p}`);
+      if (r.exitCode === FILE_EXIT.notDir)
+        throw new AboxError('invalid_input', `Not a directory: ${p}`);
       if (r.exitCode !== 0) {
         const msg = r.stderr.toString('utf8').trim() || `cannot list ${p}`;
         throw new AboxError(
-          /no such|not a dir|can't cd|cannot cd/i.test(msg) || r.exitCode === 3
-            ? 'not_found'
+          /permission denied/i.test(msg) || r.exitCode === FILE_EXIT.resolve
+            ? 'policy_denied'
             : 'backend_error',
           msg,
         );
@@ -2343,6 +2379,20 @@ export class DockerProvider implements SandboxProvider {
       }
       await old.remove({ force: true, v: true });
       if (wasRunning) await this.start(id);
+    });
+  }
+
+  /**
+   * One live reading of cpu, memory and pids of the sandbox container (not the egress proxy sidecar).
+   * The engine takes two readings about a second apart for the cpu rate, so a call lasts ~1 s.
+   */
+  async stats(id: SandboxId): Promise<ResourceUsage> {
+    return this.guard(async () => {
+      const c = await this.running(id);
+      const raw = (await this.docker
+        .getContainer(c.Id)
+        .stats({ stream: false })) as unknown as EngineStats;
+      return usageFromEngineStats(raw, Date.now());
     });
   }
 

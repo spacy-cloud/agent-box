@@ -7,7 +7,8 @@ import type { Abox } from '@abox/core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { startTtlWatch, type McpLimits } from './runtime.js';
+import { BIG_FILE_HINT, MAX_MESSAGE_BYTES } from './limits.js';
+import { startTtlWatch, warnOnPolicyProblems, type McpLimits } from './runtime.js';
 import { createMcpServer } from './server.js';
 
 export interface ServeHttpOptions {
@@ -30,7 +31,7 @@ export interface ServeHttpOptions {
   maxSessionsPerToken?: number;
   /** Sessions idle for this long are closed (default 30 min). */
   sessionIdleMs?: number;
-  /** Max request body in bytes (default 32 MiB: write_file allows 16 MiB, base64 inflates). */
+  /** Max request body in bytes (default `MAX_MESSAGE_BYTES`, 32 MiB: write_file allows 8 MiB, base64 and JSON escaping inflate). */
   maxBodyBytes?: number;
 }
 
@@ -124,7 +125,7 @@ export async function serveHttp(opts: ServeHttpOptions): Promise<HttpServerHandl
   const maxSessions = opts.maxSessions ?? 64;
   const maxPerToken = opts.maxSessionsPerToken ?? 16;
   const idleMs = opts.sessionIdleMs ?? 30 * 60_000;
-  const maxBody = opts.maxBodyBytes ?? 32 * 1024 * 1024;
+  const maxBody = opts.maxBodyBytes ?? MAX_MESSAGE_BYTES;
   const sessions = new Map<string, Session>();
   let boundPort = 0;
 
@@ -196,7 +197,9 @@ export async function serveHttp(opts: ServeHttpOptions): Promise<HttpServerHandl
       req.on('data', (c: Buffer) => {
         size += c.length;
         if (size > maxBody) {
-          reject(new HttpError(413, 'request body too large'));
+          reject(
+            new HttpError(413, `request body too large (limit ${maxBody} bytes). ${BIG_FILE_HINT}`),
+          );
           req.destroy();
           return;
         }
@@ -370,6 +373,7 @@ export async function serveHttp(opts: ServeHttpOptions): Promise<HttpServerHandl
   );
   sweep.unref();
   const stopTtlWatch = startTtlWatch(opts.abox, opts.ttlWatchMs);
+  const stopPolicyWarn = warnOnPolicyProblems(opts.abox);
 
   opts.onListening?.(address);
 
@@ -380,6 +384,7 @@ export async function serveHttp(opts: ServeHttpOptions): Promise<HttpServerHandl
       closing ??= (async () => {
         clearInterval(sweep);
         stopTtlWatch();
+        stopPolicyWarn();
         const all = [...sessions.values()];
         sessions.clear();
         await Promise.allSettled(all.map((s) => s.server.close()));

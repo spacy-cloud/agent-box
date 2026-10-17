@@ -13,6 +13,7 @@ import type {
   PreparedImage,
   ProviderCapabilities,
   ResolvedTemplate,
+  ResourceUsage,
   SandboxId,
   SandboxState,
   TemplateSourceKind,
@@ -59,7 +60,8 @@ export type AboxEventType =
   | 'approval.created'
   | 'approval.decided'
   | 'approval.expired'
-  | 'policy.changed';
+  | 'policy.changed'
+  | 'policy.reload_failed';
 
 /** In-process notification. GUIs may also poll `queryAudit({afterSeq})`. */
 export interface AboxEvent {
@@ -83,6 +85,12 @@ export interface TemplateListEntry {
   isolation: IsolationLevel;
   networkMode: NetworkMode;
   source: { kind: TemplateSourceKind; path: string };
+  /**
+   * Set when this template hides lower-precedence ones of the same name: a project template
+   * that shadows a user or builtin template (`shadows: [{kind: 'builtin', ...}]`). Creating from
+   * this name then uses the project version, not the one the name normally stands for.
+   */
+  shadows?: Array<{ kind: TemplateSourceKind; path: string }>;
   /** Project templates: true only when this exact content hash was approved. Others: always true. */
   trusted: boolean;
   /** The caller's profile allows creating sandboxes from this template. */
@@ -126,6 +134,8 @@ export interface EffectiveLimits {
 
 export interface TemplateDetails {
   template: ResolvedTemplate;
+  /** Lower-precedence templates of the same name that this one hides (see `TemplateListEntry`). */
+  shadows?: Array<{ kind: TemplateSourceKind; path: string }>;
   trusted: boolean;
   allowed: boolean;
   backendAvailable: boolean;
@@ -136,7 +146,7 @@ export interface TemplateDetails {
 
 /**
  * What an approver should see before a project template is trusted: the resolved template as a
- * unified diff against the template it extends (or its previously trusted version, or nothing),
+ * unified diff against its previously trusted version, the template it extends or shadows, or nothing,
  * plus the risky points in plain words.
  */
 export interface TemplateReview {
@@ -145,8 +155,14 @@ export interface TemplateReview {
   contentHash: string;
   /** Whether this exact content is trusted already. */
   trusted: boolean;
-  /** What the diff compares against: the last trusted version, the template it extends, or nothing (full content). */
-  against: { kind: 'previous' | 'extends' | 'none'; label: string; template?: string };
+  /**
+   * What the diff compares against, in this order: the last trusted version of the same template,
+   * the template it extends, the user or builtin template of the same name that it shadows, or
+   * nothing (the full content).
+   */
+  against: { kind: 'previous' | 'extends' | 'shadows' | 'none'; label: string; template?: string };
+  /** Lower-precedence templates of the same name that this one hides (a project template shadowing a builtin). */
+  shadows?: Array<{ kind: TemplateSourceKind; path: string }>;
   /** Unified diff of the resolved template (`+` lines are the new content); empty when nothing differs. */
   diff: string;
   /** The risky points of the template as sentences. */
@@ -317,6 +333,26 @@ export interface SandboxView {
   /** Effective options as applied: `policy` (what the policy engine granted) and `provider` (what the backend reports). */
   effective: Record<string, unknown> | null;
   requestId: string | null;
+  /**
+   * Present while a human holds an interactive terminal in this sandbox (GUI / `abox shell`) that an
+   * agent owns: the agent's exec, process and file-write tools answer `conflict` ("paused") until it ends.
+   */
+  humanAttached?: HumanAttachedView;
+}
+
+/** A human terminal in an agent's sandbox (see `SandboxView.humanAttached`). */
+export interface HumanAttachedView {
+  /** Open human terminals in the sandbox (at least 1). */
+  sessions: number;
+  /** When the oldest of them was opened (epoch ms). */
+  since: number;
+  /** Who: the context of the human (`human`). */
+  actor: string;
+}
+
+/** Live resource usage per sandbox id; sandboxes without data (not running, no backend support) are absent. */
+export interface SandboxStatsResult {
+  usage: Record<SandboxId, ResourceUsage>;
 }
 
 export interface CreatedResult {
@@ -580,6 +616,11 @@ export interface PolicyView {
     revision: number | null;
     source: 'default' | 'file';
     path?: string;
+    /**
+     * Humans only: policy.yaml on disk is invalid, so this (older) policy stays in force until the
+     * file is valid again. Absent while the file is fine.
+     */
+    reloadError?: { message: string; detectedAt: number };
   };
   /** Humans only: every profile and context of the policy. */
   profiles?: Record<string, ResolvedProfile>;

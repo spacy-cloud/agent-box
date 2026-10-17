@@ -106,7 +106,7 @@ describe('defaultPolicy', () => {
   });
   it('human profile is broad but open-mode', () => {
     const h = p.profiles.human!;
-    expect(h.workspace.roots).toEqual(['~']);
+    expect(h.workspace.roots).toEqual(['*']);
     expect(h.images.registries).toEqual(['*']);
     expect(h.approval).toBe('open');
     expect(h.templates).toEqual(['*']);

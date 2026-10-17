@@ -208,6 +208,8 @@ export const IPC = {
     .strict()
     .optional(),
   'sandboxes:inspect': z.object({ id }).strict(),
+  /** Live cpu / memory of the given (running, visible) sandboxes; the view polls it, see `useSandboxUsage`. */
+  'sandboxes:stats': z.object({ ids: z.array(id).max(200) }).strict(),
   'sandboxes:start': z.object({ id }).strict(),
   'sandboxes:stop': z.object({ id }).strict(),
   'sandboxes:remove': z.object({ id }).strict(),

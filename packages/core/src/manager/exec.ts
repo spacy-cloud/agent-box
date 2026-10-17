@@ -16,6 +16,7 @@ import { confirmationRequired, consumeApproval, gate } from './approvals.js';
 import { NET_POLL_THROTTLE_MS, collectNetworkEvents } from './network-audit.js';
 import type { Internals } from './internals.js';
 import { SNAPSHOT_NAME_RE, execSchema, exportSchema, processStartSchema } from './schemas.js';
+import { requireNotTakenOver } from './takeover.js';
 import type {
   Caller,
   ConfirmationRequired,
@@ -165,6 +166,7 @@ export async function execCommand(
   const params = parseInput(execSchema, rawParams, 'exec request');
   const rec = I.lookup(ctx, id);
   requireRunning(I, rec);
+  requireNotTakenOver(I, ctx, rec, 'sandbox.exec');
 
   const known = await I.secretValuesOf(rec);
   const masker = createSecretMasker(known);
@@ -188,6 +190,8 @@ export async function execCommand(
     'sandbox.exec',
   );
   if (!auth.ok) return auth.result;
+  // a human may have taken the terminal while the approval was pending
+  requireNotTakenOver(I, ctx, rec, 'sandbox.exec');
 
   const cfg = I.config.limits;
   const viewCap = Math.min(
@@ -395,6 +399,7 @@ export async function startProcess(
   const params = parseInput(processStartSchema, rawParams, 'process request');
   const rec = I.lookup(ctx, id);
   requireRunning(I, rec);
+  requireNotTakenOver(I, ctx, rec, 'sandbox.process_start');
   const known = await I.secretValuesOf(rec);
   const masker = createSecretMasker(known);
   const display = redactCommandText(masker(commandDisplay(params)), known);
@@ -416,6 +421,7 @@ export async function startProcess(
     'sandbox.process_start',
   );
   if (!auth.ok) return auth.result;
+  requireNotTakenOver(I, ctx, rec, 'sandbox.process_start');
   if (auth.approval) consumeApproval(I, auth.approval);
 
   const provider = await I.providerForRecord(rec);
@@ -603,6 +609,7 @@ export async function stopProcess(
 ): Promise<ProcessView> {
   const ctx = await I.context(caller);
   const { proc, rec } = loadProcess(I, ctx, processId);
+  requireNotTakenOver(I, ctx, rec, 'sandbox.process_stop');
   if (proc.status === 'running' && proc.pidInSandbox !== null && rec.state === 'running') {
     const provider = await I.providerForRecord(rec);
     await provider.exec(rec.id, {
@@ -693,6 +700,7 @@ export async function writeSandboxFile(
 ): Promise<{ path: string; size: number }> {
   const ctx = await I.context(caller);
   const rec = I.lookup(ctx, id);
+  requireNotTakenOver(I, ctx, rec, 'sandbox.write_file');
   const p = sandboxPath(rec, path);
   const data = typeof content === 'string' ? Buffer.from(content, o.encoding ?? 'utf8') : content;
   if (!Buffer.isBuffer(data))
@@ -783,6 +791,7 @@ export async function restoreSandbox(
 ): Promise<{ restored: string }> {
   const ctx = await I.context(caller);
   const rec = I.lookup(ctx, id);
+  requireNotTakenOver(I, ctx, rec, 'sandbox.restore');
   if (typeof snapshotId !== 'string' || snapshotId.length === 0 || snapshotId.length > 200) {
     throw new AboxError('invalid_input', 'a snapshot id is required');
   }

@@ -93,6 +93,10 @@ proxy sidecar has no deadline of its own, it is started and stopped with the san
   opened with `O_NOFOLLOW`, special files skipped, setuid bits dropped) and extracted as the sandbox
   user. Works on remote engines. Results come back with `copyOut`/export, extracted by a hardened
   extractor (no absolute names, `..`, links leaving the destination, symlink swaps).
+  Only the export asks for `copyOut(..., {symlinks: 'preserve'})` into
+  its private scratch directory, where the links the project already had (also absolute ones) are
+  recreated as links so they can be compared with the baseline; nothing is ever written through a
+  link.
 - `bind`: the host directory is bind-mounted (local engines only). `readonlySubpaths` (e.g. `.git`)
   are re-mounted read-only on top, extra `mounts` are read-only unless declared `rw`.
 

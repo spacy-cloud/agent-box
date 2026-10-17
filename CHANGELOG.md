@@ -10,6 +10,20 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Live CPU, memory and process counts for running Docker/Podman sandboxes in the GUI table and
+  detail view (polled every 5 s for visible running sandboxes only) and in `abox ls --stats`; new
+  provider capability `stats`.
+- Human takeover: while a human terminal (GUI or `abox shell`) is open in an agent-owned sandbox,
+  the agent's `sandbox_exec`, `sandbox_process_start`/`_stop`, `sandbox_write_file` and
+  `sandbox_restore` answer `conflict` ("paused: a human is working in sandbox ..."). The marker
+  lives in the shared state database (migration 6) with a heartbeat and a 20 s expiry; the GUI shows
+  a banner and badge, `human_attached` appears in `sandbox_inspect`/`sandbox_list`, and start and
+  end are audited.
+- Claude Code plugin: a SessionStart hook reports a missing `abox` (or a bad `ABOX_BIN`); the
+  `abox`-on-PATH requirement is documented prominently.
+- A running manager that finds an invalid `policy.yaml` keeps the last valid policy, writes
+  `policy.reload_failed` with the first issues, warns on the MCP server's stderr and in
+  `abox policy show`.
 - Expired sandboxes are stopped in the background by `abox mcp serve` (stdio and HTTP) and the GUI
   (every 15 s), and a stop that failed is retried, instead of only when some command runs.
 - `access_request` kind=resources changes the cpu and memory limit of a running or stopped sandbox
@@ -87,6 +101,10 @@ release. Nothing has been released yet.
 
 ### Changed
 
+- The review of a project template that shadows a built-in or user template of the same name
+  compares against that template; listings and MCP results mark it with `shadows`.
+- `sandbox_write_file` accepts up to 8 MiB per call (was documented as 16 MiB); an oversized call
+  answers `invalid_input`, and a message above 32 MiB no longer closes the stdio connection.
 - `abox approvals approve <id>` shows the request, why it needs approval, the risks and the template
   review first and asks for confirmation on a terminal; `--yes` is required without a terminal and
   with `--json`.
@@ -137,6 +155,11 @@ release. Nothing has been released yet.
 
 ### Security
 
+- The sandbox file APIs (`sandbox_write_file`, `sandbox_read_file`, `sandbox_list_dir`, copy in)
+  act as the sandbox user. They can no longer replace root-owned files such as the proxy CA,
+  `/etc/hosts` or the deadline file, even via `/proc/self/root/...` or planted symlinks. Writes into
+  `/proc`, `/sys`, `/dev` and `/usr/local/share/abox` are refused; stopped sandboxes are checked
+  statically.
 - Trust and approvals cover a template's Dockerfile: for `base.dockerfile` the content hash, the
   create request digest and the image cache key include the Dockerfile and every file in its
   directory (the build context). Rewriting the Dockerfile or a copied file after an approval makes
@@ -161,6 +184,19 @@ release. Nothing has been released yet.
 
 ### Fixed
 
+- Humans are no longer limited by workspace or mount roots, so a project reached through a symlink
+  that leaves `$HOME` works; explicit `human` roots in `policy.yaml` are honoured against the typed
+  and the resolved path. Agents are unchanged; the forbidden-path list applies to everyone.
+- `export` works for `copy`/`clone` workspaces whose project contains absolute symlinks: unchanged
+  links are no change, new or retargeted links appear as symlink entries and are flagged when they
+  point outside the workspace; the `files` format never writes a link.
+- `request_id` idempotency compares the effective request (e.g. `ttl` equal to the template default
+  and no `ttl` are the same request).
+- `abox policy validate` without a `policy.yaml` reports that the built-in policy applies and creates
+  no directories; `sandbox_read_file` on devices, pipes and directories answers `invalid_input`;
+  the policy hint is no longer attached to unrelated `template_invalid` errors.
+- Docker test runs remove all their containers, networks and volumes even after failures or
+  signals, and clean up runs that were killed.
 - A duration or size that overflows says "too large" instead of "must be greater than zero".
 - `abox mcp serve --help` no longer prints the default twice.
 - Docs: stdio MCP `--agent` identity documented as a known limitation, egress audit timing, remote

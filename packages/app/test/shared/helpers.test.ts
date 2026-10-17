@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { ResolvedTemplate, SandboxView } from '@abox/core';
 import { approvalRows, requestTemplateName, riskHints } from '../../src/shared/approval-diff';
-import { formatBytes, formatDuration, remainingMs, shortId } from '../../src/shared/format';
+import {
+  formatBytes,
+  formatCpuPercent,
+  formatDuration,
+  formatMemoryUsage,
+  remainingMs,
+  shortId,
+  usageFraction,
+} from '../../src/shared/format';
 import { diffLines, hasChanges } from '../../src/shared/line-diff';
 import { EMPTY_FILTERS, filterSandboxes } from '../../src/shared/sandbox-filter';
 import { overviewRows } from '../../src/shared/overview';
@@ -229,5 +237,32 @@ describe('mcp config', () => {
     );
     const json = JSON.parse(mcpJsonConfig('x')) as { mcpServers: { abox: { args: string[] } } };
     expect(json.mcpServers.abox.args).toEqual(['mcp', 'serve', '--agent', 'x']);
+  });
+});
+
+describe('live usage formatting', () => {
+  it('cpu: one decimal below 10 %, whole numbers above, 100 % is one core', () => {
+    expect(formatCpuPercent(0)).toBe('0.0 %');
+    expect(formatCpuPercent(3.456)).toBe('3.5 %');
+    expect(formatCpuPercent(12.4)).toBe('12 %');
+    expect(formatCpuPercent(250)).toBe('250 %');
+    expect(formatCpuPercent(Number.NaN)).toBe('-');
+    expect(formatCpuPercent(-1)).toBe('-');
+  });
+
+  it('memory: against the limit the backend enforces, else the configured one, else just the use', () => {
+    const MiB = 1024 * 1024;
+    expect(formatMemoryUsage(64 * MiB, 256 * MiB)).toBe('64 MiB / 256 MiB');
+    expect(formatMemoryUsage(64 * MiB, null, 512 * MiB)).toBe('64 MiB / 512 MiB');
+    expect(formatMemoryUsage(64 * MiB, null)).toBe('64 MiB');
+    expect(formatMemoryUsage(64 * MiB, 0, 0)).toBe('64 MiB');
+  });
+
+  it('bar fill is clamped to 0..1 and never NaN', () => {
+    expect(usageFraction(50, 200)).toBe(0.25);
+    expect(usageFraction(500, 200)).toBe(1);
+    expect(usageFraction(-5, 200)).toBe(0);
+    expect(usageFraction(5, 0)).toBe(0);
+    expect(usageFraction(Number.NaN, 10)).toBe(0);
   });
 });

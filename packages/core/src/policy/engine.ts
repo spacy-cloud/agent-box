@@ -58,10 +58,17 @@ export interface CreateRequest {
   host: HostInfo;
   /** Isolation the chosen provider actually delivers. */
   providerIsolation: IsolationLevel;
-  /** Absent or mode `empty` = no host path involved. `hostPath` must be canonical. */
-  workspace?: { mode: WorkspaceMode; hostPath?: string };
-  /** Additional mounts (template + overrides); `hostPath` canonical, `target` inside the sandbox. */
-  mounts: Array<{ hostPath: string; target: string; access: AccessMode }>;
+  /**
+   * Absent or mode `empty` = no host path involved. `hostPath` must be canonical. `lexicalPath`
+   * is the path as typed (not symlink-resolved, see `lexicalPath()`); only a human's explicit
+   * roots look at it, never an agent's.
+   */
+  workspace?: { mode: WorkspaceMode; hostPath?: string; lexicalPath?: string };
+  /**
+   * Additional mounts (template + overrides); `hostPath` canonical, `target` inside the sandbox,
+   * `lexicalPath` as for the workspace.
+   */
+  mounts: Array<{ hostPath: string; target: string; access: AccessMode; lexicalPath?: string }>;
   network: { mode: NetworkMode; allow: string[]; privateExceptions?: string[] };
   secrets: Array<{ ref: string; inject: SecretInjection }>;
   /** Final resources (template defaults + overrides). */
@@ -385,7 +392,7 @@ function humanOpenNetworkBelowMinimum(
 
 function checkMount(
   ctx: AgentContext,
-  m: { hostPath: string; target: string; access: AccessMode },
+  m: { hostPath: string; target: string; access: AccessMode; lexicalPath?: string },
   paths: CreateRequest['paths'],
   check: NonNullable<EngineDeps['checkHostPath']>,
   f: Findings,
@@ -397,6 +404,7 @@ function checkMount(
   const res = check(m.hostPath, {
     home: paths.home,
     roots: ctx.mountRoots,
+    ...(ctx.kind === 'human' && m.lexicalPath ? { lexicalPath: m.lexicalPath } : {}),
     kind: 'mount',
     extraForbidden: paths.extraForbidden ?? [],
     denyHiddenHomeDirs: ctx.kind === 'agent',
@@ -546,6 +554,7 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
         const res = check(ws.hostPath, {
           home: req.paths.home,
           roots: ctx.workspaceRoots,
+          ...(ctx.kind === 'human' && ws.lexicalPath ? { lexicalPath: ws.lexicalPath } : {}),
           kind: 'workspace',
           extraForbidden: req.paths.extraForbidden ?? [],
           scanSockets: ws.mode === 'mount',

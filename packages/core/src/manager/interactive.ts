@@ -9,6 +9,7 @@ import type { TtySession } from '../types.js';
 import { requireRunning, sandboxPath } from './exec.js';
 import type { Internals } from './internals.js';
 import { NET_POLL_THROTTLE_MS, collectNetworkEvents } from './network-audit.js';
+import { beginTakeover } from './takeover.js';
 import type {
   AttachOptions,
   Caller,
@@ -48,6 +49,9 @@ function intInRange(v: unknown, what: string, min: number, max: number): number 
  * Interactive terminal in a running sandbox. Human only: an agent has exec/process tools, and a live
  * terminal bypasses the per-command approval flow. The audit log records open (`sandbox.attach`) and
  * close (`sandbox.attach.end` with duration and exit code), never what was typed or printed.
+ * In a sandbox an agent owns, the terminal is also a takeover: the agent's exec, process and write
+ * tools answer `conflict` ("paused") until it ends (see takeover.ts; audited as `sandbox.takeover` /
+ * `sandbox.takeover.end`).
  */
 export async function attachSandbox(
   I: Internals,
@@ -104,10 +108,14 @@ export async function attachSandbox(
     details: { backend: rec.backend, cols, rows, ...(display ? { command: display } : {}) },
   });
 
+  // An agent's sandbox: mark it so the agent's exec / process / write tools pause while this terminal lives.
+  const takeover = beginTakeover(I, ctx, rec);
+
   let ended = false;
   const finish = (exitCode: number | null, error?: string): void => {
     if (ended) return;
     ended = true;
+    takeover?.end({ exitCode, ...(error ? { message: error } : {}) });
     if (!I.closed) {
       I.audit(ctx.owner, 'sandbox.attach.end', {
         sandboxId: id,

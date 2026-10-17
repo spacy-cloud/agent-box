@@ -391,8 +391,18 @@ async function lstatOrUndefined(p: string): Promise<Stats | undefined> {
  * never redirect a later write; files are created with O_EXCL after removing what was there;
  * symlinks must be relative and stay inside the destination; hardlinks are copied; special
  * files are skipped; setuid/setgid bits are dropped.
+ *
+ * `opts.symlinks: 'preserve'` is for a private scratch tree that abox only inspects (the export
+ * compares it with its baseline): symlinks are then recreated as they are, including absolute and
+ * escaping targets (the empty or NUL target still fails). That does not weaken the rules above:
+ * no entry is ever written through a link, and the links are never followed.
  */
-export async function extractArchiveSafe(source: Readable, hostPath: string): Promise<void> {
+export async function extractArchiveSafe(
+  source: Readable,
+  hostPath: string,
+  opts: { symlinks?: 'refuse' | 'preserve' } = {},
+): Promise<void> {
+  const preserveLinks = opts.symlinks === 'preserve';
   const dest = path.resolve(hostPath);
   let top: string | undefined;
   let rootKind: 'dir' | 'file' | undefined;
@@ -494,11 +504,17 @@ export async function extractArchiveSafe(source: Readable, hostPath: string): Pr
         case 'symlink': {
           await drain(entry);
           const linkname = h.linkname ?? '';
-          if (linkname === '' || linkname.startsWith('/') || linkname.includes('\0'))
+          if (
+            linkname === '' ||
+            linkname.includes('\0') ||
+            (!preserveLinks && linkname.startsWith('/'))
+          )
             throw escapes(`symlink "${h.name}" has an absolute or empty target "${linkname}"`);
-          const resolved = path.posix.normalize(path.posix.join(...rel.slice(0, -1), linkname));
-          if (resolved === '..' || resolved.startsWith('../'))
-            throw escapes(`symlink "${h.name}" -> "${linkname}" points outside the destination`);
+          if (!preserveLinks) {
+            const resolved = path.posix.normalize(path.posix.join(...rel.slice(0, -1), linkname));
+            if (resolved === '..' || resolved.startsWith('../'))
+              throw escapes(`symlink "${h.name}" -> "${linkname}" points outside the destination`);
+          }
           const st = await lstatOrUndefined(target);
           if (st) {
             if (st.isDirectory())

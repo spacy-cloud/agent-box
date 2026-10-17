@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { AuditEntry, DirEntry, ExportSandboxResult } from '@abox/core';
+import type { AuditEntry, DirEntry, ExportSandboxResult, ResourceUsage } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
-import { useNow, useQuery } from '../hooks';
+import { useNow, useQuery, useSandboxUsage } from '../hooks';
 import { TerminalPane } from '../components/Terminal';
+import { UsageLines } from '../components/usage';
 import { UnifiedDiff } from '../components/review';
 import {
   Badge,
@@ -42,6 +43,7 @@ export function DetailView(props: { id: string }) {
   const [busy, setBusy] = useState(false);
   const now = useNow(1000);
   const s = q.data;
+  const usage = useSandboxUsage(s && s.state === 'running' && !s.stale ? [s.id] : []);
 
   async function run(fn: () => Promise<unknown>, okKey: string) {
     setBusy(true);
@@ -111,6 +113,12 @@ export function DetailView(props: { id: string }) {
               </button>
             </div>
           </header>
+          {s.humanAttached ? (
+            <Banner tone="warn">
+              <strong>{t('detail.humanAttached.title')}</strong>{' '}
+              {t('detail.humanAttached.text', { owner: s.owner })}
+            </Banner>
+          ) : null}
           {s.pendingApprovals > 0 ? (
             <Banner tone="warn">
               {t('detail.pendingApprovals', { count: s.pendingApprovals })}{' '}
@@ -131,9 +139,17 @@ export function DetailView(props: { id: string }) {
             tabs={TABS.map((id) => ({ id, label: t(`detail.tab.${id}`) }))}
           >
             {tab === 'overview' ? (
-              <OverviewTab id={s.id} template={s.template} sandbox={s} now={now} />
+              <OverviewTab
+                id={s.id}
+                template={s.template}
+                sandbox={s}
+                now={now}
+                usage={usage[s.id]}
+              />
             ) : null}
-            {tab === 'terminal' ? <TerminalTab id={s.id} name={s.name} state={s.state} /> : null}
+            {tab === 'terminal' ? (
+              <TerminalTab id={s.id} name={s.name} state={s.state} owner={s.owner} />
+            ) : null}
             {tab === 'activity' ? <ActivityTab id={s.id} /> : null}
             {tab === 'files' ? <FilesTab id={s.id} /> : null}
             {tab === 'logs' ? <LogsTab id={s.id} /> : null}
@@ -188,6 +204,7 @@ function OverviewTab(props: {
   template: string;
   sandbox: NonNullable<ReturnType<typeof useQuery<'sandboxes:inspect'>>['data']>;
   now: number;
+  usage?: ResourceUsage | undefined;
 }) {
   const { t } = useApp();
   const tpl = useQuery('templates:show', { name: props.template }, { live: false });
@@ -223,6 +240,18 @@ function OverviewTab(props: {
               </td>
             </tr>
           ))}
+          {props.usage ? (
+            <tr>
+              <th scope="row">{t('detail.opt.usage')}</th>
+              <td>
+                <UsageLines
+                  usage={props.usage}
+                  cpus={s.resources.cpus}
+                  memoryBytes={s.resources.memoryBytes}
+                />
+              </td>
+            </tr>
+          ) : null}
           <tr>
             <th scope="row">{t('detail.opt.remaining')}</th>
             <td className="mono">
@@ -251,7 +280,7 @@ function OverviewTab(props: {
   );
 }
 
-function TerminalTab(props: { id: string; name: string; state: string }) {
+function TerminalTab(props: { id: string; name: string; state: string; owner: string }) {
   const { t } = useApp();
   if (props.state !== 'running') {
     return (
@@ -264,6 +293,9 @@ function TerminalTab(props: { id: string; name: string; state: string }) {
   return (
     <>
       <p className="muted">{t('detail.terminal.intro')}</p>
+      {props.owner.startsWith('agent:') ? (
+        <Banner tone="info">{t('detail.terminal.takeover', { owner: props.owner })}</Banner>
+      ) : null}
       <TerminalPane
         target={{ kind: 'sandbox', id: props.id }}
         kindLabel={t('terminal.kind.sandbox')}

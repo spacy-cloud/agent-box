@@ -56,10 +56,16 @@ or `/plugin marketplace add ./path/to/agent-box` followed by `/plugin install ab
 After loading, `/mcp` shows the server as `plugin:abox:abox` and its tools are named
 `mcp__plugin_abox_abox__<tool>` (relevant for permission rules).
 
-Requirements: `abox` on the `PATH` of the environment Claude Code starts in (set `ABOX_BIN=/path/to/abox`
-to use another binary; `.mcp.json` of the plugin uses `${ABOX_BIN:-abox}`), a working backend
-(`abox doctor`), and a Claude Code version with plugin support (checked with 2.1.x).
-`claude plugin validate packages/agent-kit` and `claude plugin validate .` (marketplace) pass.
+> **`abox` must be installed separately and found on the `PATH`.** The plugin does not contain the
+> program: its MCP server is `abox mcp serve --agent claude-code`. If `abox` is not on the `PATH`
+> of the environment Claude Code starts in (a desktop launcher or an IDE often has a shorter one
+> than your shell), set `ABOX_BIN=/full/path/to/abox` there; `.mcp.json` of the plugin uses
+> `${ABOX_BIN:-abox}`. Without it `/mcp` shows `plugin:abox:abox` as failed. The `check-abox`
+> SessionStart hook of the plugin then tells you why (see below).
+
+Other requirements: a working backend (`abox doctor`) and a Claude Code version with plugin support
+(checked with 2.1.x). `claude plugin validate packages/agent-kit` and `claude plugin validate .`
+(marketplace) pass.
 
 ### What the plugin contains
 
@@ -73,6 +79,7 @@ to use another binary; `.mcp.json` of the plugin uses `${ABOX_BIN:-abox}`), a wo
 | `/abox:destroy <id>`          | slash command  | shows what would be lost and asks before deleting                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Subagent `sandbox-runner`     | on request     | runs one bounded task entirely inside a sandbox; it may only use the abox tools and `Read`, and returns a summary plus the diff                                                                                                                                                                                                                                                                                                                                                                               |
 | Hook `warn-host-install`      | opt-in         | see below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Hook `check-abox`             | automatic      | at session start: silent when `abox` is found, otherwise says that the sandbox tools are unavailable and how to fix it                                                                                                                                                                                                                                                                                                                                                                                        |
 
 Only `use-sandbox` is model-invoked; the slash commands are user-only, which keeps the per-session
 context cost small.
@@ -92,6 +99,25 @@ shows a one-line notice and adds a hint for Claude. It never blocks and never ma
 decision. **It is a convenience, not a security boundary**: it matches text and is trivially
 bypassed. The hook process is started for every Bash call even when disabled (it exits at once);
 disable the hook in `/plugin` if that matters to you.
+
+### When `abox` is not found (`check-abox`)
+
+`hooks/check-abox.sh` is a `SessionStart` hook. It looks up `${ABOX_BIN:-abox}` (a command on the
+`PATH`, or a path to an executable file) and stays silent if it exists. Otherwise it shows a
+one-line notice ("the 'abox' command was not found on the PATH of the environment Claude Code
+started in ...", or, when `ABOX_BIN` is set to something that is not an executable file, which
+value is wrong) and tells Claude that the sandbox tools are not available in this session, so it
+neither pretends to use them nor quietly runs untrusted code on the host. It never blocks and
+always exits 0. Fix: install abox or set `ABOX_BIN`, then restart Claude Code.
+
+### While a human works in a sandbox
+
+When you open a terminal in a sandbox that Claude owns (GUI terminal tab or `abox shell`), abox
+**pauses Claude's input** there, as the GUI concept asks: `sandbox_exec`, `sandbox_process_start`,
+`sandbox_process_stop`, `sandbox_write_file` and `sandbox_restore` answer `conflict` with "paused: a
+human is working in sandbox ...", and `sandbox_inspect` / `sandbox_list` carry `human_attached`.
+Reading (files, listing, logs, inspect) keeps working. See [GUI: taking over a
+sandbox](gui.md#taking-over-an-agents-sandbox).
 
 ### Security of the plugin itself
 

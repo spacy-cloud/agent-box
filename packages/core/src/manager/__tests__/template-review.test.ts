@@ -108,6 +108,73 @@ describe('reviewTemplate', () => {
     expect(r.contentHash).not.toBe(before.contentHash);
   });
 
+  describe('a project template that shadows a template of the same name', () => {
+    it('is compared with the built-in one it hides, and says so', async () => {
+      writeProjectTemplate(env, 'alpine-min', 'setup:\n  - run: sh ./evil.sh\n');
+      const r = await abox.reviewTemplate(HUMAN, 'alpine-min', { projectDir: env.project });
+      expect(r.source.kind).toBe('project');
+      expect(r.against).toMatchObject({ kind: 'shadows', template: 'alpine-min' });
+      expect(r.against.label).toContain('builtin template alpine-min, which it shadows');
+      expect(r.shadows).toMatchObject([{ kind: 'builtin' }]);
+      // a real diff against the built-in template, not "new content"
+      expect(
+        r.diff.startsWith('--- builtin template alpine-min\n+++ project template alpine-min'),
+      ).toBe(true);
+      const changed = r.diff
+        .split('\n')
+        .filter((l) => /^[+-]/.test(l) && !l.startsWith('+++') && !l.startsWith('---'));
+      expect(changed.join('\n')).toContain('+  - sh ./evil.sh');
+      expect(changed.join('\n')).toContain('-  os: alpine');
+      // the first point an approver reads
+      expect(r.risks[0]).toMatch(/^shadows the built-in template alpine-min: .*"alpine-min"/);
+    });
+
+    it('a user template can be the shadowed one; a trusted earlier version still comes first', async () => {
+      const file = writeProjectTemplate(env, 'fake-box', 'setup:\n  - run: make deps\n');
+      const first = await abox.reviewTemplate(HUMAN, 'fake-box', { projectDir: env.project });
+      expect(first.against).toMatchObject({ kind: 'shadows', template: 'fake-box' });
+      expect(first.against.label).toContain('user template fake-box');
+      expect(first.shadows?.map((x) => x.kind)).toEqual(['user']);
+
+      const req = { template: 'fake-box', workspace: EMPTY_WS };
+      const pending = await abox.createSandbox(A, req, { waitForApprovalMs: 0 });
+      expect(pending.status).toBe('pending_approval');
+      if (pending.status !== 'pending_approval') return;
+      await abox.approve(HUMAN, pending.approvalId);
+      writeFileSync(file, projectTemplate('fake-box', 'setup:\n  - run: make deps\n  - run: x\n'));
+      const after = await abox.reviewTemplate(HUMAN, 'fake-box', { projectDir: env.project });
+      expect(after.against.kind).toBe('previous');
+      expect(after.shadows?.map((x) => x.kind)).toEqual(['user']);
+      expect(after.risks[0]).toMatch(/^shadows the user template fake-box/);
+    });
+
+    it('extends of the same name stays an extends comparison (the shadow is still reported)', async () => {
+      writeProjectTemplate(env, 'alpine-min', 'extends: alpine-min\nenv: { A: "1" }\n');
+      const r = await abox.reviewTemplate(HUMAN, 'alpine-min', { projectDir: env.project });
+      expect(r.against).toMatchObject({ kind: 'extends', template: 'alpine-min' });
+      expect(r.shadows).toMatchObject([{ kind: 'builtin' }]);
+    });
+
+    it('listing and show mark the shadowing; templates that hide nothing carry no marker', async () => {
+      writeProjectTemplate(env, 'alpine-min');
+      writeProjectTemplate(env, 'proj-tpl');
+      const list = await abox.listTemplates(HUMAN, { projectDir: env.project });
+      const by = Object.fromEntries(list.templates.map((t) => [t.name, t]));
+      expect(by['alpine-min']).toMatchObject({
+        source: { kind: 'project' },
+        trusted: false,
+        shadows: [{ kind: 'builtin' }],
+      });
+      expect(by['proj-tpl']?.shadows).toBeUndefined();
+      expect(by['fake-box']?.shadows).toBeUndefined();
+      const shown = await abox.showTemplate(HUMAN, 'alpine-min', { projectDir: env.project });
+      expect(shown.shadows).toMatchObject([{ kind: 'builtin' }]);
+      expect(shown.warnings[0]).toMatch(
+        /project template shadows the built-in template alpine-min/,
+      );
+    });
+  });
+
   it('agents cannot point it at directories outside their roots', async () => {
     await expect(
       abox.reviewTemplate(A, 'proj-tpl', { projectDir: env.datasets }),

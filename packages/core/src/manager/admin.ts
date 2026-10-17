@@ -62,6 +62,7 @@ export async function showPolicy(I: Internals, caller: Caller): Promise<PolicyVi
     },
   };
   if (ctx.kind === 'human') {
+    if (I.policyProblem) view.policy.reloadError = { ...I.policyProblem };
     view.profiles = { ...I.policy.profiles };
     view.contexts = Object.fromEntries(
       Object.entries(I.policy.contexts).map(([k, v]) => [

@@ -244,7 +244,12 @@ async function doExport(
     treeRoot = record.liveTree;
   } else {
     treeRoot = join(scratchRoot, 'out');
-    await input.provider.copyOut(input.sandboxId, record.sandboxPath, treeRoot);
+    // Private scratch tree: links (also absolute ones the project already had) are kept as links so
+    // they can be compared with the baseline; the tree is only read with lstat/readlink and removed
+    // afterwards, nothing in it is followed, and the user never receives it as is.
+    await input.provider.copyOut(input.sandboxId, record.sandboxPath, treeRoot, {
+      symlinks: 'preserve',
+    });
     if (!(await isRealDirectory(treeRoot))) {
       throw new AboxError(
         'backend_error',
@@ -504,6 +509,14 @@ async function doExport(
     case 'files': {
       if (input.outDir) {
         result.written = await writeOutFiles(input.outDir, files, git, sandboxEntries, warnings);
+        // symlinks are never created in outDir: say so next to the other flagged paths
+        for (const f of files) {
+          if (f.kind === 'symlink' && f.status !== 'deleted')
+            result.flagged.push({
+              path: f.path,
+              reason: `symlink${f.symlinkTarget !== undefined ? ` -> ${JSON.stringify(f.symlinkTarget.slice(0, 200))}` : ''} not written to outDir (the files format only writes regular files; use diff, patch or branch to carry links)`,
+            });
+        }
       }
       break;
     }
@@ -628,7 +641,11 @@ async function writeOutFiles(
   for (const f of files) {
     if (f.status === 'deleted') continue;
     if (f.kind !== 'file') {
-      warnings.push(`${f.path}: ${f.kind} entries are listed but not written to outDir`);
+      warnings.push(
+        f.kind === 'symlink'
+          ? `${f.path}: symlink${f.symlinkTarget !== undefined ? ` -> ${JSON.stringify(f.symlinkTarget.slice(0, 200))}` : ''} is listed but never created in outDir`
+          : `${f.path}: ${f.kind} entries are listed but not written to outDir`,
+      );
       continue;
     }
     const entry = entries.get(f.path);

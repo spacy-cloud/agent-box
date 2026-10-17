@@ -5,6 +5,7 @@ import { AboxError, isAboxError } from '@abox/core';
 import type {
   BackendKind,
   BackendStatus,
+  CopyOutOptions,
   DirEntry,
   ExecEvent,
   ExecRequest,
@@ -572,8 +573,13 @@ export class PythonProvider implements SandboxProvider {
     await r.provider.copyIn(id, hostPath, sandboxPath);
   }
 
-  async copyOut(id: SandboxId, sandboxPath: string, hostPath: string): Promise<void> {
-    await (await this.route(id)).provider.copyOut(id, sandboxPath, hostPath);
+  async copyOut(
+    id: SandboxId,
+    sandboxPath: string,
+    hostPath: string,
+    opts?: CopyOutOptions,
+  ): Promise<void> {
+    await (await this.route(id)).provider.copyOut(id, sandboxPath, hostPath, opts);
   }
 
   async readFile(

@@ -107,6 +107,14 @@ approvals should expire on policy change.
 
 ## The human context
 
+The built-in `human` profile has the workspace and mount roots `['*']` (`ANY_ROOT`): **no roots check**, only
+the forbidden list above. A project below a symlink that leaves `$HOME` (`~/Projekte` -> `/data/Projekte`)
+therefore works for a human. `*` is not valid in `policy.yaml` (roots must be paths); a `human` profile there
+that sets `workspace.roots` / `mounts.roots` replaces it, and those roots are then enforced: the manager passes
+the path as typed too (`lexicalPath`, normalized, not symlink-resolved, only when it contains no `..`) and the
+check accepts a path whose canonical _or_ typed form lies within a canonical root (the forbidden list is always
+checked on the canonical path). Agents are compared by the canonical path only; `lexicalPath` is ignored for them.
+
 The built-in `human` profile (the CLI/GUI user) does not enforce the agent isolation minimums
 (`isolation.min`, `network_open`, `mounts`, `secrets_env`, host zone minimums are denials for agents). It keeps
 the invariant approval items, which a human satisfies with `humanConfirmed` (CLI prompt or `--yes`, GUI dialog):

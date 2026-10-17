@@ -56,23 +56,27 @@ hint: Use a path inside one of the allowed roots, or ask the human to add the pr
 ```
 
 The directory you passed with `--workspace` is not below a **workspace root** of the profile that
-is asking. For you the root is your home directory; for agents it is whatever `workspace.roots`
-in their profile says. Without a `policy.yaml` the agent roots are `~/projects`, `~/Projekte`,
-`~/src`, `~/code`, `~/dev`, `~/work`, `~/git` and `~/repos`; `abox init --agent <name>` in the
-project directory tells you whether it qualifies. To allow another folder, add it to
+is asking. As a human you normally have no roots at all (only the forbidden-path list applies, also
+for projects behind a symlink to another disk); this error then comes from an agent, or from a
+`human` profile in `policy.yaml` that sets `workspace.roots` itself. For agents the roots are
+whatever `workspace.roots` in their profile says. Without a `policy.yaml` the agent roots are
+`~/projects`, `~/Projekte`, `~/src`, `~/code`, `~/dev`, `~/work`, `~/git` and `~/repos`;
+`abox init --agent <name>` in the project directory tells you whether it qualifies. To allow another folder, add it to
 `workspace.roots` of the agent's profile with `abox policy edit`. Paths inside hidden directories
 directly below your home (`~/.claude`, `~/.cache`, ...) are always refused for agents.
 
-**Symlinked directories matter.** abox resolves symlinks _before_ checking. If `~/projects` is a
-symlink to `/data/projects`, the real path is `/data/projects/app`, which is not below your home
-directory, and the check fails with that resolved path in the message. Add the real location as a
-root in `policy.yaml`:
+**Symlinked directories.** abox resolves symlinks _before_ checking, for the project path and for
+the roots. A root `~/projects` that is itself a symlink to `/data/projects` covers
+`~/projects/app` (both resolve to `/data/projects`), and as a human you need no root at all. What an
+agent cannot do is use a symlink _inside_ its root that leads out of it (`~/projects/app` ->
+`/data/app`): the resolved path `/data/app` is outside, and the message shows it. Add the real
+location as a root in `policy.yaml` or use the real path:
 
 ```yaml
 profiles:
   default:
     workspace:
-      roots: ['~/projects', '/data/projects']
+      roots: ['~/projects', '/data/app']
 ```
 
 (The same applies to mounts and to `mounts.roots`.) A path that **is** your home directory, a
@@ -150,6 +154,50 @@ must also list the template's name.
 Containers carrying abox labels that the registry does not know, for example after you deleted
 `~/.local/share/abox`. abox only ever acts on objects of its own installation; use
 `abox reconcile` to see them and `abox reconcile --apply --remove-orphans` only after checking.
+
+### `policy.yaml` is invalid, but abox keeps working with the old rules
+
+```text
+warning: policy.yaml is invalid (invalid policy in .../policy.yaml: 1 problem(s), first: ...); this older policy stays in force until the file is fixed
+```
+
+A running abox process (an MCP server, the GUI) that finds an invalid `policy.yaml` on disk does
+**not** drop its rules and does not fall back to the built-in policy: it keeps the last valid
+policy, records a `policy.reload_failed` entry in the audit log (`abox audit --action
+policy.reload_failed`), prints a warning on the stderr of `abox mcp serve` and shows it in
+`abox policy show`. Sandboxes keep being created under the old rules until the file is valid
+again, so a typo does not silently widen or remove a limit, and your edit does not take effect
+either. Find the problem with `abox policy validate`
+(field path and line number; it works without a running manager), fix the file, and the next call
+of the running process picks it up (checked at most every 500 ms). A process that is **started**
+while the file is invalid refuses to start with the same message; edit the file with a text editor
+then (`abox policy edit` needs a working manager too).
+
+### `sandbox_write_file`: "content is too large" / the MCP connection closed on a big file
+
+`sandbox_write_file` takes up to **8 MiB** of content per call (the decoded bytes; base64 text is a
+third larger). A bigger call is answered with `invalid_input` and the connection stays open. Older
+versions allowed 16 MiB in theory, but any message above 10 MiB made the stdio connection close
+(`ReadBuffer exceeded maximum size`). For big files put them into the project workspace before the
+sandbox is created, create them inside the sandbox with `sandbox_exec`, or copy them in yourself
+(`abox cp`). A write that answers `policy_denied` with "the sandbox user is not allowed to do that"
+wanted a root-owned or abox-managed location (`/etc`, `/usr/local/share/abox`, `/proc`): the file
+tools act as the sandbox user, use the workspace, the home directory or `/tmp`.
+
+### Claude Code plugin: `plugin:abox:abox` is "failed" / the sandbox tools are missing
+
+The plugin does not contain abox: its MCP server runs `${ABOX_BIN:-abox} mcp serve`. If `abox` is not
+on the `PATH` of the environment Claude Code started in (a desktop launcher or an IDE often has a
+shorter `PATH` than your shell), the server cannot start. The plugin's `check-abox` hook says so
+when a session starts. Install abox (`command -v abox` must print a path), or start Claude Code with
+`ABOX_BIN=/full/path/to/abox`, and restart it. See [Claude Code](claude-code.md).
+
+### An agent gets `conflict: paused: a human is working in sandbox ...`
+
+You (or the GUI) have a terminal open in the agent's sandbox; abox pauses the agent's commands,
+background processes and file writes meanwhile. Close the terminal and the agent can continue. If
+the pause outlives a closed or crashed GUI, it ends on its own about 20 seconds later. See [GUI:
+taking over a sandbox](gui.md#taking-over-an-agents-sandbox).
 
 ### Exec output is cut
 

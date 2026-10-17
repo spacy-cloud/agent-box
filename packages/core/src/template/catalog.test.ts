@@ -105,6 +105,20 @@ describe('precedence and shadowing', () => {
     expect((await catalog.get('only-builtin')).source.kind).toBe('builtin');
   });
 
+  it('getShadowed: the hidden templates, and the next valid one resolved (a broken one is skipped)', async () => {
+    await writeFile(join(builtin, 'a.yaml'), tpl('shared', 'labels: { use-for: builtin }\n'));
+    await writeFile(join(userDir, 'u.yaml'), 'apiVersion: 1\nname: shared\nbackend: nope\n');
+    await writeFile(join(project, '.sandbox', 'p.yaml'), tpl('shared'));
+    await writeFile(join(project, '.sandbox', 'solo.yaml'), tpl('solo'));
+    const catalog = new TemplateCatalog({ projectDir: project, userDir, builtinDir: builtin });
+    const r = await catalog.getShadowed('shared');
+    expect(r.hidden.map((h) => h.kind)).toEqual(['builtin']); // the broken user file is a problem, not an entry
+    expect(r.source?.kind).toBe('builtin');
+    expect(r.template?.labels['use-for']).toBe('builtin');
+    expect(await catalog.getShadowed('solo')).toEqual({ hidden: [] });
+    expect(await catalog.getShadowed('missing')).toEqual({ hidden: [] });
+  });
+
   it('unknown names are not_found and list the available ones', async () => {
     await writeFile(join(builtin, 'a.yaml'), tpl('a'));
     const catalog = new TemplateCatalog({ builtinDir: builtin });

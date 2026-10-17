@@ -271,6 +271,67 @@ describe('extractArchiveSafe', () => {
   });
 });
 
+describe("extractArchiveSafe with symlinks: 'preserve' (private scratch tree for the export)", () => {
+  it('recreates absolute and escaping links as links, without following them', async () => {
+    const outside = path.join(dir, 'outside');
+    await fs.mkdir(outside);
+    const dest = path.join(dir, 'out');
+    await extractArchiveSafe(
+      await evil([
+        { name: 'ws/', type: 'directory' },
+        { name: 'ws/abs', type: 'symlink', linkname: outside },
+        { name: 'ws/up', type: 'symlink', linkname: '../../x' },
+        { name: 'ws/a.txt', data: 'A' },
+      ]),
+      dest,
+      { symlinks: 'preserve' },
+    );
+    expect(await fs.readlink(path.join(dest, 'abs'))).toBe(outside);
+    expect(await fs.readlink(path.join(dest, 'up'))).toBe('../../x');
+    expect(await fs.readdir(outside)).toEqual([]);
+    expect(await fs.readFile(path.join(dest, 'a.txt'), 'utf8')).toBe('A');
+  });
+
+  it('still refuses to write through a link, and an empty target', async () => {
+    const outside = path.join(dir, 'outside');
+    await fs.mkdir(outside);
+    await expect(
+      extractArchiveSafe(
+        await evil([
+          { name: 'ws/', type: 'directory' },
+          { name: 'ws/abs', type: 'symlink', linkname: outside },
+          { name: 'ws/abs/pwn.txt', data: 'x' },
+        ]),
+        path.join(dir, 'out'),
+        { symlinks: 'preserve' },
+      ),
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+    await expect(fs.access(path.join(outside, 'pwn.txt'))).rejects.toThrow();
+    await expect(
+      extractArchiveSafe(
+        await evil([
+          { name: 'ws/', type: 'directory' },
+          { name: 'ws/l', type: 'symlink', linkname: '' },
+        ]),
+        path.join(dir, 'out2'),
+        { symlinks: 'preserve' },
+      ),
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+  });
+
+  it('is opt-in: the default still refuses an absolute link', async () => {
+    await expect(
+      extractArchiveSafe(
+        await evil([
+          { name: 'ws/', type: 'directory' },
+          { name: 'ws/l', type: 'symlink', linkname: '/etc/passwd' },
+        ]),
+        path.join(dir, 'out'),
+      ),
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+  });
+});
+
 describe('readFirstEntry', () => {
   it('caps the content and reports the full size', async () => {
     const buf = await tarFromEntries([{ name: 'f', data: Buffer.alloc(10_000, 7) }]);

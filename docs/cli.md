@@ -315,6 +315,13 @@ List sandboxes
 | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `--state <state>` | only this state (choices: "requested", "preparing", "created", "running", "stopped", "failed", "expired", "removed") |
 | `-a, --all`       | include removed and failed sandboxes                                                                                 |
+| `--stats`         | show live CPU and memory use of running sandboxes (takes a second)                                                   |
+
+`--stats` adds `CPU` and `MEMORY` columns (CPU: 100% is one core; memory: in use / limit). A sandbox
+without data (stopped, or a backend that cannot report usage: only docker and podman can) shows `-`.
+`--json` then carries a `usage` map by sandbox id, absent for those without data. The `STATE`
+column says `human attached` while a person holds a terminal in an agent's sandbox (see
+[GUI: taking over a sandbox](gui.md#taking-over-an-agents-sandbox)).
 
 With the global `--host <id>`, only that host is listed. An id that is not a configured host is
 `not_found` (exit code 2, hint: `abox host ls`). A configured host that cannot be reached (host key
@@ -914,6 +921,10 @@ Print a shell completion script (bash, zsh or fish)
 - **`abox approvals approve`** is bound to the exact request; see [quickstart](quickstart.md#approvals).
 - **`abox policy edit`** opens `policy.yaml` in `$VISUAL`/`$EDITOR`, validates, shows a diff and
   asks before saving. The change is versioned in the audit log. Agents cannot do any of this.
+- **`abox policy validate`** only reads: it does not open the manager and creates no directories.
+  Without a `policy.yaml` it says that none exists and that the built-in default policy applies
+  (exit 0; `--json`: `exists: false`, `source: "default"`). `abox policy show` also warns when a
+  running manager keeps an older policy because the file on disk is invalid.
 - **`abox audit`** shows the hash-chained log; `abox audit verify` recomputes the chain and
   exits 1 if it is broken. See the limits in [security](security.md#audit-log).
 - **`abox reconcile`** only reports unless you pass `--apply`; backend objects that belong to no

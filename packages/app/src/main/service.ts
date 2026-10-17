@@ -33,6 +33,7 @@ export type ManagerHandlers = {
 export type ManagerChannel =
   | 'sandboxes:list'
   | 'sandboxes:inspect'
+  | 'sandboxes:stats'
   | 'sandboxes:start'
   | 'sandboxes:stop'
   | 'sandboxes:remove'
@@ -103,6 +104,7 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
   return {
     'sandboxes:list': (i) => abox.listSandboxes(HUMAN, clean({ ...(i ?? {}) })),
     'sandboxes:inspect': (i) => abox.inspectSandbox(HUMAN, i.id),
+    'sandboxes:stats': (i) => abox.sandboxStats(HUMAN, i.ids),
     'sandboxes:start': (i) => abox.startSandbox(HUMAN, i.id),
     'sandboxes:stop': (i) => abox.stopSandbox(HUMAN, i.id),
     'sandboxes:remove': (i) => abox.removeSandbox(HUMAN, i.id),

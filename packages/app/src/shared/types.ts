@@ -23,6 +23,7 @@ import type {
   ProcessView,
   ReconcileReport,
   SandboxList,
+  SandboxStatsResult,
   SandboxView,
   SnapshotView,
   TemplateDetails,
@@ -55,6 +56,7 @@ export type {
   ProcessView,
   ReconcileReport,
   SandboxList,
+  SandboxStatsResult,
   SandboxView,
   SnapshotView,
   TemplateDetails,
@@ -288,6 +290,7 @@ export interface Outputs {
   'dialog:pickDirectory': string | null;
   'sandboxes:list': SandboxList;
   'sandboxes:inspect': InspectResult;
+  'sandboxes:stats': SandboxStatsResult;
   'sandboxes:start': SandboxView;
   'sandboxes:stop': SandboxView;
   'sandboxes:remove': { id: string; removed: boolean };

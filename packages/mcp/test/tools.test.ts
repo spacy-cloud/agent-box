@@ -178,6 +178,35 @@ resources: { cpus: 1, memory: 512m, ttl: 1h }
       ).toMatchObject({ trusted: true, needs_approval: false });
     });
 
+    it('a project template that shadows another one of the same name is marked as such', async () => {
+      await setupOther();
+      writeFileSync(
+        join(other(), '.sandbox', 'fake-box.yaml'),
+        projectYaml.replace('other-proj', 'fake-box'),
+      );
+      const plain = await a.call('template_list');
+      const std = (plain.s['templates'] as Array<Record<string, unknown>>).find(
+        (t) => t['name'] === 'fake-box',
+      );
+      expect(std).toMatchObject({ source: 'user', project: false });
+      expect(std).not.toHaveProperty('shadows');
+
+      const withPath = await a.call('template_list', { workspace_path: other() });
+      const entry = (withPath.s['templates'] as Array<Record<string, unknown>>).find(
+        (t) => t['name'] === 'fake-box',
+      );
+      expect(entry).toMatchObject({
+        source: 'project',
+        project: true,
+        needs_approval: true,
+        shadows: ['user'],
+      });
+      expect(withPath.text).toMatch(/fake-box \(project template\) \(SHADOWS the user template/);
+      const shown = await a.call('template_show', { name: 'fake-box', workspace_path: other() });
+      expect(shown.s['shadows']).toEqual(['user']);
+      expect(String((shown.s['warnings'] as string[])[0])).toMatch(/shadows the user template/);
+    });
+
     it('workspace_path is checked like the one of sandbox_create', async () => {
       await setupOther();
       for (const [tool, args] of [

@@ -117,9 +117,14 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
 
 - `listTemplates(caller, {projectDir?}) -> {templates: TemplateListEntry[], problems}`: description, `useFor`,
   backend, isolation, network mode, source, `trusted` (project templates: exact content hash approved),
-  `allowed` (caller's profile), `backendAvailable`, hashes. Broken files only listed for humans.
+  `allowed` (caller's profile), `backendAvailable`, hashes, `shadows` (set when the template hides a user/builtin
+  one of the same name, e.g. a project `alpine-min`). Broken files only listed for humans.
   Agents may only use a `projectDir` below their workspace roots.
-- `showTemplate(caller, name) -> {template (resolved), trusted, allowed, capabilities, effectiveLimits, warnings}`.
+- `showTemplate(caller, name) -> {template (resolved), shadows?, trusted, allowed, capabilities, effectiveLimits, warnings}`
+  (a shadowing template also gets a warning).
+- `reviewTemplate(caller, name, {projectDir?, workspacePath?, expectedContentHash?}) -> TemplateReview`: diff against
+  (first match) the last trusted version, the template it extends, the user/builtin template it shadows
+  (`against.kind` `previous` | `extends` | `shadows` | `none`); `shadows` lists what it hides and `risks[0]` says so.
   `showTemplate`, `buildTemplate` and `createSandbox` on a template file that exists but is invalid throw
   `template_invalid` (never `not_found`): `issues[]` carry path, line and column, `details.path` the file. A broken
   higher-precedence file (project > user > builtin) is reported instead of silently using a same-named valid one.

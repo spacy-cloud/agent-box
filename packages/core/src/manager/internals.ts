@@ -21,6 +21,7 @@ import type {
   AboxEventType,
   Caller,
   HostResolver,
+  HumanAttachedView,
   ResolvedHost,
   SandboxView,
   SandboxWorkspaceView,
@@ -60,7 +61,10 @@ export interface StoredEffective {
   resources: { cpus: number; memoryBytes: number; ttlMs: number; pids?: number };
   /** Named `keyringRefs` on purpose: a key called `secrets` would be redacted by the state layer. */
   keyringRefs: Array<{ ref: string; inject: string; hosts: string[]; path?: string }>;
+  /** Hash of the create request as sent (`requestId` idempotency, fast path). */
   requestHash?: string;
+  /** Hash of the effective create request (template resolved, overrides merged); equivalent requests share it. */
+  effectiveRequestHash?: string;
   warnings?: string[];
   /** Present while the create is in flight; used to detect creators killed with `kill -9`. */
   creator?: { pid: number; host: string; startedAt: number };
@@ -88,6 +92,11 @@ export class Internals {
   private readonly hostResolverFn: HostResolver | undefined;
   private readonly policyOverride: string | undefined;
   private policyStamp = '';
+  /**
+   * Set while policy.yaml on disk is invalid and an older, valid policy stays in force (a running
+   * manager never drops its rules because of a broken edit); cleared by the next valid load.
+   */
+  policyProblem: { message: string; detectedAt: number } | undefined;
   private policyCheckedAt = 0;
   private readonly providerCache = new Map<string, SandboxProvider>();
   private readonly listeners = new Set<(e: AboxEvent) => void>();
@@ -101,6 +110,8 @@ export class Internals {
   /** Expired sandboxes that could not be stopped; the failure was audited once. */
   private readonly expiredStopFailed = new Set<SandboxId>();
   private readonly ttlWatchers = new Set<NodeJS.Timeout>();
+  /** Ends of the human terminals this process holds in agent sandboxes (see takeover.ts); run on close. */
+  readonly takeovers = new Set<() => void>();
   private readonly ttlIntervalMs: number;
   closed = false;
 
@@ -238,6 +249,7 @@ export class Internals {
       this.policy = loaded.policy;
       this.policyText = loaded.text;
       this.policyStamp = loaded.stamp;
+      this.policyProblem = undefined;
       if (changed) {
         this.recordPolicyRevision('external-edit', 'reload');
         this.emit('policy.changed', { data: { contentHash: loaded.policy.contentHash } });
@@ -245,10 +257,19 @@ export class Internals {
     } catch (e) {
       // Keep the last good policy; a broken edit must not silently widen or drop the rules.
       this.policyStamp = stamp;
+      const message = errMessage(e);
+      this.policyProblem = { message, detectedAt: this.now() };
       this.audit('system', 'policy.reload_failed', {
         decision: 'error',
-        details: { message: errMessage(e) },
+        details: {
+          message,
+          note: 'the last valid policy stays in force until policy.yaml is valid again',
+          ...(e instanceof AboxError && e.issues.length > 0
+            ? { issues: e.issues.slice(0, 10).map((i) => ({ ...i })) }
+            : {}),
+        },
       });
+      this.emit('policy.reload_failed', { data: { message } });
     }
   }
 
@@ -256,6 +277,7 @@ export class Internals {
   adoptPolicy(policy: Policy, text: string): void {
     this.policy = policy;
     this.policyText = text;
+    this.policyProblem = undefined;
     try {
       const st = statSync(this.paths.policyFile);
       this.policyStamp = `${st.mtimeMs}:${st.size}:${st.ino}`;
@@ -597,7 +619,22 @@ export class Internals {
         ...(providerEffective ? { provider: providerEffective } : {}),
       },
       requestId: rec.requestId,
+      ...this.humanAttachedOf(rec),
     };
+  }
+
+  /** `{ humanAttached }` while a human terminal is open in this agent-owned sandbox, else nothing. */
+  humanAttachedOf(rec: SandboxRecord): { humanAttached?: HumanAttachedView } {
+    if (rec.state !== 'running' || !rec.owner.startsWith('agent:')) return {};
+    try {
+      const live = this.state.humanSessions.active(rec.id);
+      const first = live[0];
+      return first
+        ? { humanAttached: { sessions: live.length, since: first.startedAt, actor: first.actor } }
+        : {};
+    } catch {
+      return {}; // a busy state file must not break listing
+    }
   }
 
   // -- TTL ---------------------------------------------------------------------------------------------------
@@ -723,6 +760,7 @@ export class Internals {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    for (const end of [...this.takeovers]) end();
     for (const t of this.ttlWatchers) clearInterval(t);
     this.ttlWatchers.clear();
     this.listeners.clear();

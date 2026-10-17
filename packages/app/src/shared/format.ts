@@ -25,6 +25,32 @@ export function formatBytes(n: number): string {
   return `${i === 0 ? v : v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`;
 }
 
+/** CPU use for display: `0.4 %`, `12 %`, `250 %` (100 % = one core fully busy). */
+export function formatCpuPercent(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '-';
+  if (n < 10) return `${n.toFixed(1)} %`;
+  return `${Math.round(n)} %`;
+}
+
+/**
+ * Live memory use against the configured limit: `64 MiB / 256 MiB`. The limit the backend reports is
+ * preferred (it is what is enforced); a missing one falls back to the configured value, and 0 / unknown to just the use.
+ */
+export function formatMemoryUsage(
+  used: number,
+  limit: number | null | undefined,
+  configured?: number,
+): string {
+  const cap = limit && limit > 0 ? limit : configured && configured > 0 ? configured : undefined;
+  return cap ? `${formatBytes(used)} / ${formatBytes(cap)}` : formatBytes(used);
+}
+
+/** Fill level 0..1 of a usage bar (clamped); `cpuLimit` is the number of cpus the sandbox may use. */
+export function usageFraction(value: number, max: number): number {
+  if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) return 0;
+  return Math.min(1, Math.max(0, value / max));
+}
+
 /** Remaining TTL computed against a local clock so the countdown ticks without polling. */
 export function remainingMs(expiresAt: number, now: number): number {
   return Math.max(0, expiresAt - now);

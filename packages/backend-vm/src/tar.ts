@@ -224,6 +224,11 @@ export interface ExtractOptions {
   /** Abort when the archive contains more than this many bytes of file data. */
   maxBytes?: number;
   onSkip?: (path: string, reason: string) => void;
+  /**
+   * `'preserve'`: symlinks with an absolute or escaping target are recreated instead of skipped
+   * (private scratch tree that is only inspected, e.g. by the export). Default `'refuse'`: skipped.
+   */
+  symlinks?: 'refuse' | 'preserve';
 }
 
 export interface ExtractResult {
@@ -494,9 +499,8 @@ export async function extractTar(
         if (
           target === '' ||
           target.includes('\0') ||
-          posix.isAbsolute(target) ||
-          resolved === '..' ||
-          resolved.startsWith('../')
+          (opts.symlinks !== 'preserve' &&
+            (posix.isAbsolute(target) || resolved === '..' || resolved.startsWith('../')))
         ) {
           skip(rel, `symlink target '${target.slice(0, 80)}' points outside the copied tree`);
           break;

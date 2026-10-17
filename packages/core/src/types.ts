@@ -388,6 +388,23 @@ export interface TtySession {
   close(): Promise<void>;
 }
 
+/**
+ * Live resource usage of a running sandbox, as one sample (`SandboxProvider.stats`). Used by the GUI
+ * for the CPU / memory columns; the configured limits live in `SandboxView.resources`.
+ */
+export interface ResourceUsage {
+  /** When the sample was taken (epoch ms). */
+  ts: number;
+  /** CPU use as a percentage of one core (100 = one core fully busy, 250 = two and a half cores). */
+  cpuPercent: number;
+  /** Memory in use in bytes (without reclaimable page cache). */
+  memoryBytes: number;
+  /** Memory limit in bytes the sandbox runs under; null when unlimited or unknown. */
+  memoryLimitBytes: number | null;
+  /** Number of processes / threads in the sandbox; null when the backend does not report it. */
+  pids: number | null;
+}
+
 export interface DirEntry {
   name: string;
   type: 'file' | 'dir' | 'symlink' | 'other';
@@ -430,6 +447,11 @@ export interface ProviderCapabilities {
    * changing them is `unsupported`.
    */
   updateResources?: boolean;
+  /**
+   * `stats` returns live cpu / memory / pids usage of a running sandbox (see `ResourceUsage`).
+   * Absent / false: the GUI shows the configured values only.
+   */
+  stats?: boolean;
   /** Which resource limits are actually enforced. */
   limits: { cpus: boolean; memory: boolean; pids: boolean; disk: boolean };
   /** Can run as a non-root user inside the sandbox. */

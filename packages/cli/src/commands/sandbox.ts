@@ -6,6 +6,7 @@ import {
   SANDBOX_STATES,
   WORKSPACE_MODES,
   type CreateSandboxRequest,
+  type ResourceUsage,
   type SandboxState,
   type SandboxView,
   type WorkspaceMode,
@@ -34,9 +35,19 @@ function stateText(s: SandboxView): string {
   const flags = [
     s.stale ? 'stale' : '',
     s.expired && s.state !== 'expired' ? 'expired' : '',
+    s.humanAttached ? 'human attached' : '',
   ].filter(Boolean);
   const base = flags.length ? `${s.state} (${flags.join(',')})` : s.state;
   return base;
+}
+
+/** CPU and memory cells of `ls --stats`; `-` for a sandbox without data (stopped, backend without stats). */
+function usageCells(u: ResourceUsage | undefined): string[] {
+  if (!u) return ['-', '-'];
+  const mem = u.memoryLimitBytes
+    ? `${formatBytes(u.memoryBytes)} / ${formatBytes(u.memoryLimitBytes)}`
+    : formatBytes(u.memoryBytes);
+  return [`${u.cpuPercent.toFixed(1)}%`, mem];
 }
 
 export function registerSandbox(program: Command, cli: Cli): void {
@@ -176,15 +187,24 @@ export function registerSandbox(program: Command, cli: Cli): void {
     .description('List sandboxes')
     .addOption(new Option('--state <state>', 'only this state').choices([...SANDBOX_STATES]))
     .option('-a, --all', 'include removed and failed sandboxes')
-    .action(async (o: { state?: SandboxState; all?: boolean }) => {
+    .option('--stats', 'show live CPU and memory use of running sandboxes (takes a second)')
+    .action(async (o: { state?: SandboxState; all?: boolean; stats?: boolean }) => {
       const rt = await cli.rt();
       const list = await rt.abox.listSandboxes(cli.caller(), {
         ...(o.state ? { state: o.state } : {}),
         ...(cli.globals.host ? { host: cli.globals.host } : {}),
         ...(o.all ? { includeRemoved: true } : {}),
       });
+      const usage = o.stats
+        ? (
+            await rt.abox.sandboxStats(
+              cli.caller(),
+              list.sandboxes.filter((s) => s.state === 'running' && !s.stale).map((s) => s.id),
+            )
+          ).usage
+        : undefined;
       cli.success(
-        list,
+        usage ? { ...list, usage } : list,
         () => {
           const lines: string[] = [];
           if (list.sandboxes.length === 0) lines.push('no sandboxes');
@@ -198,6 +218,12 @@ export function registerSandbox(program: Command, cli: Cli): void {
                   { header: 'STATE' },
                   { header: 'OWNER' },
                   { header: 'TTL', right: true },
+                  ...(usage
+                    ? [
+                        { header: 'CPU', right: true },
+                        { header: 'MEMORY', right: true },
+                      ]
+                    : []),
                   { header: 'CREATED' },
                 ],
                 list.sandboxes.map((s) => [
@@ -207,6 +233,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
                   stateText(s),
                   s.owner,
                   ttlText(s),
+                  ...(usage ? usageCells(usage[s.id]) : []),
                   formatTime(s.createdAt),
                 ]),
                 cli.width,

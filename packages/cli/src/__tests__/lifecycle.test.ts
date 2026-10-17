@@ -533,3 +533,19 @@ describe.runIf(spawnSync('git', ['--version']).status === 0)('git workspaces', (
     await run(t, ['rm', '--force', gid]);
   });
 });
+
+describe('ls --stats', () => {
+  it('adds CPU and MEMORY columns; a backend without live usage shows "-", JSON carries an empty usage map', async () => {
+    const human = await run(t, ['ls', '--stats']);
+    expect(human.code, human.stderr).toBe(0);
+    expect(human.stdout).toMatch(/CPU\s+MEMORY/);
+    const row = human.stdout.split('\n').find((l) => l.includes(id))!;
+    expect(row).toMatch(/\s-\s+-\s/);
+    const json = await run(t, ['ls', '--stats', '--json']);
+    expect(json.json.data.usage).toEqual({});
+    expect(json.json.data.sandboxes.map((s: { id: string }) => s.id)).toContain(id);
+    // without the flag nothing changes
+    expect((await run(t, ['ls', '--json'])).json.data).not.toHaveProperty('usage');
+    expect((await run(t, ['ls'])).stdout).not.toContain('MEMORY');
+  });
+});

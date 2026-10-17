@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import type { SandboxView } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
-import { useNow, useQuery } from '../hooks';
+import { useNow, useQuery, useSandboxUsage } from '../hooks';
 import {
   Banner,
   ConfirmDialog,
@@ -18,6 +18,7 @@ import {
 import { distinct, EMPTY_FILTERS, filterSandboxes } from '../../shared/sandbox-filter';
 import type { SandboxFilters } from '../../shared/sandbox-filter';
 import { formatBytes, formatDuration, remainingMs } from '../../shared/format';
+import { UsageLines } from '../components/usage';
 import { NewSandboxDialog } from './NewSandbox';
 import { SANDBOX_STATES } from '../../shared/constants';
 
@@ -35,6 +36,12 @@ export function SandboxesView() {
 
   const all = list.data?.sandboxes ?? [];
   const shown = useMemo(() => filterSandboxes(all, filters), [all, filters]);
+  // Live cpu / memory only for what is on screen and running.
+  const runningShown = useMemo(
+    () => shown.filter((s) => s.state === 'running' && !s.stale).map((s) => s.id),
+    [shown],
+  );
+  const usage = useSandboxUsage(runningShown);
   const owners = useMemo(() => distinct(all, (s) => s.owner), [all]);
   const templates = useMemo(() => distinct(all, (s) => s.template), [all]);
   const staleCount = all.filter((s) => s.stale || s.missingInBackend).length;
@@ -230,6 +237,11 @@ export function SandboxesView() {
                       </td>
                       <td>
                         <OwnerBadge owner={s.owner} />
+                        {s.humanAttached ? (
+                          <div>
+                            <Badge tone="warn">{t('sandboxes.humanAttached')}</Badge>
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         <div className="badges">
@@ -250,7 +262,17 @@ export function SandboxesView() {
                         )}
                       </td>
                       <td className="small">
-                        {s.resources.cpus} CPU, {formatBytes(s.resources.memoryBytes)}
+                        {usage[s.id] ? (
+                          <UsageLines
+                            usage={usage[s.id]!}
+                            cpus={s.resources.cpus}
+                            memoryBytes={s.resources.memoryBytes}
+                          />
+                        ) : null}
+                        <span className={usage[s.id] ? 'muted' : undefined}>
+                          {usage[s.id] ? `${t('sandboxes.configured')} ` : ''}
+                          {s.resources.cpus} CPU, {formatBytes(s.resources.memoryBytes)}
+                        </span>
                       </td>
                       <td className="path plain" title={s.workspace?.source ?? ''}>
                         {s.workspace ? (

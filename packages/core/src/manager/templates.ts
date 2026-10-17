@@ -15,7 +15,12 @@ import {
 } from '../template/index.js';
 import type { TemplateIssue } from '../template/index.js';
 import { renderTemplateSnapshot, templateRisks, unifiedDiff } from '../template/index.js';
-import type { BackendKind, ProviderCapabilities, ResolvedTemplate } from '../types.js';
+import type {
+  BackendKind,
+  ProviderCapabilities,
+  ResolvedTemplate,
+  TemplateSourceKind,
+} from '../types.js';
 import type { Internals } from './internals.js';
 import type {
   BuildResult,
@@ -262,6 +267,7 @@ export async function listTemplates(
       isolation: s.isolation,
       networkMode: s.networkMode,
       source: s.source,
+      ...(s.shadows.length > 0 ? { shadows: s.shadows } : {}),
       trusted,
       allowed: templateAllowed(ctx, s.name),
       backendAvailable: I.providerFactories[s.backend] !== undefined,
@@ -296,14 +302,15 @@ export async function showTemplate(
     throw new AboxError('invalid_input', 'template name required');
   // A workspace path the caller names is checked like the one of a create (a denied path is an error here).
   if (o.workspacePath !== undefined) usableProjectDir(I, ctx, o.workspacePath, true);
-  const { template } = await loadTemplate(
+  const { template, catalog } = await loadTemplate(
     I,
     ctx,
     name,
     projectDirCandidates(I, ctx, o.projectDir, o.workspacePath),
   );
   let capabilities: ProviderCapabilities | undefined;
-  const warnings: string[] = [];
+  const { hidden: shadows } = await catalog.getShadowed(template.name);
+  const warnings: string[] = shadows.length > 0 ? [shadowWarning(template, shadows)] : [];
   if (I.providerFactories[template.backend]) {
     try {
       const host = await I.resolveHost('local');
@@ -318,6 +325,7 @@ export async function showTemplate(
   }
   return {
     template,
+    ...(shadows.length > 0 ? { shadows } : {}),
     trusted: isTrusted(I, template),
     allowed: templateAllowed(ctx, template.name),
     backendAvailable: I.providerFactories[template.backend] !== undefined,
@@ -345,10 +353,31 @@ export async function trustSnapshot(
   }
 }
 
+const KIND_WORD: Record<TemplateSourceKind, string> = {
+  project: 'project',
+  user: 'user',
+  builtin: 'built-in',
+};
+
+/** "shadows built-in template alpine-min": what a template of the same name in a higher-precedence place does. */
+function shadowPhrase(name: string, hidden: Array<{ kind: TemplateSourceKind }>): string {
+  const kinds = [...new Set(hidden.map((h) => KIND_WORD[h.kind]))].join(' and ');
+  return `shadows the ${kinds} template ${name}`;
+}
+
+function shadowWarning(
+  template: Pick<ResolvedTemplate, 'name' | 'source'>,
+  hidden: Array<{ kind: TemplateSourceKind }>,
+): string {
+  return `this ${template.source.kind} template ${shadowPhrase(template.name, hidden)} of the same name: a sandbox created from "${template.name}" uses this version, not the ${hidden[0] ? KIND_WORD[hidden[0].kind] : ''} one`;
+}
+
 /**
  * Review material for a template that is about to be trusted. Compared against (first match): the
  * last trusted version of the same template (what changed since the approval), the template it
- * `extends` (what it adds to a known template), else nothing (the full content).
+ * `extends` (what it adds to a known template), the user or builtin template of the same name it
+ * shadows (a project `alpine-min.yaml` is compared with the built-in `alpine-min`), else nothing
+ * (the full content).
  */
 export async function reviewTemplate(
   I: Internals,
@@ -366,6 +395,7 @@ export async function reviewTemplate(
     projectDirCandidates(I, ctx, o.projectDir, o.workspacePath),
   );
   const text = renderTemplateSnapshot(template);
+  const shadowed = await catalog.getShadowed(template.name);
   const toLabel = `${template.source.kind} template ${template.name}${template.source.path ? ` (${template.source.path})` : ''}`;
 
   let against: TemplateReview['against'] = { kind: 'none', label: 'nothing (new content)' };
@@ -397,16 +427,32 @@ export async function reviewTemplate(
         label: `${parent.source.kind} template ${parent.name}, which it extends`,
       };
       fromLabel = `${parent.source.kind} template ${parent.name}`;
+    } else if (shadowed.template && shadowed.source) {
+      baseline = renderTemplateSnapshot(shadowed.template);
+      against = {
+        kind: 'shadows',
+        template: shadowed.template.name,
+        label: `${shadowed.source.kind} template ${shadowed.template.name}, which it shadows (same name)`,
+      };
+      fromLabel = `${shadowed.source.kind} template ${shadowed.template.name}`;
     }
   }
   return {
     template: template.name,
     source: template.source,
+    ...(shadowed.hidden.length > 0 ? { shadows: shadowed.hidden } : {}),
     contentHash: template.contentHash,
     trusted: isTrusted(I, template),
     against,
     diff: unifiedDiff(baseline, text, { fromLabel, toLabel, context: 4 }),
-    risks: templateRisks(template),
+    risks: [
+      ...(shadowed.hidden.length > 0
+        ? [
+            `${shadowPhrase(template.name, shadowed.hidden)}: sandboxes created from "${template.name}" in this project get this version instead`,
+          ]
+        : []),
+      ...templateRisks(template),
+    ],
     ...(template.buildContext ? { buildContext: template.buildContext } : {}),
     ...(o.expectedContentHash !== undefined && o.expectedContentHash !== template.contentHash
       ? { changedSinceRequest: true }

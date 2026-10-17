@@ -90,8 +90,13 @@ Mount checks happen in the core, not in the backend.
   path must lie _below_ a root (`~/projects/app` yes, `~/projects` no; the error says so). Humans
   may use a root directory. Independently of any roots, an agent can never use a path
   inside a hidden directory directly below the home directory (`~/.claude`, `~/.codex`, `~/.cache`,
-  ...), because those hold credentials and tool configuration. Humans are not limited by these
-  roots; the forbidden-path list applies to everyone.
+  ...), because those hold credentials and tool configuration. **Humans are not limited by roots.**
+  The built-in `human` profile has no roots check, so a project reached through a symlink to another
+  disk (`~/Projekte` -> `/data/Projekte`) works; only the forbidden-path list (checked on the
+  resolved path) and abox's own directories apply, to everyone. If a `human` profile in
+  `policy.yaml` sets `workspace.roots` (or `mounts.roots`), those roots are honoured, and the path
+  as typed as well as the resolved path are compared with the resolved roots. Agents are always
+  compared by the resolved path only: a symlink they plant never widens their roots.
 - **Image registries.** Free image names (`base.os`) are limited by the profile key
   `images.registries` (default for agents: `docker.io/library`; the built-in templates' base images
   are always accepted). An image outside the list needs approval; with an empty list it is denied.
@@ -104,6 +109,18 @@ Mount checks happen in the core, not in the backend.
 - **Dangerous files are flagged on export.** Files that are executed later on the host (git hooks,
   `.envrc`, `package.json` scripts, CI files) are a back channel. The export diff flags changes
   to them specially.
+- **Symlinks are data in an export, never links on your machine.** Export never follows a symlink
+  of the workspace. The tree is compared with the baseline link by link: a link the project
+  already had (also an absolute one, e.g. `data -> /srv/datasets`) is unchanged and not a change;
+  a new or retargeted link is a `symlink` entry in `diff`/`patch`/`branch` (git mode `120000`, the
+  target is the content) and is flagged when its target is absolute or leaves the workspace. The
+  `files` format never creates a link in the output directory (it lists it as flagged and not
+  written). What you apply from a diff or branch is your decision, as with any other change. The
+  strict check stays for everything that is written to your machine as is: `abox cp` out of a
+  sandbox (Docker backend) refuses a link with an absolute, empty or escaping target. For the comparison itself the
+  tree is fetched into a private scratch directory where such links are recreated as links (the
+  backend never writes through a link), only read with `lstat`/`readlink`, never followed, and
+  removed afterwards.
 
 ## Network modes and the egress proxy
 
@@ -229,6 +246,12 @@ Properties:
   revision and content hashes (never the content), so it shows in the hash chain. Attempts are logged, including calls of agents to MCP tools that do not
   exist (`policy_set`, `approve`, `ssh_exec`, ...): the audit log gets `mcp.unknown_tool` with the
   tool name and the agent context (rate limited; argument values are never recorded).
+- **A broken edit never drops the rules.** A running abox process (MCP server, GUI) that finds an
+  invalid `policy.yaml` keeps the last valid policy in force, writes a `policy.reload_failed`
+  audit entry (with the first problems and their lines, once per changed file), emits a
+  `policy.reload_failed` event (the MCP server prints it on its stderr) and shows the problem in
+  `abox policy show` until the file is valid again; it never falls back to the built-in default or to "allow". A process that is
+  _started_ while the file is invalid refuses to start instead. Check with `abox policy validate`.
 - **Fail closed.** If nobody decides before the timeout, the request is denied.
 
 ## Project template trust
@@ -313,11 +336,20 @@ Docker backend through the real manager and checks, among others:
   the authority for the deadline: every `abox` command, `abox mcp serve` (stdio and HTTP) and the
   GUI (every 15 s in the background) stop a sandbox whose deadline passed and retry a stop that
   failed, so a sandbox does not outlive its TTL while only the MCP server runs. In a Docker
-  container the entrypoint also ends the container at its deadline; the sandbox file APIs
-  (`sandbox_write_file`, copy in) refuse `/usr/local/share/abox`, where that deadline and the proxy
-  CA live, and the entrypoint ignores a deadline file that is not root-owned and read-only for
-  others. A process with root inside the container could still write that file; the sweep stops
-  the sandbox at the registry's deadline all the same.
+  container the entrypoint also ends the container at its deadline; that deadline and the proxy CA
+  live in `/usr/local/share/abox`, root-owned, and the entrypoint ignores a deadline file that is
+  not root-owned and read-only for others. A process with root inside the container could still
+  write that file; the sweep stops the sandbox at the registry's deadline all the same.
+- The sandbox file APIs (`sandbox_write_file`, `sandbox_read_file`, `sandbox_list_dir`, copy in) act
+  **with the identity of the sandbox user**: for a running sandbox they run inside it as that user
+  (not through the engine's archive API, which writes as root), so the kernel decides, and
+  root-owned files (the CA, the deadline, `/etc/hosts`, system files) can never be replaced or read
+  through them, however the path is spelled (`/proc/self/root/...`, a symlink the sandbox planted).
+  Writes into `/proc`, `/sys`, `/dev` and `/usr/local/share/abox` (also when the path resolves into
+  them) are refused outright. A stopped sandbox has no process to ask: there the directory chain is checked
+  statically (no symlinks, a directory the sandbox user may write) before the engine writes.
+  Writing a path whose last component is a symlink replaces the link; it never writes through it.
+  Reading a device, pipe, socket or directory answers `invalid_input` (not a regular file).
 - Agent context A can neither see nor influence sandboxes of context B.
 - `policy.yaml` cannot be changed through the agent path, and the attempt is audited.
 - Path canonicalization: `..`, symlinks, case, Unicode tricks.

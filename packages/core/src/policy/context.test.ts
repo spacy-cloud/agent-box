@@ -19,8 +19,16 @@ describe('resolveContext', () => {
     const ctx = resolveContext(defaultPolicy(), 'human', { home: env.home });
     expect(ctx).toMatchObject({ id: 'human', kind: 'human', profileName: 'human', owner: 'human' });
     expect(ctx.allowedHosts).toEqual(['*']);
-    expect(ctx.workspaceRoots).toEqual([env.home]);
-    expect(ctx.mountRoots).toEqual([env.home]);
+    // Humans are not limited by roots (only the forbidden-path list applies).
+    expect(ctx.workspaceRoots).toEqual(['*']);
+    expect(ctx.mountRoots).toEqual(['*']);
+  });
+
+  it('a human profile with explicit roots in policy.yaml gets canonical roots', () => {
+    const p = parse('profiles:\n  human:\n    workspace: { roots: [~/projects] }\n');
+    const ctx = resolveContext(p, 'human', { home: env.home });
+    expect(ctx.workspaceRoots).toEqual([env.projects]);
+    expect(ctx.mountRoots).toEqual(['*']);
   });
 
   it('resolves an agent context with owner agent:<id> and the merged profile', () => {

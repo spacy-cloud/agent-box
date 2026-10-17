@@ -3,7 +3,9 @@ import type { Abox } from '@abox/core';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Readable, Writable } from 'node:stream';
 import { assertAgentContextId, createMcpServer } from './server.js';
-import { startTtlWatch, type McpLimits } from './runtime.js';
+import { MAX_MESSAGE_BYTES } from './limits.js';
+import { startTtlWatch, warnOnPolicyProblems, type McpLimits } from './runtime.js';
+import { MessageSizeGuard, oversizedResponse } from './stdio-guard.js';
 
 /**
  * Refuse to start for a context that is not an agent context of the current policy. (`human` is never
@@ -61,7 +63,20 @@ export async function serveStdio(opts: ServeStdioOptions): Promise<void> {
     contextId: opts.contextId,
     ...(opts.limits ? { limits: opts.limits } : {}),
   });
-  const transport = new StdioServerTransport(stdin, opts.stdout ?? process.stdout);
+  // One message above the limit must not end the connection (the SDK reader would close it): refuse
+  // that message with an error answer and carry on.
+  const stdout = opts.stdout ?? process.stdout;
+  const guard = new MessageSizeGuard(MAX_MESSAGE_BYTES, (info) => {
+    process.stderr.write(
+      `abox-mcp: refused a message of ${info.bytes} bytes (limit ${MAX_MESSAGE_BYTES})\n`,
+    );
+    const answer = oversizedResponse(info, MAX_MESSAGE_BYTES);
+    if (answer) stdout.write(`${JSON.stringify(answer)}\n`);
+  });
+  stdin.pipe(guard);
+  const transport = new StdioServerTransport(guard, stdout, {
+    maxBufferSize: MAX_MESSAGE_BYTES + 1024 * 1024,
+  });
   const closed = new Promise<void>((resolve) => {
     server.server.onclose = () => resolve();
   });
@@ -70,6 +85,7 @@ export async function serveStdio(opts: ServeStdioOptions): Promise<void> {
   };
   await server.connect(transport);
   const stopTtlWatch = startTtlWatch(opts.abox, opts.ttlWatchMs);
+  const stopPolicyWarn = warnOnPolicyProblems(opts.abox);
   const onEnd = (): void => {
     void server.close().catch(() => undefined);
   };
@@ -79,7 +95,10 @@ export async function serveStdio(opts: ServeStdioOptions): Promise<void> {
     await closed;
   } finally {
     stopTtlWatch();
+    stopPolicyWarn();
     stdin.off('end', onEnd);
     stdin.off('close', onEnd);
+    stdin.unpipe(guard);
+    guard.destroy();
   }
 }
