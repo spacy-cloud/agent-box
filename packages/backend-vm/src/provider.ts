@@ -338,6 +338,8 @@ export class VmProvider implements SandboxProvider {
       `cache directory: ${this.layout.cacheDir}`,
     ];
     const warnings: string[] = [];
+    // notes about a working VM backend that need no action (info in `abox doctor`)
+    const advisories: string[] = [];
     let ok = true;
     let version: string | undefined;
 
@@ -382,9 +384,10 @@ export class VmProvider implements SandboxProvider {
       );
     }
     if (!findInPath('socat')) {
-      warnings.push(
-        'socat not found: allowlist networking falls back to a slower Node relay per connection',
-      );
+      const note =
+        'socat not found: allowlist networking falls back to a slower Node relay per connection';
+      warnings.push(note);
+      advisories.push(note);
     }
 
     for (const [label, dir] of [
@@ -407,10 +410,17 @@ export class VmProvider implements SandboxProvider {
         );
       }
     }
-    warnings.push(
-      'network mode "open" lets the guest reach the host network including the host loopback (10.0.2.2); prefer "allowlist" or "none"',
-    );
-    return { ok, ...(version ? { version: `QEMU ${version}` } : {}), details, warnings };
+    const openNote =
+      'network mode "open" lets the guest reach the host network including the host loopback (10.0.2.2); prefer "allowlist" or "none"';
+    warnings.push(openNote);
+    advisories.push(openNote);
+    return {
+      ok,
+      ...(version ? { version: `QEMU ${version}` } : {}),
+      details,
+      warnings,
+      advisories,
+    };
   }
 
   // -- images ----------------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import {
   ConfirmDialog,
   CopyButton,
   Dialog,
+  Disclosure,
   ErrorBox,
   Field,
   IsolationBadge,
@@ -16,7 +17,13 @@ import {
 } from '../components/ui';
 import { LOCALES } from '../../shared/constants';
 import type { Locale } from '../../shared/ipc';
-import type { DoctorReport, ReconcileReport } from '../../shared/types';
+import type {
+  BackendReport,
+  DoctorCheck,
+  DoctorReport,
+  DoctorSeverity,
+  ReconcileReport,
+} from '../../shared/types';
 import { formatTimestamp, safeInline, safeText } from '../../shared/format';
 
 export function SettingsView() {
@@ -145,9 +152,7 @@ function DiagnosticsSection() {
       {doctor.error && !data ? <ErrorBox error={doctor.error} /> : null}
       {data ? (
         <>
-          <Banner tone={data.ok ? 'ok' : 'warn'}>
-            {data.ok ? t('settings.doctor.ok') : t('settings.doctor.issues')}
-          </Banner>
+          <DoctorBanner report={data} />
           <h3>{t('settings.backends')}</h3>
           <div className="table-wrap">
             <table>
@@ -162,53 +167,18 @@ function DiagnosticsSection() {
               </thead>
               <tbody>
                 {data.backends.map((b) => (
-                  <tr key={`${b.host}/${b.backend}`}>
-                    <td className="plain">{b.host}</td>
-                    <td className="plain">{b.backend}</td>
-                    <td>
-                      <Badge tone={b.available && b.status?.ok !== false ? 'ok' : 'danger'}>
-                        {b.available && b.status?.ok !== false
-                          ? t('settings.backend.ok')
-                          : t('settings.backend.unavailable')}
-                      </Badge>
-                    </td>
-                    <td className="plain small">
-                      {b.status?.version ? `${b.status.version}` : ''}
-                      {b.status?.rootless ? ` · rootless` : ''}
-                      {b.error ? ` ${b.error}` : ''}
-                      {b.status?.warnings.map((w, i) => (
-                        <div key={i} className="warn-text">
-                          {w}
-                        </div>
-                      ))}
-                      {b.capabilities ? (
-                        <div className="muted">
-                          {t('settings.backend.isolation', {
-                            level: t(`isolation.${b.capabilities.isolation}`),
-                          })}{' '}
-                          {b.capabilities.isolation === 'none' ? (
-                            <IsolationBadge level="none" />
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </td>
-                  </tr>
+                  <BackendRow key={`${b.host}/${b.backend}`} backend={b} report={data} />
                 ))}
               </tbody>
             </table>
           </div>
           <h3>{t('settings.checks')}</h3>
           <ul className="checks">
-            {data.checks.map((c) => (
-              <li key={c.id}>
-                <Badge tone={c.level === 'ok' ? 'ok' : c.level === 'warn' ? 'warn' : 'danger'}>
-                  {t(`settings.level.${c.level}`)}
-                </Badge>{' '}
-                <strong className="plain">{c.title}</strong>
-                {c.detail ? <div className="plain muted small">{safeText(c.detail)}</div> : null}
-                {c.hint && c.level !== 'ok' ? <div className="plain small">{c.hint}</div> : null}
-              </li>
-            ))}
+            {data.checks
+              .filter((c) => !shownInBackends(c, data))
+              .map((c) => (
+                <CheckItem key={c.id} check={c} />
+              ))}
           </ul>
         </>
       ) : null}
@@ -259,6 +229,174 @@ function DiagnosticsSection() {
         </ConfirmDialog>
       ) : null}
     </>
+  );
+}
+
+/** The severity of a check; a report from before severities existed only has `level`. */
+function severityOf(c: Pick<DoctorCheck, 'level'> & { severity?: DoctorSeverity }): DoctorSeverity {
+  return c.severity ?? (c.level === 'warn' ? 'warning' : c.level);
+}
+
+const SEVERITY_TONE: Record<DoctorSeverity, 'ok' | 'neutral' | 'warn' | 'danger'> = {
+  ok: 'ok',
+  info: 'neutral',
+  warning: 'warn',
+  error: 'danger',
+};
+
+function SeverityBadge(props: { severity: DoctorSeverity }) {
+  const { t } = useApp();
+  return (
+    <Badge tone={SEVERITY_TONE[props.severity]}>{t(`settings.severity.${props.severity}`)}</Badge>
+  );
+}
+
+function backendCheckOf(report: DoctorReport, b: BackendReport): DoctorCheck | undefined {
+  return (
+    report.checks.find((c) => c.id === `backend.${b.host}.${b.backend}`) ??
+    (b.error ? report.checks.find((c) => c.id === `host.${b.host}`) : undefined)
+  );
+}
+
+/** Checks that the Backends table already shows (one row per backend). */
+function shownInBackends(c: DoctorCheck, report: DoctorReport): boolean {
+  return report.backends.some((b) => c.id === `backend.${b.host}.${b.backend}`);
+}
+
+function DoctorBanner(props: { report: DoctorReport }) {
+  const { t } = useApp();
+  const counts =
+    props.report.summary ??
+    props.report.checks.reduce((n, c) => ({ ...n, [severityOf(c)]: n[severityOf(c)] + 1 }), {
+      ok: 0,
+      info: 0,
+      warning: 0,
+      error: 0,
+    } as Record<DoctorSeverity, number>);
+  if (!props.report.ok || counts.error > 0)
+    return <Banner tone="warn">{t('settings.doctor.issues')}</Banner>;
+  if (counts.warning > 0)
+    return <Banner tone="warn">{t('settings.doctor.warnings', { count: counts.warning })}</Banner>;
+  return (
+    <Banner tone="ok">
+      {counts.info > 0
+        ? t('settings.doctor.okInfo', { count: counts.info })
+        : t('settings.doctor.ok')}
+    </Banner>
+  );
+}
+
+function NoteList(props: { notes: NonNullable<DoctorCheck['notes']> }) {
+  const { t } = useApp();
+  return (
+    <ul className="plain-list notes">
+      {props.notes.map((n, i) => (
+        <li key={i} className="plain small">
+          <span aria-hidden="true" className={n.severity === 'warning' ? 'warn-text' : 'muted'}>
+            {n.severity === 'warning' ? '!' : 'i'}
+          </span>
+          <span className="sr-only">{t(`settings.severity.${n.severity}`)}: </span>
+          <span>{safeText(n.message)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function DetailLines(props: { lines: string[] }) {
+  return (
+    <ul className="plain-list notes">
+      {props.lines.map((l, i) => (
+        <li key={i} className="plain muted small">
+          {safeText(l)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function detailLinesOf(c: DoctorCheck | undefined): string[] {
+  return c?.details ?? (c?.detail ? c.detail.split(/\r?\n/) : []);
+}
+
+function BackendRow(props: { backend: BackendReport; report: DoctorReport }) {
+  const { t } = useApp();
+  const b = props.backend;
+  const check = backendCheckOf(props.report, b);
+  const available = b.available && b.status?.ok !== false;
+  const severity: DoctorSeverity = check ? severityOf(check) : available ? 'ok' : 'error';
+  const state = available
+    ? severity === 'warning'
+      ? { tone: 'warn' as const, label: t('settings.backend.degraded') }
+      : { tone: 'ok' as const, label: t('settings.backend.ok') }
+    : severity === 'info'
+      ? { tone: 'neutral' as const, label: t('settings.backend.optionalMissing') }
+      : { tone: 'danger' as const, label: t('settings.backend.unavailable') };
+  const notes = available ? (check?.notes ?? []) : [];
+  const lines = available ? [] : detailLinesOf(check);
+  const reason = available ? undefined : (b.error ?? check?.hint);
+  return (
+    <tr>
+      <td className="plain">{b.host}</td>
+      <td className="plain">{b.backend}</td>
+      <td>
+        <Badge tone={state.tone}>{state.label}</Badge>
+      </td>
+      <td className="plain small">
+        <div>
+          {[b.status?.version, b.status?.rootless ? 'rootless' : undefined]
+            .filter(Boolean)
+            .join(' · ')}
+          {reason ? safeInline(reason, 200) : null}
+        </div>
+        {b.capabilities ? (
+          <div className="muted">
+            {t('settings.backend.isolation', { level: t(`isolation.${b.capabilities.isolation}`) })}{' '}
+            {b.capabilities.isolation === 'none' ? <IsolationBadge level="none" /> : null}
+          </div>
+        ) : null}
+        {notes.length > 0 ? (
+          <Disclosure label={t('settings.notes', { count: notes.length })}>
+            <NoteList notes={notes} />
+          </Disclosure>
+        ) : null}
+        {lines.length > 0 ? (
+          <Disclosure label={t('settings.detailLines', { count: lines.length })}>
+            <DetailLines lines={lines} />
+          </Disclosure>
+        ) : null}
+      </td>
+    </tr>
+  );
+}
+
+function CheckItem(props: { check: DoctorCheck }) {
+  const { t } = useApp();
+  const c = props.check;
+  const severity = severityOf(c);
+  const lines = detailLinesOf(c);
+  const notes = c.notes ?? [];
+  // what needs a look is shown, the rest is one click away
+  const open = severity === 'warning' || severity === 'error';
+  return (
+    <li>
+      <SeverityBadge severity={severity} /> <strong className="plain">{c.title}</strong>
+      {c.hint && severity !== 'ok' ? <div className="plain small">{c.hint}</div> : null}
+      {lines.length > 0 ? (
+        open ? (
+          <DetailLines lines={lines} />
+        ) : (
+          <Disclosure label={t('settings.detailLines', { count: lines.length })}>
+            <DetailLines lines={lines} />
+          </Disclosure>
+        )
+      ) : null}
+      {notes.length > 0 ? (
+        <Disclosure label={t('settings.notes', { count: notes.length })}>
+          <NoteList notes={notes} />
+        </Disclosure>
+      ) : null}
+    </li>
   );
 }
 

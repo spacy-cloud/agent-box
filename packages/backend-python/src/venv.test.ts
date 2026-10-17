@@ -151,6 +151,7 @@ describe.skipIf(missing !== undefined)('python backend, venv mode', { timeout: 1
     const s = await provider.status();
     expect(s.ok).toBe(false); // no engine in this setup; venv mode is still reported
     expect(s.warnings.join('\n')).toContain(VENV_MODE_WARNING);
+    expect(s.advisories?.join('\n')).toContain(VENV_MODE_WARNING);
     expect(s.details.join('\n')).toMatch(/venv mode: available with host uv \d/);
     expect(await provider.venvStatus()).toMatchObject({ ok: true });
     expect(provider.venvCapabilities()).toMatchObject({

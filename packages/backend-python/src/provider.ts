@@ -195,18 +195,21 @@ export class PythonProvider implements SandboxProvider {
     const eng = await this.container.status();
     const details = [...eng.details];
     const warnings = [...eng.warnings];
+    const advisories = [...(eng.advisories ?? [])];
     details.push(
       `container mode: sandboxes use a python image with uv ${PINNED_UV_VERSION} (pinned, sha256 verified), engine ${eng.ok ? 'reachable' : 'NOT reachable'}`,
     );
     const venv = await this.venvStatus();
     details.push(...venv.details);
     warnings.push(...venv.warnings);
+    advisories.push(...(venv.advisories ?? []));
     return {
       ok: eng.ok,
       ...(eng.version !== undefined ? { version: eng.version } : {}),
       ...(eng.rootless !== undefined ? { rootless: eng.rootless } : {}),
       details,
       warnings,
+      advisories,
     };
   }
 
@@ -238,6 +241,8 @@ export class PythonProvider implements SandboxProvider {
       version: `uv ${v}`,
       details: [`venv mode: available with host uv ${v}`, ...base.details],
       warnings: [`WARNING: ${VENV_MODE_WARNING}`, ...base.warnings],
+      // the venv warning is a standing note about how the mode works, not a problem of this host
+      advisories: [`WARNING: ${VENV_MODE_WARNING}`, ...(base.advisories ?? [])],
     };
   }
 

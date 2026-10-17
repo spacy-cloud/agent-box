@@ -123,6 +123,8 @@ describe('process backend specifics', () => {
       const s = await provider.status();
       expect(s.ok).toBe(true);
       expect(s.warnings.join(' ')).toMatch(/isolation level "none"/);
+      // advisory notes, not problems: `abox doctor` shows them as info
+      expect(s.advisories).toEqual(s.warnings);
     });
   });
 

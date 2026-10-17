@@ -199,7 +199,7 @@ export class ProcessProvider implements SandboxProvider {
       ok = false;
       details.push('/bin/sh is missing or not executable');
     }
-    return { ok, version: `node ${process.version}`, details, warnings };
+    return { ok, version: `node ${process.version}`, details, warnings, advisories: [...warnings] };
   }
 
   // -- images ----------------------------------------------------------------------------------

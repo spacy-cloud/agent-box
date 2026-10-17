@@ -364,6 +364,12 @@ export class DockerProvider implements SandboxProvider {
   async status(): Promise<BackendStatus> {
     const details: string[] = [];
     const warnings: string[] = [];
+    // notes about a working engine that need no action: reported by `abox doctor` as info, not warning
+    const advisories: string[] = [];
+    const advise = (note: string): void => {
+      warnings.push(note);
+      advisories.push(note);
+    };
     try {
       await this.docker.ping();
     } catch (e) {
@@ -392,8 +398,13 @@ export class DockerProvider implements SandboxProvider {
         );
       }
       if (!f.rootless) {
-        warnings.push(
+        advise(
           `The ${this.engine} daemon is rootful: access to its socket (e.g. membership of the docker group) is root-equivalent on the host. Prefer a rootless engine.`,
+        );
+      }
+      if (!f.diskQuota) {
+        advise(
+          `The storage driver (${f.storageDriver}${f.backingFs ? ` on ${f.backingFs}` : ''}) has no disk quota: resources.disk cannot be enforced`,
         );
       }
       if (!this.proxyAssets)
@@ -408,11 +419,11 @@ export class DockerProvider implements SandboxProvider {
       );
       const foreign = await this.countForeignSandboxes().catch(() => 0);
       if (foreign > 0) {
-        warnings.push(
+        advise(
           `${foreign} abox resource${foreign === 1 ? '' : 's'} (sandboxes) of another or unknown instance present on this engine: not listed and never touched by this installation (see "abox gc --orphans")`,
         );
       }
-      return { ok: true, version: f.version, rootless: f.rootless, details, warnings };
+      return { ok: true, version: f.version, rootless: f.rootless, details, warnings, advisories };
     } catch (e) {
       const err = mapEngineError(e, this.socketPath);
       return { ok: false, details: [...details, err.message], warnings };

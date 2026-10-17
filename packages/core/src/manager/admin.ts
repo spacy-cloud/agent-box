@@ -37,6 +37,12 @@ import type {
   ReconcileReport,
   SetPolicyResult,
 } from './types.js';
+import {
+  classifyWorkingBackend,
+  legacyLevel,
+  startHint,
+  summarizeChecks,
+} from './doctor-severity.js';
 import { errMessage } from './util.js';
 
 const MAX_POLICY_BYTES = 256 * 1024;
@@ -543,11 +549,12 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   I.requireHuman(ctx, 'doctor');
   const checks: DoctorCheck[] = [];
   const backends: BackendReport[] = [];
-  const add = (c: DoctorCheck): void => void checks.push(c);
+  const add = (c: Omit<DoctorCheck, 'level'>): void =>
+    void checks.push({ ...c, level: legacyLevel(c.severity) });
 
-  // Backends nobody needs (no template of the user's and no sandbox uses them) only warn when they are
-  // unusable: a missing Podman must not make `abox doctor` fail for a Docker user (and a missing Docker
-  // not for a Podman user). Exception: with no container engine at all the Docker check is an error,
+  // Backends nobody needs (no template of the user's and no sandbox uses them) are only an `info` when
+  // they are not installed or not running: a missing Podman must not worry a Docker user (and a missing
+  // Docker not a Podman user). Exception: with no container engine at all the Docker check is an error,
   // because most builtin templates need one.
   const needed = new Set<BackendKind>();
   try {
@@ -558,12 +565,33 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
     /* an unreadable template directory is reported by the template commands */
   }
   for (const r of I.state.sandboxes.list()) needed.add(r.backend);
-  const unusableLevel = (kind: BackendKind): 'warn' | 'error' =>
-    needed.has(kind) ? 'error' : 'warn';
-  const optionalNote = (kind: BackendKind): string =>
-    needed.has(kind) ? '' : ' (optional: no template of yours or sandbox uses it)';
+  const unusableCheck = (
+    hostId: string,
+    kind: BackendKind,
+    details: string[],
+  ): Omit<DoctorCheck, 'level'> => {
+    const base = {
+      id: `backend.${hostId}.${kind}`,
+      ...(details.length > 0 ? { detail: details.join('; '), details } : {}),
+    };
+    return needed.has(kind)
+      ? {
+          ...base,
+          severity: 'error',
+          title: `backend ${kind} on ${hostId}: not usable`,
+        }
+      : {
+          ...base,
+          severity: 'info',
+          title: `backend ${kind} on ${hostId}: not installed or not running (optional)`,
+          hint: startHint(kind),
+        };
+  };
 
   // backends
+  // The python backend repeats the notes of the engine and of the process backend it is built on:
+  // an advisory is shown once per host, with the first backend that reports it.
+  const notesShown = new Map<string, Set<string>>();
   const hostIds = new Set<string>(['local']);
   for (const r of I.state.sandboxes.list()) hostIds.add(r.host);
   for (const hostId of hostIds) {
@@ -579,7 +607,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
       });
       add({
         id: `host.${hostId}`,
-        level: 'error',
+        severity: 'error',
         title: `host ${hostId} cannot be reached`,
         detail: errMessage(e),
       });
@@ -597,20 +625,30 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
           status,
           capabilities: p.capabilities(),
         });
-        add({
-          id: `backend.${hostId}.${kind}`,
-          level: status.ok ? (status.warnings.length > 0 ? 'warn' : 'ok') : unusableLevel(kind),
-          title: `backend ${kind} on ${hostId}: ${status.ok ? 'ok' : `not usable${optionalNote(kind)}`}`,
-          detail: [...status.details, ...status.warnings].join('; '),
-        });
+        if (status.ok) {
+          const classified = classifyWorkingBackend(status);
+          const shown = notesShown.get(hostId) ?? new Set<string>();
+          notesShown.set(hostId, shown);
+          // only advisories are folded; a warning is always shown with the check that is a warning
+          const notes = classified.notes.filter(
+            (n) => n.severity === 'warning' || !shown.has(n.message),
+          );
+          for (const n of notes) shown.add(n.message);
+          const { severity } = classified;
+          add({
+            id: `backend.${hostId}.${kind}`,
+            severity,
+            title: `backend ${kind} on ${hostId}: ok`,
+            detail: [...status.details, ...status.warnings].join('; '),
+            details: status.details,
+            ...(notes.length > 0 ? { notes } : {}),
+          });
+        } else {
+          add(unusableCheck(hostId, kind, [...status.details, ...status.warnings]));
+        }
       } catch (e) {
         backends.push({ host: hostId, backend: kind, available: false, error: errMessage(e) });
-        add({
-          id: `backend.${hostId}.${kind}`,
-          level: unusableLevel(kind),
-          title: `backend ${kind} on ${hostId} failed${optionalNote(kind)}`,
-          detail: errMessage(e),
-        });
+        add(unusableCheck(hostId, kind, [errMessage(e)]));
       }
     }
   }
@@ -619,9 +657,10 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   );
   if (!engineUsable) {
     for (const c of checks) {
-      if (c.level === 'warn' && c.id.startsWith('backend.') && c.id.endsWith('.docker')) {
+      if (c.severity === 'info' && c.id.startsWith('backend.') && c.id.endsWith('.docker')) {
+        c.severity = 'error';
         c.level = 'error';
-        c.title = c.title.replace(/ \(optional: [^)]*\)/, '');
+        c.title = c.title.replace(/: not installed or not running \(optional\)$/, ': not usable');
         c.hint =
           'Install and start Docker or Podman (the builtin templates need a container engine).';
       }
@@ -630,7 +669,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   if (!backends.some((b) => b.available))
     add({
       id: 'backend.none',
-      level: 'error',
+      severity: 'error',
       title: 'no usable backend',
       hint: 'Install and start Docker/Podman, or use the process backend.',
     });
@@ -651,7 +690,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   }
   add({
     id: 'state',
-    level: stateOk ? 'ok' : 'error',
+    severity: stateOk ? 'ok' : 'error',
     title: stateOk ? 'state database ok' : 'state database problem',
     ...(stateMessage ? { detail: stateMessage } : {}),
   });
@@ -660,7 +699,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
     if ((m & 0o077) !== 0)
       add({
         id: 'state.perms',
-        level: 'warn',
+        severity: 'warning',
         title: `state database is accessible by others (mode ${modeString(m)})`,
         hint: `chmod 600 ${I.paths.stateDb}`,
       });
@@ -673,7 +712,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
     const p = I.policyProblem;
     add({
       id: 'policy.invalid',
-      level: 'error',
+      severity: 'error',
       title:
         'policy.yaml is invalid: creating sandboxes, granting access, approving and every agent are refused',
       detail: [
@@ -696,7 +735,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
       if ((st.mode & 0o022) !== 0) {
         add({
           id: 'policy.perms',
-          level: 'warn',
+          severity: 'warning',
           title: `policy.yaml is writable by others (mode ${fileMode})`,
           hint: `chmod 600 ${I.policy.source.path}`,
           detail: 'Anyone who can write this file can widen agent rights.',
@@ -704,16 +743,20 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
       } else if (uid !== undefined && st.uid !== uid) {
         add({
           id: 'policy.owner',
-          level: 'warn',
+          severity: 'warning',
           title: 'policy.yaml is owned by another user',
           detail: `uid ${st.uid}`,
         });
       } else
-        add({ id: 'policy.perms', level: 'ok', title: `policy.yaml present (mode ${fileMode})` });
+        add({
+          id: 'policy.perms',
+          severity: 'ok',
+          title: `policy.yaml present (mode ${fileMode})`,
+        });
     } catch (e) {
       add({
         id: 'policy.perms',
-        level: 'warn',
+        severity: 'warning',
         title: 'policy.yaml cannot be inspected',
         detail: errMessage(e),
       });
@@ -723,7 +766,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
       if ((dm & 0o022) !== 0)
         add({
           id: 'policy.dir',
-          level: 'warn',
+          severity: 'warning',
           title: `config directory is writable by others (mode ${modeString(dm)})`,
           hint: `chmod 700 ${I.paths.configDir}`,
         });
@@ -733,9 +776,9 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   } else {
     add({
       id: 'policy.default',
-      level: 'ok',
+      severity: 'info',
       title: 'no policy.yaml: the built-in default policy is active',
-      hint: 'Create ~/.config/abox/policy.yaml to define agent rights.',
+      hint: `Create ${I.paths.policyFile} (for example with "abox policy edit") to define agent rights.`,
     });
   }
 
@@ -743,7 +786,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   const audit = I.state.audit.verifyChain();
   add({
     id: 'audit',
-    level: audit.ok ? 'ok' : 'error',
+    severity: audit.ok ? 'ok' : 'error',
     title: audit.ok
       ? `audit chain intact (${audit.checked} entries)`
       : `audit chain broken at entry ${audit.brokenAt}`,
@@ -755,7 +798,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   if (rec.orphans.length > 0)
     add({
       id: 'reconcile.orphans',
-      level: 'warn',
+      severity: 'warning',
       title: `${rec.orphans.length} orphaned backend sandbox(es)`,
       detail: rec.orphans.map((e) => e.id).join(', '),
       hint: '`abox reconcile --apply --remove-orphans` removes them (after you checked).',
@@ -763,7 +806,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   if (rec.ghosts.length > 0)
     add({
       id: 'reconcile.ghosts',
-      level: 'warn',
+      severity: 'warning',
       title: `${rec.ghosts.length} registered sandbox(es) missing in the backend`,
       detail: rec.ghosts.map((e) => e.id).join(', '),
       hint: '`abox reconcile --apply` marks them removed.',
@@ -771,7 +814,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   if (rec.interrupted.length > 0)
     add({
       id: 'reconcile.interrupted',
-      level: 'warn',
+      severity: 'warning',
       title: `${rec.interrupted.length} interrupted create(s)`,
       detail: rec.interrupted.map((e) => e.id).join(', '),
       hint: '`abox reconcile --apply` cleans up their leftovers.',
@@ -779,22 +822,29 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   if (rec.expired.length > 0)
     add({
       id: 'reconcile.expired',
-      level: 'warn',
+      severity: 'warning',
       title: `${rec.expired.length} expired sandbox(es) not removed yet`,
       detail: rec.expired.map((e) => e.id).join(', '),
       hint: '`abox gc` removes them.',
     });
-  for (const u of rec.unreachable)
+  // A backend that is already reported as unavailable and optional (nothing of yours uses it) is not
+  // reported a second time as "could not list": that is the same fact. If something uses it, the list
+  // failure stays a warning because the registry could not be compared with the backend.
+  const alreadyReported = (u: { host: string; backend: BackendKind }): boolean =>
+    !needed.has(u.backend) &&
+    backends.some((b) => b.host === u.host && b.backend === u.backend && !b.available);
+  const unreachable = rec.unreachable.filter((u) => !alreadyReported(u));
+  for (const u of unreachable)
     add({
       id: `reconcile.unreachable.${u.host}.${u.backend}`,
-      level: 'warn',
+      severity: 'warning',
       title: `could not list ${u.backend} on ${u.host}`,
       detail: u.error,
     });
   if (rec.pendingApprovals > 0)
     add({
       id: 'approvals.pending',
-      level: 'warn',
+      severity: 'warning',
       title: `${rec.pendingApprovals} pending approval(s)`,
       hint: '`abox approvals ls`',
     });
@@ -803,15 +853,23 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
       rec.ghosts.length +
       rec.interrupted.length +
       rec.expired.length +
-      rec.unreachable.length +
+      unreachable.length +
       rec.pendingApprovals ===
     0
   ) {
-    add({ id: 'reconcile', level: 'ok', title: 'registry and backends agree' });
+    add({
+      id: 'reconcile',
+      severity: 'ok',
+      title:
+        unreachable.length < rec.unreachable.length
+          ? 'registry and available backends agree'
+          : 'registry and backends agree',
+    });
   }
 
   return {
-    ok: !checks.some((c) => c.level === 'error'),
+    ok: !checks.some((c) => c.severity === 'error'),
+    summary: summarizeChecks(checks),
     checks,
     backends,
     state: {

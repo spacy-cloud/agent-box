@@ -359,6 +359,27 @@ describe('doctor, reconcile and gc', () => {
     expect(human.stdout).toContain('no problems found');
   });
 
+  it('doctor separates advisory notes from warnings: a working process backend is ok with info notes', async () => {
+    const r = await run(t, ['doctor', '--json']);
+    const check = r.json.data.checks.find((c: { id: string }) => c.id === 'backend.local.process');
+    // `level` stays for older readers, `severity` and `notes` are new
+    expect(check).toMatchObject({ level: 'ok', severity: 'ok' });
+    expect(check.notes.length).toBeGreaterThan(0);
+    expect(check.notes.every((n: { severity: string }) => n.severity === 'info')).toBe(true);
+    expect(check.detail).toContain('isolation level "none"');
+    expect(r.json.data.summary).toMatchObject({ warning: 0, error: 0 });
+
+    const human = await run(t, ['doctor']);
+    expect(human.stdout).toMatch(/^✓ backend process on local: ok$/m);
+    expect(human.stdout).toMatch(/^ {4}i isolation level "none"/m);
+    expect(human.stdout).not.toContain('[warn]');
+    expect(human.stdout).toMatch(/no problems found \(\d+ ok\)/);
+    expect(human.stdout).not.toContain('data directory:');
+    const verbose = await run(t, ['doctor', '--verbose']);
+    expect(verbose.code).toBe(0);
+    expect(verbose.stdout).toContain('· data directory:');
+  });
+
   it('reports a registered sandbox that vanished from the backend and repairs it', async () => {
     const c = await run(t, ['create', 'host-shell', '--workspace', '.', '--yes', '--json']);
     const id = c.json.data.sandbox.id as string;

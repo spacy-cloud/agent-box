@@ -15,36 +15,122 @@ Start with `abox doctor`. Most problems show up there with a hint.
 
 ```console
 $ abox doctor
-[warn] backend docker on local: ok - docker 29.9.1 (API 1.56) at /var/run/docker.sock; storage driver: overlayfs; ... cgroup v2; disk quota (StorageOpt size): not supported; isolation: container; ...; The docker daemon is rootful: access to its socket (e.g. membership of the docker group) is root-equivalent on the host. Prefer a rootless engine.
-[warn] backend podman on local: not usable (optional: it is not the default backend and no template of yours or sandbox uses it) - podman engine unreachable at /run/user/1000/podman/podman.sock: ...
-[warn] backend process on local: ok - ... isolation level "none": commands run as the host user with full access to the host ...
-[warn] backend vm on local: ok - ... /dev/kvm is accessible ...; QEMU 11.1.2 (/usr/bin/qemu-system-x86_64); free disk space ...
-[warn] backend python on local: ok - ... container mode: ... uv 0.12.24 (pinned, sha256 verified) ...; venv mode: available with host uv ...
-[ok  ] state database ok
-[ok  ] policy.yaml present (mode 644)
-[ok  ] audit chain intact (133 entries)
+✓ backend docker on local: ok
+    i The docker daemon is rootful: access to its socket (e.g. membership of the docker group) is
+      root-equivalent on the host. Prefer a rootless engine.
+    i The storage driver (overlayfs) has no disk quota: resources.disk cannot be enforced
+i backend podman on local: not installed or not running (optional)
+    hint: Start it with `systemctl --user start podman.socket` to use it.
+✓ backend process on local: ok
+    i isolation level "none": commands run as the host user with full access to the host (file APIs
+      are confined, commands are not)
+    i network cannot be restricted; resource limits are not enforced
+✓ backend vm on local: ok
+    i network mode "open" lets the guest reach the host network including the host loopback
+      (10.0.2.2); prefer "allowlist" or "none"
+✓ backend python on local: ok
+    i WARNING: venv mode (templates with isolation: none) runs plain host processes with the host uv
+      and the host user's rights: NO security boundary, no network restriction, no resource limits.
+✓ state database ok
+✓ policy.yaml present (mode 600)
+✓ audit chain intact (133 entries)
+✓ registry and backends agree
 
-no problems found (see warnings above)
+Run "abox doctor --verbose" for the full details.
+
+no problems found (8 ok, 1 info)
 ```
 
-Each line is `ok`, `warn` or `FAIL`. Many `warn` lines are _information about the isolation level_
-(for example that `process` offers none) and not problems. What the checks cover:
+Every check has one of four severities, shown as a mark at the start of the line:
+
+| Mark | Severity  | Meaning                                                                         |
+| ---- | --------- | ------------------------------------------------------------------------------- |
+| `✓`  | `ok`      | works                                                                           |
+| `i`  | `info`    | an advisory note, or an optional component that is not installed or not running |
+| `!`  | `warning` | something is degraded and you should probably act on it                         |
+| `✗`  | `failed`  | a check failed; the only severity that makes the exit code 1                    |
+
+A backend that works is `ok`, even when it comes with advisory notes (a rootful daemon, a storage
+driver without disk quota, `process` and venv mode without isolation, the VM `open` network mode
+reaching the host network). The notes are listed under the check with an `i`; they say what the
+backend does not give you, not that something is wrong. A backend that works but is degraded
+(for example a configured hardened runtime that is missing in the engine, QEMU older than 6.0, a
+host with little free disk space) is a `warning`, and the real warnings are listed before the notes.
+The same advisory is shown once per host (the Python backend does not repeat what Docker said).
+
+An **optional backend** that is not installed or not running (Podman on a Docker machine, the VM
+backend without KVM, the Python backend without an engine) appears exactly once, as `info`, with a
+hint how to start it. "Optional" means that no template of yours and no sandbox uses it. The
+second report from the leftover check ("could not list podman") is left out for such a backend. If
+something does use the backend, it is a failed check, and a failure to list it stays a warning,
+because the registry could not be compared with the backend. With no container engine at all, the
+Docker check is a failed check, because most builtin templates need one.
+
+Plain output shows the title of each check, its notes and its hint, and the detail lines of
+everything that is a warning or failed. `abox doctor --verbose` also prints the detail lines of
+the checks that are ok or info (versions, storage driver, runtimes, instance id, ...).
+
+What the checks cover:
 
 - **Backends** (per host): reachable, version, rootless or not, storage driver, which limits can
   be enforced (disk quota), runtimes, free disk space, KVM and QEMU for the VM backend, `uv` for
-  the Python backend. A backend that is not usable is only a warning when nothing uses it (an optional
-  backend such as Podman) and a failed check otherwise.
+  the Python backend.
 - **State database**: integrity and file permissions.
-- **`policy.yaml`**: present or the built-in default, and a warning when it is group- or
+- **`policy.yaml`**: present or the built-in default (an `info`), and a warning when it is group- or
   world-writable.
 - **Audit chain**: whether the hash chain is intact.
 - **Leftovers**: interrupted creates (for example after `kill -9`), registry rows whose
   sandbox is gone from the backend (_ghosts_), backend objects unknown to the registry
   (_orphans_), expired sandboxes. `doctor` never deletes anything.
 
-Exit codes: 0 when no check failed (warnings, including optional engines such as Podman that are
-not running, do not count), 1 when a check failed. With `--json` the report is in `details.report`
-of the error body.
+Exit codes: 0 when no check failed (warnings and info, including optional engines such as Podman
+that are not running, do not count), 1 when a check failed.
+
+### `abox doctor --json`
+
+With `--json` the report is `data` of the result (on a failed check it is `details.report` of the
+error body). The shape only grew; everything that was there is still there:
+
+```json
+{
+  "ok": true,
+  "summary": { "ok": 8, "info": 1, "warning": 0, "error": 0 },
+  "checks": [
+    {
+      "id": "backend.local.docker",
+      "level": "ok",
+      "severity": "ok",
+      "title": "backend docker on local: ok",
+      "detail": "docker 29.9.1 (API 1.56) at /var/run/docker.sock; storage driver: overlayfs; ...",
+      "details": ["docker 29.9.1 (API 1.56) at /var/run/docker.sock", "storage driver: overlayfs"],
+      "notes": [{ "severity": "info", "message": "The docker daemon is rootful: ..." }]
+    },
+    {
+      "id": "backend.local.podman",
+      "level": "ok",
+      "severity": "info",
+      "title": "backend podman on local: not installed or not running (optional)",
+      "details": ["podman engine unreachable at /run/user/1000/podman/podman.sock: ..."],
+      "hint": "Start it with `systemctl --user start podman.socket` to use it."
+    }
+  ],
+  "backends": [],
+  "state": {},
+  "policy": {},
+  "audit": {},
+  "reconcile": {}
+}
+```
+
+- New: `severity` (`ok`, `info`, `warning`, `error`; authoritative), `details` (the detail as separate
+  lines), `notes` (advisories and warnings of a working backend, each `{severity: "info" | "warning",
+message}`) per check, and `summary` (the number of checks per severity) in the report. `ok` is
+  still false only when a check has severity `error`.
+- Unchanged: `level` (`ok`, `warn`, `error`) is kept for scripts: `info` is reported as `ok` and
+  `warning` as `warn`, so an optional backend that is not running now has `level: "ok"` where it
+  used to have `"warn"`. `detail` still has everything in one string. `backends[].status.warnings`
+  still has every warning; the new `backends[].status.advisories` says which of them are advisory
+  notes.
 
 ## Common errors
 
@@ -99,10 +185,10 @@ Unapproved project templates need your confirmation too.
 
 ### Docker: "permission denied" on the socket, or the docker group warning
 
-`abox doctor` says the daemon is rootful and that docker-group membership is root-equivalent.
+`abox doctor` notes (`i`) that the daemon is rootful and that docker-group membership is root-equivalent.
 That is a property of Docker, not of abox: anyone who can talk to the socket can become root on
 the host. If you can, switch to a **rootless** engine (rootless Docker or Podman). abox works with
-a rootful daemon but warns, and does **not** add you to any group.
+a rootful daemon but says so, and does **not** add you to any group.
 
 If you get `permission denied`/`ENOENT` on `/var/run/docker.sock`:
 
@@ -307,7 +393,7 @@ Sandbox containers, their proxy sidecars and internal networks live on the conta
 and no abox sees them any more: each home stamps its own id (the file `instance-id` in its data directory,
 gone with it) as label `abox.instance` and only lists, stops and removes objects with its own id. This
 separation is deliberate, so two homes on one engine never delete each other's sandboxes. `abox ls`,
-`abox doctor` and `abox gc` therefore show nothing (`abox doctor` only warns that "abox resources of
+`abox doctor` and `abox gc` therefore show nothing (`abox doctor` only notes that "abox resources of
 another or unknown instance" exist).
 
 `abox gc --orphans` finds them, from any home. It groups the leftovers by instance and tells you which

@@ -122,7 +122,7 @@ epoch):
 | `template validate` | `{ok, issues, warnings, name, source, policy: {decision, reasons}}`                                                                                                                                                                                           |
 | `policy show`       | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}`                                                                                                                                                                                 |
 | `token ls`          | `{tokens: [{id, contextId, label, createdAt, lastUsedAt, revokedAt}]}`                                                                                                                                                                                        |
-| `doctor`            | on problems, an error body with `details.report`; see [troubleshooting](troubleshooting.md#abox-doctor)                                                                                                                                                       |
+| `doctor`            | `{ok, summary, checks: [{id, level, severity, title, detail?, details?, notes?, hint?}], backends, state, policy, audit, reconcile}`; on problems, an error body with `details.report`; see [troubleshooting](troubleshooting.md#abox-doctor)                 |
 | `gc`, `reconcile`   | the report objects (`dryRun`, `sandboxes`, `workspaces`, `images`, `logs`, ...; `orphans`, `ghosts`, `interrupted`, `expired`, `unreachable`, `applied`)                                                                                                      |
 | `gc --orphans`      | `{dryRun, now, resources: [{kind, ref, name, instance, aboxName, sandboxId, role, state, createdAt, startedAt, engine, host, backend, skip}], instances: [{instance, resources, running, newestAt, active, selected, skipReason}], removed, skipped, errors}` |
 
@@ -666,7 +666,24 @@ Check the hash chain of the audit log for tampering
 
 `abox doctor [options]`
 
-Check backends, permissions, the audit chain and leftovers (exit 1 when any check fails; warnings do not change the exit code)
+Check backends, permissions, the audit chain and leftovers (exit 1 when any check fails; notes and warnings do not change the exit code)
+
+| Option          | Meaning                                    |
+| --------------- | ------------------------------------------ |
+| `-v, --verbose` | also print the full details of every check |
+
+Every check has a severity:
+
+| Mark | Severity  | Meaning                                                                         |
+| ---- | --------- | ------------------------------------------------------------------------------- |
+| `✓`  | `ok`      | works                                                                           |
+| `i`  | `info`    | an advisory note, or an optional component that is not installed or not running |
+| `!`  | `warning` | something is degraded and you should probably act on it                         |
+| `✗`  | `failed`  | a check failed (the only severity that makes the exit code 1)                   |
+
+`--verbose` also prints the detail lines of checks that are ok or info. With `--json` each check
+also has `severity`, `details` and `notes`, and the report a `summary` (counts per severity); `level`
+(`ok`/`warn`/`error`) is kept for scripts. See [troubleshooting](troubleshooting.md#abox-doctor).
 
 ### `abox reconcile`
 

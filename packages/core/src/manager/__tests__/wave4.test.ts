@@ -618,22 +618,24 @@ describe('doctor and optional backends', () => {
     return p;
   };
 
-  it('an unusable Podman nobody needs is a warning, not a failure', async () => {
+  it('an unusable Podman nobody needs is an info, not a warning or a failure', async () => {
     const a = await setup({ providers: { podman: brokenPodman } });
     const d = await a.doctor(HUMAN);
     const c = d.checks.find((x) => x.id === 'backend.local.podman')!;
-    expect(c.level).toBe('warn');
-    expect(c.title).toContain('optional');
+    expect(c).toMatchObject({ severity: 'info', level: 'ok' });
+    expect(c.title).toBe('backend podman on local: not installed or not running (optional)');
+    expect(c.hint).toContain('systemctl --user start podman.socket');
+    expect(c.details).toEqual(['podman socket missing']);
     expect(d.ok).toBe(true);
     expect(d.checks.filter((x) => x.level === 'error')).toEqual([]);
   });
 
-  it('a Podman-only machine: the unusable Docker is only a warning', async () => {
+  it('a Podman-only machine: the unusable Docker is only an info', async () => {
     const goodPodman = (host: ConstructorParameters<typeof FakeProvider>[0]): FakeProvider =>
       new FakeProvider(host, { kind: 'podman', now: env.clock.now });
     const a = await setup({ bare: true, providers: { podman: goodPodman, docker: brokenDocker } });
     const d = await a.doctor(HUMAN);
-    expect(d.checks.find((x) => x.id === 'backend.local.docker')!.level).toBe('warn');
+    expect(d.checks.find((x) => x.id === 'backend.local.docker')!.severity).toBe('info');
     expect(d.ok).toBe(true);
   });
 
@@ -643,8 +645,9 @@ describe('doctor and optional backends', () => {
       providers: { podman: brokenPodman, docker: brokenDocker },
     });
     const d = await a.doctor(HUMAN);
+    expect(d.checks.find((x) => x.id === 'backend.local.docker')!.severity).toBe('error');
     expect(d.checks.find((x) => x.id === 'backend.local.docker')!.level).toBe('error');
-    expect(d.checks.find((x) => x.id === 'backend.local.podman')!.level).toBe('warn');
+    expect(d.checks.find((x) => x.id === 'backend.local.podman')!.severity).toBe('info');
     expect(d.ok).toBe(false);
   });
 
@@ -655,7 +658,151 @@ describe('doctor and optional backends', () => {
       'apiVersion: 1\nname: my-podman\ndescription: A template on podman for the doctor test.\nbackend: podman\nbase: { os: ubuntu:24.04 }\n',
     );
     const d = await a.doctor(HUMAN);
-    expect(d.checks.find((x) => x.id === 'backend.local.podman')!.level).toBe('error');
+    expect(d.checks.find((x) => x.id === 'backend.local.podman')!).toMatchObject({
+      severity: 'error',
+      level: 'error',
+    });
     expect(d.ok).toBe(false);
+  });
+
+  it('an optional unavailable backend is reported once: no extra "could not list" warning', async () => {
+    const a = await setup({
+      providers: {
+        podman: (host) => {
+          const p = brokenPodman(host);
+          p.list = () =>
+            Promise.reject(new Error('connect ENOENT /run/user/1000/podman/podman.sock'));
+          return p;
+        },
+      },
+    });
+    const d = await a.doctor(HUMAN);
+    expect(d.reconcile.unreachable.map((u) => u.backend)).toContain('podman');
+    expect(d.checks.filter((x) => x.id.includes('podman')).map((x) => x.id)).toEqual([
+      'backend.local.podman',
+    ]);
+    expect(d.checks.some((x) => x.title.startsWith('could not list'))).toBe(false);
+    expect(d.summary.warning).toBe(0);
+    expect(d.ok).toBe(true);
+  });
+
+  it('keeps "could not list" as a warning when a template of yours uses the backend', async () => {
+    const a = await setup({
+      providers: {
+        podman: (host) => {
+          const p = new FakeProvider(host, { kind: 'podman', now: env.clock.now });
+          p.list = () => Promise.reject(new Error('connect ENOENT'));
+          return p;
+        },
+      },
+    });
+    writeFileSync(
+      join(a.paths.templatesDir, 'my-podman.yaml'),
+      'apiVersion: 1\nname: my-podman\ndescription: A template on podman for the doctor test.\nbackend: podman\nbase: { os: ubuntu:24.04 }\n',
+    );
+    const d = await a.doctor(HUMAN);
+    expect(d.checks.find((x) => x.id === 'reconcile.unreachable.local.podman')).toMatchObject({
+      severity: 'warning',
+      level: 'warn',
+    });
+    // a working backend that cannot be listed is not "unavailable": reported as the warning only
+    expect(d.checks.find((x) => x.id === 'backend.local.podman')!.severity).toBe('ok');
+    expect(d.ok).toBe(true);
+  });
+
+  it('a working backend with only advisory notes is ok, with the notes as info', async () => {
+    const rootful = (host: ConstructorParameters<typeof FakeProvider>[0]): FakeProvider => {
+      const p = new FakeProvider(host, { kind: 'podman', now: env.clock.now });
+      p.status = () =>
+        Promise.resolve({
+          ok: true,
+          version: '5',
+          details: ['podman 5 at /run/podman.sock'],
+          warnings: ['The podman daemon is rootful', 'No disk quota'],
+          advisories: ['The podman daemon is rootful', 'No disk quota'],
+        });
+      return p;
+    };
+    const a = await setup({ providers: { podman: rootful } });
+    const d = await a.doctor(HUMAN);
+    const c = d.checks.find((x) => x.id === 'backend.local.podman')!;
+    expect(c).toMatchObject({ severity: 'ok', level: 'ok', title: 'backend podman on local: ok' });
+    expect(c.notes).toEqual([
+      { severity: 'info', message: 'The podman daemon is rootful' },
+      { severity: 'info', message: 'No disk quota' },
+    ]);
+    expect(c.detail).toContain('podman 5 at /run/podman.sock');
+    expect(d.summary.warning).toBe(0);
+  });
+
+  it('shows an advisory only once per host, with the first backend that reports it', async () => {
+    const rootful =
+      (kind: 'docker' | 'podman') =>
+      (host: ConstructorParameters<typeof FakeProvider>[0]): FakeProvider => {
+        const p = new FakeProvider(host, { kind, now: env.clock.now });
+        p.status = () =>
+          Promise.resolve({
+            ok: true,
+            details: [],
+            warnings: ['engine is rootful'],
+            advisories: ['engine is rootful'],
+          });
+        return p;
+      };
+    const a = await setup({ providers: { docker: rootful('docker'), podman: rootful('podman') } });
+    const d = await a.doctor(HUMAN);
+    const withNote = d.checks.filter((x) =>
+      x.notes?.some((n) => n.message === 'engine is rootful'),
+    );
+    expect(withNote.map((x) => x.id)).toEqual(['backend.local.docker']);
+    // the raw status keeps everything
+    const raw = d.backends.filter((b) => b.status?.warnings.includes('engine is rootful'));
+    expect(raw.map((b) => b.backend).sort()).toEqual(['docker', 'podman']);
+  });
+
+  it('a working backend with a real warning is a warning; advisories stay info notes', async () => {
+    const degraded = (host: ConstructorParameters<typeof FakeProvider>[0]): FakeProvider => {
+      const p = new FakeProvider(host, { kind: 'podman', now: env.clock.now });
+      p.status = () =>
+        Promise.resolve({
+          ok: true,
+          details: [],
+          warnings: ['rootful', 'hardened runtime missing'],
+          advisories: ['rootful'],
+        });
+      return p;
+    };
+    const a = await setup({ providers: { podman: degraded } });
+    const d = await a.doctor(HUMAN);
+    const c = d.checks.find((x) => x.id === 'backend.local.podman')!;
+    expect(c).toMatchObject({ severity: 'warning', level: 'warn' });
+    expect(c.notes).toEqual([
+      { severity: 'warning', message: 'hardened runtime missing' },
+      { severity: 'info', message: 'rootful' },
+    ]);
+    expect(d.ok).toBe(true);
+  });
+
+  it('a status without `advisories` (older provider) keeps every warning a warning', async () => {
+    const old = (host: ConstructorParameters<typeof FakeProvider>[0]): FakeProvider => {
+      const p = new FakeProvider(host, { kind: 'podman', now: env.clock.now });
+      p.status = () => Promise.resolve({ ok: true, details: [], warnings: ['something'] });
+      return p;
+    };
+    const a = await setup({ providers: { podman: old } });
+    const d = await a.doctor(HUMAN);
+    expect(d.checks.find((x) => x.id === 'backend.local.podman')!.severity).toBe('warning');
+  });
+
+  it('the report carries the counts per severity and failed checks alone decide ok', async () => {
+    const a = await setup({ providers: { podman: brokenPodman } });
+    const d = await a.doctor(HUMAN);
+    expect(d.summary).toEqual({
+      ok: d.checks.filter((x) => x.severity === 'ok').length,
+      info: d.checks.filter((x) => x.severity === 'info').length,
+      warning: d.checks.filter((x) => x.severity === 'warning').length,
+      error: 0,
+    });
+    expect(d.summary.info).toBeGreaterThanOrEqual(1);
   });
 });
