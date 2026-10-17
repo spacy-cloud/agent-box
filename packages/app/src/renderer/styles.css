@@ -1245,3 +1245,15 @@ dd > .scroll-text {
 .policy-form legend {
   font-weight: 700;
 }
+
+.progress-bar {
+  width: 100%;
+  height: 0.7rem;
+  margin: 0.4rem 0;
+}
+.banner .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}

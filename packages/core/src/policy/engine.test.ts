@@ -424,6 +424,79 @@ describe('workspace', () => {
   });
 });
 
+describe('workspace: soft size limit of a copy', () => {
+  const copyReq = (
+    copy: { bytes: number; entries: number },
+    mode: 'copy' | 'sync' | 'clone' = 'copy',
+  ) => ({ workspace: { mode, hostPath: env.app, copy } }) as Partial<CreateRequest>;
+  const SMALL = { bytes: 10 * 1024 ** 2, entries: 300 };
+  const BIG = { bytes: 3 * GIB, entries: 41_000 };
+
+  it('allows a small folder and a request without a measurement', () => {
+    expect(run({}, copyReq(SMALL)).decision).toBe('allow');
+    expect(run({}, { workspace: { mode: 'copy', hostPath: env.app } }).decision).toBe('allow');
+  });
+
+  it('agents: a folder above workspace.max_copy_bytes is denied with the size, the limit and what to do', () => {
+    const r = run({}, copyReq(BIG));
+    expectDeny(r, `workspace folder ${env.app} is too large to copy`, '3.0 GiB in 41000 entries');
+    expectDeny(r, 'allows 1.0 GiB / 50000 entries', 'workspace.max_copy_bytes');
+    if (r.decision !== 'deny') throw new Error('unreachable');
+    expect(r.hint).toContain('Choose the project folder itself');
+    expect(r.hint).toContain('workspace mode "clone" or "worktree" or "mount"');
+    expect(r.hint).toContain('workspace.exclude');
+    expect(r.hint).toContain('Only the human can raise workspace.max_copy_bytes');
+  });
+
+  it('agents: the alternatives named are the ones the profile allows', () => {
+    const r = run({ workspace: { modes: ['copy', 'empty'] } }, copyReq(BIG));
+    if (r.decision !== 'deny') throw new Error('expected deny');
+    expect(r.hint).not.toContain('Use workspace mode');
+    expect(r.hint).toContain('workspace.exclude');
+  });
+
+  it('agents: too many entries are denied even when the bytes are small', () => {
+    expectDeny(run({}, copyReq({ bytes: 1024, entries: 50_001 })), 'too large to copy');
+    expect(run({}, copyReq({ bytes: 1024, entries: 50_000 })).decision).toBe('allow');
+  });
+
+  it('a profile can allow more (and less)', () => {
+    expect(
+      run({ workspace: { max_copy_bytes: '4g', max_copy_entries: 100_000 } }, copyReq(BIG))
+        .decision,
+    ).toBe('allow');
+    expectDeny(run({ workspace: { max_copy_bytes: '1m' } }, copyReq(SMALL)), 'too large to copy');
+  });
+
+  it('humans: a confirmation with the size, also in approval mode open; confirmed it goes through', () => {
+    const human = humanContext(env);
+    const r = evaluateCreate(mkReq(env, human, copyReq(BIG)));
+    if (r.decision !== 'approval') throw new Error(`expected approval, got ${r.decision}`);
+    expect(r.kinds).toEqual(['workspace_size']);
+    expect(r.items[0]?.invariant).toBe(true);
+    expect(r.reasons[0]).toContain('3.0 GiB in 41000 entries');
+    expect(r.reasons[0]).toContain('1.0 GiB / 50000 entries');
+    expect(r.risks[0]).toContain('"mount" or "clone"');
+    const ok = evaluateCreate(mkReq(env, human, { ...copyReq(BIG), humanConfirmed: true }));
+    expect(ok.decision).toBe('allow');
+  });
+
+  it('other modes are not measured, and sync counts like copy', () => {
+    expect(run({}, copyReq(BIG, 'clone')).decision).toBe('allow');
+    expectDeny(run({}, copyReq(BIG, 'sync')), 'too large to copy');
+  });
+
+  it('a path problem still wins (deny reasons are all collected)', () => {
+    const r = run(
+      {},
+      {
+        workspace: { mode: 'copy', hostPath: env.datasets, copy: BIG },
+      },
+    );
+    expectDeny(r, 'outside the allowed workspace roots', 'too large to copy');
+  });
+});
+
 describe('workspace: built-in default policy (agents)', () => {
   const agent = (): ReturnType<typeof makeContext> =>
     resolveContext(defaultPolicy(), 'claude-code', { home: env.home });

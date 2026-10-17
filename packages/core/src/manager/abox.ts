@@ -49,6 +49,7 @@ import {
   listSnapshots,
   sandboxLogs,
 } from './interactive.js';
+import { estimateWorkspace } from './estimate.js';
 import { Internals } from './internals.js';
 import type { AboxOptions } from './internals.js';
 import {
@@ -120,7 +121,10 @@ import type {
   TemplateList,
   TemplateReview,
   TemplateValidation,
+  WorkspaceEstimate,
+  WorkspaceEstimateInput,
 } from './types.js';
+import type { ProgressInfo } from '../workspace/index.js';
 
 /** How often `startTtlWatcher` enforces deadlines by default. */
 export const DEFAULT_TTL_WATCH_MS = 15_000;
@@ -229,6 +233,17 @@ export class Abox {
     opts: CreateOptions = {},
   ): Promise<CreateResult> {
     return createSandbox(this.I, caller, req, opts);
+  }
+  /**
+   * Human only. Fast read-only size check of a workspace folder (what a `copy` would move): the GUI
+   * shows it when the folder is picked, before "Create".
+   */
+  estimateWorkspace(
+    caller: Caller,
+    input: WorkspaceEstimateInput,
+    opts: { signal?: AbortSignal; onProgress?: (line: string, info?: ProgressInfo) => void } = {},
+  ): Promise<WorkspaceEstimate> {
+    return estimateWorkspace(this.I, caller, input, opts);
   }
   listSandboxes(caller: Caller, filter: SandboxFilterInput = {}): Promise<SandboxList> {
     return listSandboxes(this.I, caller, filter);

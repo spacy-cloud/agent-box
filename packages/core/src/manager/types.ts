@@ -20,7 +20,7 @@ import type {
   WorkspaceMode,
   BackendStatus,
 } from '../types.js';
-import type { ExportFormat, ExportResult } from '../workspace/index.js';
+import type { ExportFormat, ExportResult, ProgressInfo } from '../workspace/index.js';
 
 /**
  * Who is calling. `contextId` comes from the surface configuration (CLI: `human`; MCP:
@@ -264,8 +264,11 @@ export interface CreateOptions {
   /** Max wait for a human decision in ms; default `config.limits.approvalWaitMs`. */
   waitForApprovalMs?: number;
   signal?: AbortSignal;
-  /** Progress callback for image build output. */
-  onProgress?: (line: string) => void;
+  /**
+   * Progress lines: image build output, scanning and copying of a `copy` workspace. `info` carries the
+   * numbers behind a workspace line (bytes done / total) for surfaces that draw a bar.
+   */
+  onProgress?: (line: string, info?: ProgressInfo) => void;
 }
 
 export interface PendingApproval {
@@ -810,3 +813,43 @@ export interface GcOrphansReport {
 }
 
 export type { AgentContext, DirEntry };
+
+// -- workspace estimate --------------------------------------------------------------------------
+
+export interface WorkspaceEstimateInput {
+  /** Host path of the folder (relative paths resolve against the project dir). */
+  path: string;
+  /** Workspace mode the folder would be used with; only `copy` and `sync` copy it (default `copy`). */
+  mode?: WorkspaceMode;
+  /** Exclude patterns of the workspace (as for a create). */
+  exclude?: string[];
+}
+
+export interface WorkspaceEstimateLimits {
+  bytes: number;
+  entries: number;
+}
+
+/**
+ * Result of the read-only pre-scan of a workspace folder (`estimateWorkspace`): what a copy would
+ * move, without opening any file. `truncated` = the scan stopped at the hard limit, so the numbers
+ * are lower bounds ("more than").
+ */
+export interface WorkspaceEstimate {
+  /** Canonical path that was measured. */
+  path: string;
+  mode: WorkspaceMode;
+  /** False for modes that do not copy the folder (`mount`, `worktree`, `clone`, `empty`): nothing was measured. */
+  applicable: boolean;
+  bytes: number;
+  entries: number;
+  files: number;
+  truncated: boolean;
+  /** Above the profile's `workspace.max_copy_bytes` / `max_copy_entries`: a human has to confirm, agents are denied. */
+  overSoftLimit: boolean;
+  /** Above the hard copy limit: the create fails. */
+  overHardLimit: boolean;
+  soft: WorkspaceEstimateLimits;
+  hard: WorkspaceEstimateLimits;
+  durationMs: number;
+}

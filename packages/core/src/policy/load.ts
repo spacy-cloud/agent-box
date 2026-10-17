@@ -45,6 +45,10 @@ export const BUILTIN_HUMAN_PROFILE: RawProfile = {
   exec: { approval: false },
 };
 
+/** Default soft limits of a `copy` / `sync` workspace (`workspace.max_copy_bytes` / `max_copy_entries`). */
+export const DEFAULT_MAX_COPY_BYTES = '1g';
+export const DEFAULT_MAX_COPY_ENTRIES = 50_000;
+
 /** Agent context ids of the built-in default policy (all use profile `default`). */
 export const BUILTIN_AGENT_CONTEXTS: readonly string[] = [
   'default',
@@ -416,6 +420,7 @@ export function mergeProfiles(parent: RawProfile, child: RawProfile): RawProfile
 function applyDefaults(name: string, p: RawProfile): ResolvedProfile {
   const memory = p.limits?.memory ?? '8g';
   const ttl = p.limits?.ttl ?? '4h';
+  const maxCopy = p.workspace?.max_copy_bytes ?? DEFAULT_MAX_COPY_BYTES;
   const mounts: ResolvedProfile['mounts'] =
     p.mounts === undefined || p.mounts === 'deny'
       ? null
@@ -435,6 +440,9 @@ function applyDefaults(name: string, p: RawProfile): ResolvedProfile {
     workspace: {
       roots: [...(p.workspace?.roots ?? [])],
       modes: [...(p.workspace?.modes ?? ['empty'])],
+      max_copy_bytes: maxCopy,
+      maxCopyBytes: parseSize(maxCopy),
+      max_copy_entries: p.workspace?.max_copy_entries ?? DEFAULT_MAX_COPY_ENTRIES,
     },
     network: {
       modes: [...(p.network?.modes ?? ['none'])],

@@ -297,6 +297,7 @@ Create a sandbox from a template
 | `-w, --workspace <path>` | host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared                         |
 | `--mode <mode>`          | how the workspace is delivered (default: the template's mode with --workspace, "empty" without) (choices: "mount", "clone", "worktree", "copy", "empty", "sync") |
 | `--ref <ref>`            | git ref for clone/worktree workspaces (needs --workspace)                                                                                                        |
+| `--exclude <patterns>`   | leave these out of a copy/sync workspace, comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)                                         |
 | `--net <mode>`           | network mode (choices: "none", "allowlist", "open")                                                                                                              |
 | `--allow <domains>`      | extra allowed destinations, comma separated (with --net allowlist)                                                                                               |
 | `--ttl <duration>`       | lifetime, e.g. 2h                                                                                                                                                |
@@ -304,6 +305,14 @@ Create a sandbox from a template
 | `--memory <size>`        | memory limit, e.g. 4g                                                                                                                                            |
 | `--request-id <id>`      | idempotency key: repeating the call returns the same sandbox                                                                                                     |
 | `-y, --yes`              | confirm risky settings without asking (required when not interactive)                                                                                            |
+
+A `copy`/`sync` workspace is measured first (read-only, no file content is read); `abox create`
+prints `workspace: N files, X` and, while copying, `copying workspace ... X of Y` on stderr (not with
+`--json` or `--quiet`). A folder above the policy's soft limit (default 1 GiB or 50 000 entries,
+`workspace.max_copy_bytes` / `max_copy_entries`) needs `--yes` (or the interactive answer); a folder
+above the hard limit (64 GiB or 2 000 000 entries) fails with `invalid_input` after the scan, which takes
+seconds. Ctrl-C cancels the scan or the copy. `.gitignore` is not read; use `--exclude`. See
+[quickstart](quickstart.md#what-copy-and-sync-copy-and-how-big-it-may-be).
 
 ### `abox ls`
 

@@ -26,6 +26,7 @@ import type {
   SandboxStatsResult,
   SandboxView,
   SnapshotView,
+  WorkspaceEstimate,
   TemplateDetails,
   TemplateList,
   TemplateReview,
@@ -321,6 +322,8 @@ export interface Outputs {
   'sandboxes:remove': { id: string; removed: boolean };
   'sandboxes:extend': AccessResult;
   'sandboxes:create': CreateResult;
+  'workspace:estimate': WorkspaceEstimate;
+  'jobs:cancel': { cancelled: boolean };
   'templates:list': TemplateList;
   'templates:show': TemplateDetails;
   'templates:review': TemplateReview;

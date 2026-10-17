@@ -142,6 +142,32 @@ Things to know:
   transaction, so several `abox create --mode mount` for one directory started at the same time give
   it to exactly one of them (a parent or child directory counts as the same).
 
+### What `copy` and `sync` copy, and how big it may be
+
+`copy` and `sync` put the **whole directory** into the sandbox:
+
+- **Nothing is left out by default.** `.gitignore` is **not** read: `node_modules`, build output,
+  virtual environments and the `.git` directory are copied like everything else. Leave things out
+  with `--exclude` (`abox create ... --exclude node_modules,dist`; MCP `workspace.exclude`; the
+  **Exclude** field of the GUI's New sandbox). Patterns are gitignore-like (`name` anywhere,
+  `/name` at the top, `dir/`, `*`, `?`, `**`; no `!`), see [templates](templates.md#workspace).
+- **Symlinks are not followed**; they are copied as links. Sockets, FIFOs and devices are skipped.
+- **Size is checked before anything is copied.** A fast read-only scan (it only lists directories
+  and looks at file sizes, no content is read) runs first and prints `workspace: N files, X` on
+  stderr (and in the GUI log); `abox create` then shows `copying workspace ... X of Y` and
+  `recording baseline ... X of Y` while it works. Ctrl-C (CLI) or **Cancel** (GUI) stops the scan or
+  copy and removes what was made.
+- **Soft limit: 1 GiB or 50 000 entries** (policy `workspace.max_copy_bytes` /
+  `workspace.max_copy_entries`). A bigger folder is not copied silently: you get a confirmation
+  that names the size (`--yes` answers it; without a terminal the command exits with 3), an agent
+  gets `policy_denied` with the alternatives of its profile. Raise the limits for a profile in
+  `policy.yaml` (`abox policy edit`).
+- **Hard limit: 64 GiB or 2 000 000 entries** (4 GiB per file; larger files are skipped and
+  listed). Beyond it `abox create` fails within seconds with `invalid_input` ("workspace folder ...
+  is larger than the copy limit"). Choose the project folder itself, use `mount` or `clone` for big
+  repositories, or exclude the big directories.
+- The copy needs free disk space several times the size (staging copy, baseline, the sandbox).
+
 An end-to-end example with a git repository:
 
 ```console

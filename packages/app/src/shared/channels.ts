@@ -14,6 +14,8 @@ export const IPC_CHANNEL_NAMES = [
   'sandboxes:remove',
   'sandboxes:extend',
   'sandboxes:create',
+  'workspace:estimate',
+  'jobs:cancel',
   'templates:list',
   'templates:show',
   'templates:review',

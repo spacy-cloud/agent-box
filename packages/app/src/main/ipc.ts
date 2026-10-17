@@ -4,6 +4,7 @@ import { basename, join } from 'node:path';
 import { dialog, clipboard, ipcMain } from 'electron';
 import type { BrowserWindow } from 'electron';
 import { AboxError } from '@abox/core';
+import type { ProgressInfo } from '@abox/core';
 import { renderDockerfile } from '@abox/backend-docker';
 import type { AboxRuntime } from '@abox/runtime';
 import type { z } from 'zod';
@@ -41,7 +42,7 @@ export interface IpcDeps {
   askpass: Pick<Askpass, 'answer'>;
   /** The GUI changed something itself: refresh now. */
   poke(): void;
-  progress(key: string, line: string): void;
+  progress(key: string, line: string, info?: ProgressInfo): void;
 }
 
 type HostChannel = Extract<IpcChannel, `hosts:${string}`>;

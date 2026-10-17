@@ -1,9 +1,18 @@
 import type { AccessMode, WorkspaceDelivery, WorkspaceMode } from '../types.js';
 import type { SandboxProvider } from '../provider.js';
+import type { ScanResult } from './scan.js';
 
 // ---------------------------------------------------------------------------
 // Preparation
 // ---------------------------------------------------------------------------
+
+/** Structured side of a progress line, for surfaces that draw a bar. Units are bytes. */
+export interface ProgressInfo {
+  phase: 'scan' | 'copy' | 'baseline' | 'deliver';
+  done?: number;
+  /** Known total (from the pre-scan); absent while it is still being measured. */
+  total?: number;
+}
 
 export interface PrepareWorkspaceInput {
   mode: WorkspaceMode;
@@ -25,6 +34,15 @@ export interface PrepareWorkspaceInput {
   exclude?: string[];
   /** Short sandbox id used for branch names (`abox/<short>`). Default: derived from the basename of `sandboxDir`. */
   short?: string;
+  /** Progress lines while scanning, copying and recording the baseline of a `copy` / `sync` workspace. */
+  onProgress?: (line: string, info?: ProgressInfo) => void;
+  /** Aborts scanning and copying (the preparation then fails with "create cancelled" and rolls back). */
+  signal?: AbortSignal;
+  /**
+   * A complete pre-scan (`scanTree`) of `source` with the same excludes, taken a moment ago. Saves
+   * the copy a second walk; only used for its totals (progress), the copy enforces its limits itself.
+   */
+  scan?: ScanResult;
 }
 
 export interface PrepareWorkspaceResult {

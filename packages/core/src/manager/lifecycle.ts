@@ -33,8 +33,15 @@ import type {
   WorkspaceDelivery,
   WorkspaceMode,
 } from '../types.js';
-import { cleanupWorkspace, prepareWorkspace } from '../workspace/index.js';
-import type { WorkspaceRecord } from '../workspace/index.js';
+import {
+  cleanupWorkspace,
+  compileExcludes,
+  copyLimitError,
+  describeScan,
+  prepareWorkspace,
+  scanTree,
+} from '../workspace/index.js';
+import type { ScanResult, WorkspaceRecord } from '../workspace/index.js';
 import { confirmationRequired, consumeApproval, gate } from './approvals.js';
 import { collectNetworkEvents } from './network-audit.js';
 import type { Internals, StoredEffective } from './internals.js';
@@ -465,6 +472,7 @@ export async function createSandbox(
   // 5. policy
   const secretDecl = template.secrets.map((s) => ({ ref: s.ref, inject: s.inject }));
   const hostInfo = I.hostInfo(host, caps.remote);
+  let copyScan: ScanResult | undefined;
   const evaluate = (confirmed: boolean | undefined): CreateEvaluation => {
     const hostUsage = I.hostUsage(hostId);
     return evaluateCreate({
@@ -478,6 +486,7 @@ export async function createSandbox(
         mode: wsMode,
         ...(wsHostPath ? { hostPath: wsHostPath } : {}),
         ...(wsLexicalPath ? { lexicalPath: wsLexicalPath } : {}),
+        ...(copyScan ? { copy: { bytes: copyScan.bytes, entries: copyScan.entries } } : {}),
       },
       mounts: mounts.map((m, i) => {
         const lexical = mountsLexical[i];
@@ -494,7 +503,9 @@ export async function createSandbox(
       ...(confirmed !== undefined ? { humanConfirmed: confirmed } : {}),
     });
   };
-  const ev = evaluate(caller.humanConfirmed === true && ctx.kind === 'human' ? true : undefined);
+  const confirmedByHuman =
+    caller.humanConfirmed === true && ctx.kind === 'human' ? true : undefined;
+  let ev = evaluate(confirmedByHuman);
   const auditBase = {
     template: template.name,
     templateHash: template.hash,
@@ -502,6 +513,47 @@ export async function createSandbox(
     backend: template.backend,
     requestId: req.requestId,
   };
+
+  // A copied folder is measured before anything is built or copied (read-only walk, no file is
+  // opened): beyond the hard limit this fails within seconds, beyond the policy's soft limit it needs
+  // a human's confirmation (agents: denial). Only after the policy accepted the path, so a forbidden
+  // folder is never walked.
+  if ((wsMode === 'copy' || wsMode === 'sync') && wsHostPath && ev.decision !== 'deny') {
+    const onProgress = opts.onProgress;
+    try {
+      copyScan = await scanTree(wsHostPath, {
+        exclude: compileExcludes(wsRequested?.exclude),
+        gitMode: 'visit',
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        onProgress: (p) =>
+          onProgress?.(`scanning workspace … ${describeScan(p)}`, { phase: 'scan', done: p.bytes }),
+      });
+    } catch (e) {
+      if (opts.signal?.aborted) throw e;
+      throw new AboxError(
+        'invalid_input',
+        `workspace folder ${wsHostPath} cannot be read: ${errMessage(e)}`,
+        {
+          hint: 'Check that the folder exists and that you may read it.',
+        },
+      );
+    }
+    onProgress?.(`workspace: ${describeScan(copyScan)}`, { phase: 'scan', done: copyScan.bytes });
+    if (copyScan.stoppedBy) {
+      const err = copyLimitError(wsHostPath, copyScan);
+      I.audit(owner, 'sandbox.create', {
+        decision: 'deny',
+        details: {
+          ...auditBase,
+          reasons: [err.message],
+          hint: err.hint,
+          code: 'workspace_too_large',
+        },
+      });
+      throw err;
+    }
+    ev = evaluate(confirmedByHuman);
+  }
 
   if (ev.decision === 'deny') {
     I.audit(owner, 'sandbox.create', {
@@ -719,6 +771,9 @@ export async function createSandbox(
 
     // workspace
     const prepared = await prepareWorkspace({
+      ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(copyScan ? { scan: copyScan } : {}),
       mode: wsMode,
       ...(wsHostPath ? { source: wsHostPath } : {}),
       sandboxDir,
@@ -819,7 +874,11 @@ export async function createSandbox(
       },
     };
     providerTouched = true;
+    if (prepared.delivery.kind === 'copy') {
+      opts.onProgress?.('delivering workspace into the sandbox …', { phase: 'deliver' });
+    }
     const created = await provider.create(spec);
+    if (opts.signal?.aborted) throw new AboxError('internal', 'create cancelled');
     await provider.start(id);
     const info = await provider.inspect(id).catch(() => created);
 

@@ -84,6 +84,9 @@ export const ProfileSchema = z.strictObject({
     .strictObject({
       roots: z.array(rootSchema).optional(),
       modes: z.array(z.enum(WORKSPACE_MODES)).optional(),
+      /** Soft limit for `copy` / `sync`: larger folders need the human's confirmation (agents: denied). */
+      max_copy_bytes: sizeSchema.optional(),
+      max_copy_entries: z.number().int().min(1).max(100_000_000).optional(),
     })
     .optional(),
   network: z
