@@ -92,11 +92,14 @@ describe('separate processes', () => {
   const register = fileURLToPath(new URL('./register-manager.mjs', import.meta.url));
   const child = fileURLToPath(new URL('./race-child.ts', import.meta.url));
 
-  function run(requestId: string): Promise<{ id: string; idempotent: boolean }> {
+  function run(
+    requestId: string,
+    mode = 'copy',
+  ): Promise<{ id: string; idempotent: boolean; error?: string }> {
     return new Promise((resolve, reject) => {
       const p = spawn(
         process.execPath,
-        ['--import', register, child, env.root, env.project, requestId],
+        ['--import', register, child, env.root, env.project, requestId, mode],
         { stdio: ['ignore', 'pipe', 'pipe'] },
       );
       let out = '';
@@ -105,7 +108,8 @@ describe('separate processes', () => {
       p.stderr.on('data', (d: Buffer) => (err += d.toString()));
       p.on('exit', (code) => {
         const m = /RESULT (.*)/.exec(out);
-        if (code === 0 && m) resolve(JSON.parse(m[1]!) as { id: string; idempotent: boolean });
+        if (code === 0 && m)
+          resolve(JSON.parse(m[1]!) as { id: string; idempotent: boolean; error?: string });
         else reject(new Error(`child failed (${String(code)}): ${err}${out}`));
       });
     });
@@ -119,5 +123,16 @@ describe('separate processes', () => {
     expect((await one.listSandboxes(HUMAN)).sandboxes).toHaveLength(1);
     expect((await one.verifyAudit(HUMAN)).ok).toBe(true);
     await one.removeSandbox(HUMAN, results[0]!.id);
+  }, 60_000);
+
+  it('four processes creating a mount workspace on one directory: exactly one gets it', async () => {
+    const results = await Promise.all([0, 1, 2, 3].map((i) => run(`mount-${i}`, 'mount')));
+    const winners = results.filter((r) => r.error === undefined);
+    expect(winners).toHaveLength(1);
+    for (const r of results) if (r.error !== undefined) expect(r.error).toBe('conflict');
+    const live = (await one.listSandboxes(HUMAN)).sandboxes.filter((s) => s.state !== 'failed');
+    expect(live.map((s) => s.id)).toEqual([winners[0]!.id]);
+    expect((await one.verifyAudit(HUMAN)).ok).toBe(true);
+    await one.removeSandbox(HUMAN, winners[0]!.id);
   }, 60_000);
 });

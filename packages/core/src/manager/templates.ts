@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { isAbsolute, resolve as resolvePath } from 'node:path';
+import { basename, dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { AboxError, isAboxError } from '../errors.js';
 import type { ErrorIssue } from '../errors.js';
 import type { SandboxProvider } from '../provider.js';
@@ -14,7 +14,13 @@ import {
   validateTemplate as validateResolvedTemplate,
 } from '../template/index.js';
 import type { TemplateIssue } from '../template/index.js';
-import type { BackendKind, ProviderCapabilities, ResolvedTemplate } from '../types.js';
+import { renderTemplateSnapshot, templateRisks, unifiedDiff } from '../template/index.js';
+import type {
+  BackendKind,
+  ProviderCapabilities,
+  ResolvedTemplate,
+  TemplateSourceKind,
+} from '../types.js';
 import type { Internals } from './internals.js';
 import type {
   BuildResult,
@@ -25,6 +31,7 @@ import type {
   TemplateDetails,
   TemplateList,
   TemplateListEntry,
+  TemplateReview,
   TemplateValidation,
   TemplateValidationIssue,
 } from './types.js';
@@ -65,6 +72,7 @@ export function usableProjectDir(
     roots: ctx.workspaceRoots,
     kind: 'workspace',
     extraForbidden: I.forbiddenTrees(),
+    denyHiddenHomeDirs: true,
   });
   if (res.ok) return canonical;
   if (explicit) {
@@ -192,38 +200,64 @@ function effectiveLimits(ctx: AgentContext, t: ResolvedTemplate): EffectiveLimit
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether sandboxes can be created from `t` here, and if not, why: the backend must be usable and
+ * the template must pass the same validation (security rules, backend capabilities) as a create.
+ */
+export async function templateReadiness(
+  I: Internals,
+  t: ResolvedTemplate,
+): Promise<{ ready: boolean; reason?: string }> {
+  if (!I.providerFactories[t.backend])
+    return { ready: false, reason: `backend ${t.backend} is not available in this abox instance` };
+  let provider: SandboxProvider | undefined;
+  let unusable: string | undefined;
+  try {
+    provider = I.providerFor(await I.resolveHost('local'), t.backend);
+  } catch (e) {
+    unusable = `backend ${t.backend} is not usable: ${errMessage(e)}`;
+  }
+  const issues = provider
+    ? checkTemplateForProvider(t, provider).issues
+    : validateResolvedTemplate(t, {}).issues;
+  if (issues.length > 0) {
+    const first = issues[0]!;
+    return {
+      ready: false,
+      reason: `${first.path ? `${first.path}: ` : ''}${first.message}${issues.length > 1 ? ` (+${issues.length - 1} more; abox template validate ${t.name})` : ''}`,
+    };
+  }
+  return unusable ? { ready: false, reason: unusable } : { ready: true };
+}
+
 export async function listTemplates(
   I: Internals,
   caller: Caller,
-  o: { projectDir?: string } = {},
+  o: { projectDir?: string; workspacePath?: string } = {},
 ): Promise<TemplateList> {
   const ctx = await I.context(caller);
   const dir =
-    usableProjectDir(I, ctx, o.projectDir, true) ?? usableProjectDir(I, ctx, I.projectDir, false);
+    usableProjectDir(I, ctx, o.projectDir, true) ??
+    usableProjectDir(I, ctx, o.workspacePath, true) ??
+    usableProjectDir(I, ctx, I.projectDir, false);
   const catalog = catalogFor(I, dir);
   const { templates, problems } = await catalog.listAll();
   const entries: TemplateListEntry[] = [];
   for (const s of templates) {
     let contentHash = '';
     let hash = '';
-    let trusted = true;
-    if (s.source.kind === 'project') {
-      try {
-        const t = await catalog.get(s.name);
-        contentHash = t.contentHash;
-        hash = t.hash;
-        trusted = I.state.templateTrust.isTrusted(t.contentHash);
-      } catch {
-        trusted = false;
-      }
-    } else {
-      try {
-        const t = await catalog.get(s.name);
-        contentHash = t.contentHash;
-        hash = t.hash;
-      } catch {
-        /* listed above, resolve error is reported as problem elsewhere */
-      }
+    let trusted = s.source.kind !== 'project';
+    let readiness: { ready: boolean; reason?: string };
+    try {
+      const t = await catalog.get(s.name);
+      contentHash = t.contentHash;
+      hash = t.hash;
+      if (s.source.kind === 'project') trusted = I.state.templateTrust.isTrusted(t.contentHash);
+      readiness = await templateReadiness(I, t);
+    } catch (e) {
+      // listed above, so only a file that changed meanwhile or a missing Dockerfile gets here
+      readiness = { ready: false, reason: errMessage(e) };
+      if (s.source.kind === 'project') trusted = false;
     }
     entries.push({
       name: s.name,
@@ -233,9 +267,12 @@ export async function listTemplates(
       isolation: s.isolation,
       networkMode: s.networkMode,
       source: s.source,
+      ...(s.shadows.length > 0 ? { shadows: s.shadows } : {}),
       trusted,
       allowed: templateAllowed(ctx, s.name),
       backendAvailable: I.providerFactories[s.backend] !== undefined,
+      ready: readiness.ready,
+      ...(readiness.reason ? { notReadyReason: readiness.reason } : {}),
       contentHash,
       hash,
     });
@@ -258,19 +295,22 @@ export async function showTemplate(
   I: Internals,
   caller: Caller,
   name: string,
-  o: { projectDir?: string } = {},
+  o: { projectDir?: string; workspacePath?: string } = {},
 ): Promise<TemplateDetails> {
   const ctx = await I.context(caller);
   if (typeof name !== 'string' || name.length === 0 || name.length > 64)
     throw new AboxError('invalid_input', 'template name required');
-  const { template } = await loadTemplate(
+  // A workspace path the caller names is checked like the one of a create (a denied path is an error here).
+  if (o.workspacePath !== undefined) usableProjectDir(I, ctx, o.workspacePath, true);
+  const { template, catalog } = await loadTemplate(
     I,
     ctx,
     name,
-    projectDirCandidates(I, ctx, o.projectDir, undefined),
+    projectDirCandidates(I, ctx, o.projectDir, o.workspacePath),
   );
   let capabilities: ProviderCapabilities | undefined;
-  const warnings: string[] = [];
+  const { hidden: shadows } = await catalog.getShadowed(template.name);
+  const warnings: string[] = shadows.length > 0 ? [shadowWarning(template, shadows)] : [];
   if (I.providerFactories[template.backend]) {
     try {
       const host = await I.resolveHost('local');
@@ -285,12 +325,138 @@ export async function showTemplate(
   }
   return {
     template,
+    ...(shadows.length > 0 ? { shadows } : {}),
     trusted: isTrusted(I, template),
     allowed: templateAllowed(ctx, template.name),
     backendAvailable: I.providerFactories[template.backend] !== undefined,
     ...(capabilities ? { capabilities } : {}),
     effectiveLimits: effectiveLimits(ctx, template),
     warnings,
+  };
+}
+
+/**
+ * Canonical text of the project template at `path` for the trust record, provided the file still
+ * has exactly the approved content (`contentHash`). Best effort: undefined when it cannot be read.
+ */
+export async function trustSnapshot(
+  I: Internals,
+  path: string | undefined,
+  contentHash: string,
+): Promise<string | undefined> {
+  if (!path || basename(dirname(path)) !== '.sandbox') return undefined;
+  try {
+    const t = await catalogFor(I, dirname(dirname(path))).loadFile(path, 'project');
+    return t.contentHash === contentHash ? renderTemplateSnapshot(t) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const KIND_WORD: Record<TemplateSourceKind, string> = {
+  project: 'project',
+  user: 'user',
+  builtin: 'built-in',
+};
+
+/** "shadows built-in template alpine-min": what a template of the same name in a higher-precedence place does. */
+function shadowPhrase(name: string, hidden: Array<{ kind: TemplateSourceKind }>): string {
+  const kinds = [...new Set(hidden.map((h) => KIND_WORD[h.kind]))].join(' and ');
+  return `shadows the ${kinds} template ${name}`;
+}
+
+function shadowWarning(
+  template: Pick<ResolvedTemplate, 'name' | 'source'>,
+  hidden: Array<{ kind: TemplateSourceKind }>,
+): string {
+  return `this ${template.source.kind} template ${shadowPhrase(template.name, hidden)} of the same name: a sandbox created from "${template.name}" uses this version, not the ${hidden[0] ? KIND_WORD[hidden[0].kind] : ''} one`;
+}
+
+/**
+ * Review material for a template that is about to be trusted. Compared against (first match): the
+ * last trusted version of the same template (what changed since the approval), the template it
+ * `extends` (what it adds to a known template), the user or builtin template of the same name it
+ * shadows (a project `alpine-min.yaml` is compared with the built-in `alpine-min`), else nothing
+ * (the full content).
+ */
+export async function reviewTemplate(
+  I: Internals,
+  caller: Caller,
+  name: string,
+  o: { projectDir?: string; workspacePath?: string; expectedContentHash?: string } = {},
+): Promise<TemplateReview> {
+  const ctx = await I.context(caller);
+  if (typeof name !== 'string' || name.length === 0 || name.length > 64)
+    throw new AboxError('invalid_input', 'template name required');
+  const { template, catalog } = await loadTemplate(
+    I,
+    ctx,
+    name,
+    projectDirCandidates(I, ctx, o.projectDir, o.workspacePath),
+  );
+  const text = renderTemplateSnapshot(template);
+  const shadowed = await catalog.getShadowed(template.name);
+  const toLabel = `${template.source.kind} template ${template.name}${template.source.path ? ` (${template.source.path})` : ''}`;
+
+  let against: TemplateReview['against'] = { kind: 'none', label: 'nothing (new content)' };
+  let baseline = '';
+  let fromLabel = '/dev/null';
+  const previous =
+    template.source.kind === 'project'
+      ? I.state.templateTrust.previousVersion({
+          name: template.name,
+          ...(template.source.path ? { path: template.source.path } : {}),
+          exceptHash: template.contentHash,
+        })
+      : undefined;
+  if (previous) {
+    baseline = previous.snapshot;
+    against = {
+      kind: 'previous',
+      template: template.name,
+      label: `the version of ${template.name} trusted on ${new Date(previous.trustedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC by ${previous.trustedBy}`,
+    };
+    fromLabel = `trusted version of ${template.name} (${previous.contentHash.slice(0, 12)})`;
+  } else {
+    const parent = await catalog.getParent(template.name).catch(() => undefined);
+    if (parent) {
+      baseline = renderTemplateSnapshot(parent);
+      against = {
+        kind: 'extends',
+        template: parent.name,
+        label: `${parent.source.kind} template ${parent.name}, which it extends`,
+      };
+      fromLabel = `${parent.source.kind} template ${parent.name}`;
+    } else if (shadowed.template && shadowed.source) {
+      baseline = renderTemplateSnapshot(shadowed.template);
+      against = {
+        kind: 'shadows',
+        template: shadowed.template.name,
+        label: `${shadowed.source.kind} template ${shadowed.template.name}, which it shadows (same name)`,
+      };
+      fromLabel = `${shadowed.source.kind} template ${shadowed.template.name}`;
+    }
+  }
+  return {
+    template: template.name,
+    source: template.source,
+    ...(shadowed.hidden.length > 0 ? { shadows: shadowed.hidden } : {}),
+    contentHash: template.contentHash,
+    trusted: isTrusted(I, template),
+    against,
+    diff: unifiedDiff(baseline, text, { fromLabel, toLabel, context: 4 }),
+    risks: [
+      ...(shadowed.hidden.length > 0
+        ? [
+            `${shadowPhrase(template.name, shadowed.hidden)}: sandboxes created from "${template.name}" in this project get this version instead`,
+          ]
+        : []),
+      ...templateRisks(template),
+    ],
+    ...(template.buildContext ? { buildContext: template.buildContext } : {}),
+    ...(o.expectedContentHash !== undefined && o.expectedContentHash !== template.contentHash
+      ? { changedSinceRequest: true }
+      : {}),
   };
 }
 
@@ -324,6 +490,7 @@ export async function validateTemplateOp(
           roots: ctx.workspaceRoots,
           kind: 'workspace',
           extraForbidden: I.forbiddenTrees(),
+          denyHiddenHomeDirs: true,
         });
         if (!res.ok)
           throw new AboxError(
@@ -473,6 +640,7 @@ export async function buildTemplate(
   o: BuildTemplateOptions = {},
 ): Promise<BuildResult> {
   const ctx = await I.context(caller);
+  I.requirePolicyValid(ctx, 'template.build', 'building images');
   if (typeof name !== 'string' || name.length === 0 || name.length > 64)
     throw new AboxError('invalid_input', 'template name required');
   const { template } = await loadTemplate(

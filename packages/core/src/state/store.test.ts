@@ -168,6 +168,34 @@ describe('ApprovalQueue', () => {
     expect(s.approvals.list({ status: 'pending' })).toHaveLength(1);
   });
 
+  it('keeps the policy items behind an approval; rows without them read as an empty list', () => {
+    const s = open();
+    const items = [
+      {
+        kind: 'image_registry',
+        reason: 'base image "x" is outside',
+        risk: 'untrusted',
+        invariant: false,
+      },
+      { kind: 'mount', reason: 'mount /data', risk: 'reads the host', invariant: true },
+    ];
+    const a = s.approvals.create({
+      requester: 'agent:a/default',
+      kind: 'create',
+      request: req,
+      items,
+      ttlMs: 60_000,
+    });
+    expect(a.items).toEqual(items);
+    expect(s.approvals.get(a.id)?.items).toEqual(items);
+    expect(create(s).items).toEqual([]);
+    // a row from before the column existed (NULL) or a damaged value never breaks reading
+    const raw = new DatabaseSync(dbPath);
+    raw.prepare('UPDATE approvals SET items = NULL WHERE id = ?').run(a.id);
+    raw.close();
+    expect(s.approvals.get(a.id)?.items).toEqual([]);
+  });
+
   it('approved entry is bound to the exact request hash and is one-time', () => {
     const s = open();
     const a = create(s);
@@ -417,6 +445,40 @@ describe('TemplateTrust', () => {
     expect(s.templateTrust.revoke('h1')).toBe(true);
     expect(s.templateTrust.revoke('h1')).toBe(false);
     expect(s.templateTrust.isTrusted('h1')).toBe(false);
+  });
+
+  it('keeps the snapshot and finds the previous version of a template', () => {
+    const s = open();
+    const p = '/p/.sandbox/dev.yaml';
+    s.templateTrust.trust('h1', { path: p, by: 'human', name: 'dev', snapshot: 'v1\n' });
+    clock += 10;
+    s.templateTrust.trust('h2', { path: p, by: 'human', name: 'dev', snapshot: 'v2\n' });
+    clock += 10;
+    s.templateTrust.trust('h3', {
+      path: '/other/.sandbox/dev.yaml',
+      by: 'human',
+      name: 'dev',
+      snapshot: 'o\n',
+    });
+    s.templateTrust.trust('h4', { path: p, by: 'human' }); // no snapshot: never a baseline
+    expect(s.templateTrust.get('h1')).toMatchObject({ name: 'dev', snapshot: 'v1\n' });
+    expect(s.templateTrust.get('h4')).not.toHaveProperty('snapshot');
+    // newest first, same path preferred, the content hash under review is excluded
+    expect(
+      s.templateTrust.previousVersion({ name: 'dev', path: p, exceptHash: 'h9' })?.snapshot,
+    ).toBe('v2\n');
+    expect(
+      s.templateTrust.previousVersion({ name: 'dev', path: p, exceptHash: 'h2' })?.snapshot,
+    ).toBe('v1\n');
+    // another checkout of the same template name is a fallback
+    expect(
+      s.templateTrust.previousVersion({ name: 'dev', path: '/new/place.yaml', exceptHash: 'h9' })
+        ?.snapshot,
+    ).toBe('o\n');
+    expect(s.templateTrust.previousVersion({ name: 'unknown', exceptHash: 'h9' })).toBeUndefined();
+    // re-trusting without a snapshot keeps the recorded one
+    s.templateTrust.trust('h1', { path: p, by: 'gui' });
+    expect(s.templateTrust.get('h1')?.snapshot).toBe('v1\n');
   });
 });
 

@@ -15,7 +15,8 @@ export const HOST_KINDS = ['local', 'ssh'] as const;
 export type HostKind = (typeof HOST_KINDS)[number];
 
 /** Backends that can be declared on a host profile. */
-export const HOST_BACKEND_KINDS = ['docker', 'podman', 'process', 'vm'] as const;
+/** Every backend a host profile may list (same set as `BACKEND_KINDS`). */
+export const HOST_BACKEND_KINDS = ['docker', 'podman', 'process', 'python', 'vm'] as const;
 export type HostBackendKind = (typeof HOST_BACKEND_KINDS)[number];
 
 export const FORWARD_KINDS = ['local', 'remote', 'dynamic'] as const;
@@ -32,6 +33,9 @@ export interface PortForward {
   listen: string;
   target?: string;
 }
+
+/** Hardened runtime per container engine. */
+export type HostRuntimes = Partial<Record<'docker' | 'podman', string>>;
 
 export interface HostLimits {
   cpus?: number;
@@ -65,6 +69,18 @@ export interface HostProfile {
   engineSocket?: string;
   /** Working directory root on that host (process/vm backends). */
   dataDir?: string;
+  /**
+   * Stronger OCI runtime (`runsc`, `kata`) of the engine ON THIS HOST, per engine. The container
+   * backends report isolation `hardened` for this host only when the engine lists the runtime
+   * (`docker info` / `/info` `Runtimes`). `python` uses the `docker` entry. Remote hosts never
+   * inherit the runtime configured for the local engine in `config.yaml`.
+   */
+  runtimes?: HostRuntimes;
+  /**
+   * Explicit opt-in to use a rootful engine on a host of a zone that requires a rootless one
+   * (`shared`, `restricted`). Access to a rootful engine socket is root-equivalent on that host.
+   */
+  allowRootful?: boolean;
   tags: string[];
   favorite: boolean;
   limits?: HostLimits;
@@ -89,12 +105,13 @@ export interface ResolvedHostLimits {
 /** Zone defaults. `minIsolation` of `none` means the zone itself imposes no minimum. */
 export const ZONE_DEFAULTS: Record<
   HostZone,
-  { minIsolation: IsolationLevel; requiresApproval: boolean }
+  { minIsolation: IsolationLevel; requiresApproval: boolean; requiresRootless: boolean }
 > = {
-  workstation: { minIsolation: 'none', requiresApproval: false },
-  lab: { minIsolation: 'none', requiresApproval: false },
-  shared: { minIsolation: 'hardened', requiresApproval: true },
-  restricted: { minIsolation: 'vm', requiresApproval: true },
+  workstation: { minIsolation: 'none', requiresApproval: false, requiresRootless: false },
+  lab: { minIsolation: 'none', requiresApproval: false, requiresRootless: false },
+  // hosts with their own services or data: a rootful engine socket is root on those
+  shared: { minIsolation: 'hardened', requiresApproval: true, requiresRootless: true },
+  restricted: { minIsolation: 'vm', requiresApproval: true, requiresRootless: true },
 };
 
 export interface ResolvedHostProfile {

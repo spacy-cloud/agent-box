@@ -6,7 +6,9 @@ import { join, posix, resolve } from 'node:path';
 import {
   AboxError,
   isolationAtLeast,
+  parseSize,
   type BackendStatus,
+  type CopyOutOptions,
   type DirEntry,
   type ExecEvent,
   type ExecRequest,
@@ -96,8 +98,12 @@ import { attachTty } from './tty.js';
 const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 const GUEST_CA_DIR = '/usr/local/share/abox';
 const PROXY_URL = `http://${PROXY_GUEST_IP}:${PROXY_GUEST_PORT}`;
-/** Upper bound for timers handed to the guest and to `timeout` (ten years). */
+/** Upper bound for timers handed to the guest and for the host-side kill time (ten years). */
 const MAX_TTL_SEC = 10 * 365 * 24 * 3600;
+/** The host kills QEMU this long after the expiry if the guest has not powered itself off ... */
+const HARD_LIMIT_OFFSET_SEC = 30;
+/** ... with TERM first and KILL this much later. */
+const HARD_LIMIT_KILL_GRACE_SEC = 20;
 const NO_PROXY = 'localhost,127.0.0.1,::1';
 
 export interface VmProviderOptions {
@@ -184,6 +190,51 @@ fi
 exit 0
 `;
 
+/**
+ * Moves the in-guest expiry timer (`extendExpiry`). Unlike the setup scripts it fails when the new
+ * timer can not be armed: the extension must not claim time the guest will not give.
+ */
+const REARM_TTL_SCRIPT = String.raw`
+ttl=$1
+systemctl stop abox-ttl.timer abox-ttl.service >/dev/null 2>&1
+if [ "$ttl" -gt 0 ]; then
+  systemd-run --quiet --unit=abox-ttl --on-active="$ttl" --timer-property=AccuracySec=1s /bin/systemctl poweroff || { echo "could not arm the in-guest expiry timer" >&2; exit 1; }
+fi
+exit 0
+`;
+
+/**
+ * Host-side backstop of the TTL, started in place of QEMU: runs QEMU (the arguments after the
+ * first two) and kills it (TERM, then KILL after `$2` seconds) once the time in the file `$1`
+ * (epoch seconds) has come. The file is read again every 2 seconds, so `extendExpiry` can move
+ * the kill time of a running VM, which a fixed `timeout` could not. A missing or invalid file
+ * keeps the last value. Exits with the exit code of QEMU.
+ */
+export const HARD_LIMIT_SCRIPT = String.raw`
+f=$1; grace=$2; shift 2
+"$@" &
+q=$!
+(
+  k=0
+  while :; do
+    sleep 2
+    v=; read -r v < "$f" 2>/dev/null || :
+    case $v in ''|*[!0-9]*) ;; *) k=$v;; esac
+    if [ "$k" -gt 0 ] && [ "$(date +%s)" -ge "$k" ]; then
+      kill -TERM "$q" 2>/dev/null
+      sleep "$grace"
+      kill -KILL "$q" 2>/dev/null
+      exit 0
+    fi
+  done
+) &
+w=$!
+wait "$q"
+rc=$?
+kill "$w" 2>/dev/null
+exit "$rc"
+`;
+
 const PLACE_FILE_SCRIPT = String.raw`
 f=$1; mode=$2; uid=$3
 mkparents() {
@@ -200,6 +251,20 @@ chmod -- "$mode" "$f" && chown "$uid:$uid" -- "$f"
 interface Loaded {
   short: string;
   meta: SandboxMeta;
+}
+
+/**
+ * Virtual size of a sandbox's disk: the largest of the prepared image's size, `resources.disk`
+ * (including an override at creation) and the template's `vm.diskSize`. Neither can shrink the
+ * disk below the image; the root filesystem is grown to the result at boot.
+ */
+export function effectiveDiskBytes(
+  imageBytes: number,
+  resourcesDiskBytes: number | undefined,
+  vmDiskSize: string | undefined,
+): number {
+  const fromVm = vmDiskSize !== undefined ? parseSize(vmDiskSize) : 0;
+  return Math.max(imageBytes, resourcesDiskBytes ?? 0, fromVm);
 }
 
 export class VmProvider implements SandboxProvider {
@@ -245,6 +310,7 @@ export class VmProvider implements SandboxProvider {
       mounts: false,
       snapshots: true,
       tty: true,
+      extendExpiry: true,
       limits: { cpus: true, memory: true, pids: true, disk: true },
       nonRootUser: true,
       secretInjection: ['proxy', 'env', 'file'],
@@ -655,7 +721,11 @@ export class VmProvider implements SandboxProvider {
     }
     const cpus = Math.max(1, Math.min(64, Math.ceil(spec.resources.cpus || 1)));
     const memoryMiB = memoryToMiB(spec.resources.memoryBytes || 512 * 1024 * 1024);
-    const diskBytes = Math.max(imageHeader.virtualSize, spec.resources.diskBytes ?? 0);
+    const diskBytes = effectiveDiskBytes(
+      imageHeader.virtualSize,
+      spec.resources.diskBytes,
+      spec.template.vm?.diskSize,
+    );
     const pids = Math.max(16, Math.floor(spec.resources.pids || 256));
     let copySource: string | undefined;
     if (workspace.kind === 'copy') {
@@ -975,20 +1045,37 @@ export class VmProvider implements SandboxProvider {
         ...(loadSnapshot ? { loadSnapshot } : {}),
       });
       // Host-side enforcement of the TTL: the guest powers itself off at expiry (see STARTUP_SCRIPT);
-      // `timeout` kills QEMU 30 s later even if the guest is stuck or compromised.
+      // the watchdog kills QEMU 30 s later even if the guest is stuck or compromised.
       const hardLimitSec = Math.min(
-        MAX_TTL_SEC + 30,
-        Math.max(60, Math.ceil((meta.expiresAt - this.now()) / 1000) + 30),
+        MAX_TTL_SEC + HARD_LIMIT_OFFSET_SEC,
+        Math.max(60, Math.ceil((meta.expiresAt - this.now()) / 1000) + HARD_LIMIT_OFFSET_SEC),
+      );
+      await writeFileAtomic(
+        this.layout.hardLimitFile(short),
+        `${Math.floor(this.now() / 1000) + hardLimitSec}\n`,
+        0o600,
       );
       const logFd = openSync(this.layout.file(short, 'qemu.log'), 'w', 0o600);
       let early: number | null | undefined;
       let spawnError: Error | undefined;
-      const child = spawn('timeout', ['-k', '20', String(hardLimitSec), qemu, ...args], {
-        detached: true,
-        stdio: ['ignore', logFd, logFd],
-        cwd: dir,
-        env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin', LANG: 'C' },
-      });
+      const child = spawn(
+        '/bin/sh',
+        [
+          '-c',
+          HARD_LIMIT_SCRIPT,
+          'abox-vm-main',
+          this.layout.hardLimitFile(short),
+          String(HARD_LIMIT_KILL_GRACE_SEC),
+          qemu,
+          ...args,
+        ],
+        {
+          detached: true,
+          stdio: ['ignore', logFd, logFd],
+          cwd: dir,
+          env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin', LANG: 'C' },
+        },
+      );
       closeSync(logFd);
       child.on('exit', (code) => {
         early = code;
@@ -1220,6 +1307,67 @@ export class VmProvider implements SandboxProvider {
     }
     await rm(this.layout.pidFile(short), { force: true });
     await rm(this.layout.runDir(short), { recursive: true, force: true });
+  }
+
+  /**
+   * Move the deadline everywhere the VM is held to it: the guest's systemd timer and the host
+   * watchdog of a running VM (both are re-armed first), then `meta.expiresAt`, which every later
+   * boot, `start()` and the reported state derive from. Fails, leaving the old deadline, when one
+   * of them can not be moved.
+   */
+  async extendExpiry(id: SandboxId, expiresAt: number): Promise<void> {
+    const { short } = await this.load(id);
+    await this.locked(short, async () => {
+      const meta = await this.requireMetaRaw(id, short);
+      if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
+        throw new AboxError('invalid_input', `invalid expiry ${expiresAt}`);
+      }
+      if (meta.expiresAt < this.now()) {
+        throw new AboxError('conflict', `sandbox '${id}' has expired and cannot be extended`);
+      }
+      if (expiresAt < meta.expiresAt) {
+        throw new AboxError(
+          'invalid_input',
+          `the new expiry must not be earlier than the current one (${new Date(meta.expiresAt).toISOString()})`,
+        );
+      }
+      if (expiresAt === meta.expiresAt) return;
+      if (await this.qemuPid(short)) {
+        const limitFile = this.layout.hardLimitFile(short);
+        const oldLimit = await readFile(limitFile, 'utf8').catch(() => undefined);
+        if (oldLimit === undefined) {
+          throw new AboxError(
+            'unsupported',
+            `sandbox '${id}' was started by an older version of abox: its host-side time limit can not be moved`,
+            { hint: 'Stop and start the sandbox once, then extend it.' },
+          );
+        }
+        const guestTtl = (at: number): string =>
+          String(Math.min(MAX_TTL_SEC, Math.max(1, Math.floor((at - this.now()) / 1000))));
+        const qga = this.qga(short);
+        // Host kill time first: it always lies after the guest's power-off, so it never fires early.
+        await writeFileAtomic(
+          limitFile,
+          `${
+            Math.min(Math.ceil(expiresAt / 1000), Math.floor(this.now() / 1000) + MAX_TTL_SEC) +
+            HARD_LIMIT_OFFSET_SEC
+          }\n`,
+          0o600,
+        );
+        try {
+          await rootScript(qga, REARM_TTL_SCRIPT, [guestTtl(expiresAt)]);
+        } catch (e) {
+          // put the old limits back, as far as possible
+          await writeFileAtomic(limitFile, oldLimit, 0o600).catch(() => undefined);
+          await rootScript(qga, REARM_TTL_SCRIPT, [guestTtl(meta.expiresAt)]).catch(
+            () => undefined,
+          );
+          throw e;
+        }
+      }
+      meta.expiresAt = expiresAt;
+      await this.layout.writeMeta(meta);
+    });
   }
 
   async stop(id: SandboxId): Promise<void> {
@@ -1470,13 +1618,20 @@ export class VmProvider implements SandboxProvider {
     );
   }
 
-  async copyOut(id: SandboxId, sandboxPath: string, hostPath: string): Promise<void> {
+  async copyOut(
+    id: SandboxId,
+    sandboxPath: string,
+    hostPath: string,
+    opts?: CopyOutOptions,
+  ): Promise<void> {
     const { meta, qga } = await this.runningSandbox(id);
     await guestCopyOut(
       qga,
       meta.user.name,
       normSandboxPath(sandboxPath, meta.workspacePath),
       hostPath,
+      opts?.onSkip,
+      opts?.symlinks,
     );
   }
 

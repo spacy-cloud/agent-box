@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { makeTestSpec, makeTestTemplate } from '@abox/contract-tests';
 import type { ResolvedTemplate, SandboxSpec } from '@abox/core';
 import { buildQcow2Overlay, readQcow2Header } from './qcow2.js';
-import { createVmProvider, vmProviderFactory, type VmProvider } from './provider.js';
+import {
+  createVmProvider,
+  effectiveDiskBytes,
+  vmProviderFactory,
+  type VmProvider,
+} from './provider.js';
 import { PREPARE_RECIPE_VERSION } from './seed.js';
 
 /**
@@ -456,5 +461,19 @@ describe('create (no VM started)', () => {
     expect(await p.networkEvents(spec.id)).toEqual([]);
     await p.stop(spec.id); // stopping a sandbox that never ran is fine
     expect((await p.inspect(spec.id)).state).toBe('stopped');
+  });
+});
+
+describe('effectiveDiskBytes (vm.diskSize and resources.disk)', () => {
+  const GiB = 1024 ** 3;
+  it('uses the largest of image, resources.disk and vm.diskSize', () => {
+    expect(effectiveDiskBytes(10 * GiB, undefined, undefined)).toBe(10 * GiB);
+    expect(effectiveDiskBytes(10 * GiB, undefined, '40g')).toBe(40 * GiB);
+    expect(effectiveDiskBytes(10 * GiB, 20 * GiB, undefined)).toBe(20 * GiB);
+    expect(effectiveDiskBytes(10 * GiB, 20 * GiB, '40g')).toBe(40 * GiB);
+    expect(effectiveDiskBytes(10 * GiB, 50 * GiB, '40g')).toBe(50 * GiB);
+  });
+  it('never shrinks below the prepared image', () => {
+    expect(effectiveDiskBytes(10 * GiB, 2 * GiB, '4g')).toBe(10 * GiB);
   });
 });

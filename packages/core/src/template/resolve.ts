@@ -3,6 +3,7 @@ import { AboxError, type ErrorIssue } from '../errors.js';
 import type {
   AccessMode,
   BackendKind,
+  BuildContextInfo,
   BuildStep,
   IsolationLevel,
   OsFamily,
@@ -57,6 +58,8 @@ export interface TemplateSource {
 export interface ParentTemplate {
   spec: TemplateSpec;
   source: TemplateSource;
+  /** Raw file text; project parents are part of the child's `contentHash`. */
+  contentText?: string;
 }
 
 /**
@@ -76,6 +79,11 @@ export interface ResolveOptions {
   contentText: string;
   /** Needed when the template uses `extends`. */
   lookup?: TemplateLookup;
+  /**
+   * Reads the build context of `base.dockerfile` (the catalog does). Without it a Dockerfile is
+   * only a path: the hashes then do not cover the Dockerfile's content.
+   */
+  buildContext?: (dockerfile: string, source: TemplateSource) => Promise<BuildContextInfo>;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +254,10 @@ async function resolveChain(
   spec: TemplateSpec,
   source: TemplateSource,
   lookup: TemplateLookup | undefined,
-): Promise<TemplateSpec> {
-  const chain: Array<{ spec: TemplateSpec; source: TemplateSource }> = [{ spec, source }];
+): Promise<{ merged: TemplateSpec; parents: ParentTemplate[] }> {
+  const chain: Array<{ spec: TemplateSpec; source: TemplateSource; contentText?: string }> = [
+    { spec, source },
+  ];
   const seen = new Set([sourceKey(spec.name, source)]);
   let cur = chain[0]!;
   while (cur.spec.extends) {
@@ -273,7 +283,7 @@ async function resolveChain(
       throw invalid(
         'extends',
         `template "${cur.spec.name}" extends unknown template "${parentName}"`,
-        'Check the name with `abox template list`.',
+        'Check the name with `abox template ls`.',
       );
     }
     assertSpec(found.spec);
@@ -285,12 +295,16 @@ async function resolveChain(
       );
     }
     seen.add(key);
-    cur = { spec: found.spec, source: found.source };
+    cur = {
+      spec: found.spec,
+      source: found.source,
+      ...(found.contentText !== undefined ? { contentText: found.contentText } : {}),
+    };
     chain.push(cur);
   }
   let merged = chain[chain.length - 1]!.spec;
   for (let i = chain.length - 2; i >= 0; i--) merged = mergeTemplateSpecs(merged, chain[i]!.spec);
-  return merged;
+  return { merged, parents: chain.slice(1) };
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +361,7 @@ export async function resolveTemplate(
   opts: ResolveOptions,
 ): Promise<ResolvedTemplate> {
   assertSpec(spec);
-  const merged = await resolveChain(spec, opts.source, opts.lookup);
+  const { merged, parents } = await resolveChain(spec, opts.source, opts.lookup);
   const problems = new Problems();
   const backend = merged.backend;
   const base = merged.base;
@@ -583,7 +597,42 @@ export async function resolveTemplate(
     osFamily,
   };
 
-  const hash = sha256(canonicalJson({ base: resolvedBase, build, user, python, vm, backend }));
+  // A Dockerfile is more than its path: its content and the files it can COPY decide what runs.
+  const buildContext =
+    base.dockerfile !== undefined && opts.buildContext
+      ? await opts.buildContext(base.dockerfile, opts.source)
+      : undefined;
+  const contextDigest = buildContext?.digest;
+
+  const hash = sha256(
+    canonicalJson({
+      base: resolvedBase,
+      build,
+      user,
+      python,
+      vm,
+      backend,
+      ...(contextDigest ? { buildContext: contextDigest } : {}),
+    }),
+  );
+
+  // Trust is keyed by `contentHash`. It is the plain hash of the file unless the file pulls in more
+  // content: project templates it extends and its Dockerfile context. A change there is a new hash.
+  const projectParents = parents.filter(
+    (p) => p.source.kind === 'project' && p.contentText !== undefined,
+  );
+  const contentHash =
+    projectParents.length > 0 || contextDigest
+      ? sha256(
+          canonicalJson({
+            file: sha256(opts.contentText),
+            ...(projectParents.length > 0
+              ? { parents: projectParents.map((p) => sha256(p.contentText ?? '')) }
+              : {}),
+            ...(contextDigest ? { buildContext: contextDigest } : {}),
+          }),
+        )
+      : sha256(opts.contentText);
 
   return {
     name: merged.name,
@@ -610,8 +659,9 @@ export async function resolveTemplate(
     ...(python ? { python } : {}),
     ...(vm ? { vm } : {}),
     source: { kind: opts.source.kind, ...(opts.source.path ? { path: opts.source.path } : {}) },
+    ...(buildContext ? { buildContext } : {}),
     hash,
-    contentHash: sha256(opts.contentText),
+    contentHash,
   };
 }
 

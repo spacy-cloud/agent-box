@@ -1,3 +1,6 @@
+import { mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { AboxError } from '../../errors.js';
 import type { SandboxProvider } from '../../provider.js';
 import type {
@@ -6,11 +9,14 @@ import type {
   ExecEvent,
   ExecRequest,
   ExecResult,
+  ForeignResource,
   HostConnection,
+  NetworkEvent,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
   ResolvedTemplate,
+  ResourceUsage,
   SandboxFilter,
   SandboxId,
   SandboxInfo,
@@ -34,6 +40,24 @@ export interface FakeOptions {
     id: SandboxId,
     req: ExecRequest,
   ) => Partial<ExecResult> | Promise<Partial<ExecResult>>;
+  /** Provide `networkEvents` (the proxy's egress decisions): push events to `fake.netEvents`. */
+  networkEvents?: boolean;
+  /** Provide `logs`; the handler returns the sandbox's main process output. */
+  logs?: (id: SandboxId, opts: { tail?: number; sinceTs?: number }) => string;
+  /** Provide `listForeign` / `removeForeign` with these objects of other abox instances. */
+  foreign?: ForeignResource[];
+  /** `removeForeign` fails for the object with this `ref`. */
+  failForeignRemove?: string;
+  /** The backend cannot move its deadline: no `extendExpiry` (default: it can). */
+  noExtendExpiry?: boolean;
+  /** `extendExpiry` fails with this message (the backend refuses to move its deadline). */
+  failExtendExpiry?: string;
+  /** The backend can change cpu / memory limits of an existing sandbox: provides `updateResources`. */
+  updateResources?: boolean;
+  /** `updateResources` fails with this message (e.g. memory below what the sandbox uses). */
+  failUpdateResources?: string;
+  /** Provide `stats`: the sample for a running sandbox (default: a fixed one); a sandbox that is not running is `conflict`. */
+  stats?: boolean | ((id: SandboxId) => ResourceUsage);
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -51,13 +75,38 @@ export class FakeProvider implements SandboxProvider {
   readonly prepareCalls: Array<{ hash: string; opts: PrepareOptions }> = [];
   readonly networkUpdates: Array<{ id: SandboxId; allow: string[]; injections: number }> = [];
   readonly gcCalls: string[][] = [];
+  /** Every `extendExpiry` call that was accepted. */
+  readonly expiryUpdates: Array<{ id: SandboxId; expiresAt: number }> = [];
+  /** Every `stats` call. */
+  readonly statsCalls: SandboxId[] = [];
+  /** Every `updateResources` call that was accepted. */
+  readonly resourceUpdates: Array<{ id: SandboxId; cpus?: number; memoryBytes?: number }> = [];
+  /** Foreign objects that are still there / the refs `removeForeign` deleted. */
+  readonly foreignResources: ForeignResource[] = [];
+  readonly foreignRemoved: string[] = [];
+  /** Egress events the fake proxy "recorded" per sandbox (`networkEvents` returns those with `ts >= since`). */
+  readonly netEvents = new Map<SandboxId, NetworkEvent[]>();
+  readonly networkEventCalls: Array<{ id: SandboxId; sinceTs: number | undefined }> = [];
+  readonly copyCalls: Array<{ dir: 'in' | 'out'; id: SandboxId; host: string; sandbox: string }> =
+    [];
+  readonly ttyCalls: Array<{ id: SandboxId; cols: number; rows: number; argv?: string[] }> = [];
+  /** Exit handlers of the open fake terminals (call to end the session with a code). */
+  readonly ttyExits: Array<(code: number) => void> = [];
   private readonly seenHashes = new Set<string>();
   private pinCounter = 0;
+  private snapCounter = 0;
   readonly opts: FakeOptions;
   private readonly caps: ProviderCapabilities;
   updateNetwork?: SandboxProvider['updateNetwork'];
+  extendExpiry?: SandboxProvider['extendExpiry'];
+  updateResources?: SandboxProvider['updateResources'];
+  stats?: SandboxProvider['stats'];
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
+  networkEvents?: SandboxProvider['networkEvents'];
+  logs?: SandboxProvider['logs'];
+  listForeign?: SandboxProvider['listForeign'];
+  removeForeign?: SandboxProvider['removeForeign'];
 
   constructor(host: HostConnection, opts: FakeOptions = {}) {
     this.host = host;
@@ -78,6 +127,62 @@ export class FakeProvider implements SandboxProvider {
       remote: false,
       ...opts.capabilities,
     };
+    if (opts.foreign) {
+      this.foreignResources.push(...opts.foreign);
+      this.listForeign = () => Promise.resolve(this.foreignResources.map((r) => ({ ...r })));
+      this.removeForeign = (r) => {
+        if (r.ref === opts.failForeignRemove)
+          return Promise.reject(new AboxError('backend_error', `cannot remove ${r.name} (fake)`));
+        const i = this.foreignResources.findIndex((x) => x.ref === r.ref);
+        if (i >= 0) {
+          this.foreignResources.splice(i, 1);
+          this.foreignRemoved.push(r.ref);
+        }
+        return Promise.resolve();
+      };
+    }
+    if (!opts.noExtendExpiry) {
+      this.caps.extendExpiry = true;
+      this.extendExpiry = (id, expiresAt) => {
+        const sb = this.get(id);
+        if (this.opts.failExtendExpiry)
+          return Promise.reject(new AboxError('backend_error', this.opts.failExtendExpiry));
+        // a new object: `specs` keeps the spec the sandbox was created with
+        sb.spec = { ...sb.spec, expiresAt };
+        this.expiryUpdates.push({ id, expiresAt });
+        return Promise.resolve();
+      };
+    }
+    if (opts.updateResources) {
+      this.caps.updateResources = true;
+      this.updateResources = (id, limits) => {
+        const sb = this.get(id);
+        if (this.opts.failUpdateResources)
+          return Promise.reject(new AboxError('backend_error', this.opts.failUpdateResources));
+        sb.spec = { ...sb.spec, resources: { ...sb.spec.resources, ...limits } };
+        this.resourceUpdates.push({ id, ...limits });
+        return Promise.resolve();
+      };
+    }
+    if (opts.stats) {
+      this.caps.stats = true;
+      const sample = typeof opts.stats === 'function' ? opts.stats : undefined;
+      this.stats = (id) => {
+        const sb = this.get(id);
+        this.statsCalls.push(id);
+        if (sb.state !== 'running')
+          return Promise.reject(new AboxError('conflict', `sandbox ${id} is not running`));
+        return Promise.resolve(
+          sample?.(id) ?? {
+            ts: Date.now(),
+            cpuPercent: 12.5,
+            memoryBytes: 64 * 1024 * 1024,
+            memoryLimitBytes: 256 * 1024 * 1024,
+            pids: 3,
+          },
+        );
+      };
+    }
     if (opts.updateNetwork) {
       this.updateNetwork = (id, network) => {
         this.get(id).spec.network = network;
@@ -89,11 +194,29 @@ export class FakeProvider implements SandboxProvider {
         return Promise.resolve();
       };
     }
+    if (opts.networkEvents) {
+      this.networkEvents = (id, sinceTs) => {
+        this.get(id);
+        this.networkEventCalls.push({ id, sinceTs });
+        return Promise.resolve(
+          (this.netEvents.get(id) ?? []).filter((e) => e.ts >= (sinceTs ?? 0)),
+        );
+      };
+    }
+    if (opts.logs) {
+      const h = opts.logs;
+      this.logs = (id, o) => {
+        this.get(id);
+        return Promise.resolve(h(id, o ?? {}));
+      };
+    }
     if (this.caps.snapshots) {
       this.snapshot = (id, name) => {
         const sb = this.get(id);
-        sb.snapshots.set(name, new Map(sb.files));
-        return Promise.resolve(name);
+        // like the Docker backend: the id is not the name
+        const snapshotId = `snap-${++this.snapCounter}-${name}`;
+        sb.snapshots.set(snapshotId, new Map(sb.files));
+        return Promise.resolve(snapshotId);
       };
       this.restore = (id, snap) => {
         const sb = this.get(id);
@@ -103,6 +226,10 @@ export class FakeProvider implements SandboxProvider {
         return Promise.resolve();
       };
     }
+  }
+
+  addNetEvents(id: SandboxId, ...events: NetworkEvent[]): void {
+    this.netEvents.set(id, [...(this.netEvents.get(id) ?? []), ...events]);
   }
 
   private now(): number {
@@ -198,14 +325,48 @@ export class FakeProvider implements SandboxProvider {
     throw new AboxError('unsupported', 'spawn not supported by the fake');
   }
 
-  attach(): Promise<TtySession> {
-    return Promise.reject(new AboxError('unsupported', 'tty not supported by the fake'));
+  attach(id: SandboxId, tty: { cols: number; rows: number; argv?: string[] }): Promise<TtySession> {
+    this.get(id);
+    if (!this.caps.tty)
+      return Promise.reject(new AboxError('unsupported', 'tty not supported by the fake'));
+    this.ttyCalls.push({
+      id,
+      cols: tty.cols,
+      rows: tty.rows,
+      ...(tty.argv ? { argv: tty.argv } : {}),
+    });
+    const stream = new PassThrough();
+    let exit!: (code: number) => void;
+    const done = new Promise<number>((r) => (exit = r));
+    this.ttyExits.push(exit);
+    return Promise.resolve({
+      stream,
+      resize: () => Promise.resolve(),
+      wait: () => done,
+      close: () => {
+        exit(130);
+        return Promise.resolve();
+      },
+    });
   }
 
-  copyIn(): Promise<void> {
+  copyIn(id: SandboxId, hostPath: string, sandboxPath: string): Promise<void> {
+    this.get(id);
+    this.copyCalls.push({ dir: 'in', id, host: hostPath, sandbox: sandboxPath });
     return Promise.resolve();
   }
-  copyOut(): Promise<void> {
+  /** Writes a small file at the destination (like a real copy) and records the call. */
+  copyOut(id: SandboxId, sandboxPath: string, hostPath: string): Promise<void> {
+    this.get(id);
+    this.copyCalls.push({ dir: 'out', id, host: hostPath, sandbox: sandboxPath });
+    let target = hostPath;
+    try {
+      if (statSync(hostPath).isDirectory()) target = join(hostPath, 'copied-out.txt');
+    } catch {
+      /* destination does not exist yet */
+    }
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, 'copied out of the sandbox\n');
     return Promise.resolve();
   }
 

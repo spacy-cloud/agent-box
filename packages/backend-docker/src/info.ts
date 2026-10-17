@@ -47,13 +47,15 @@ export function infoFromLabels(
   kind: BackendKind,
   now: number,
   flags?: EngineStateFlags,
+  /** The deadline the sandbox really has when it was moved after creation (see `effectiveExpiresAt`). */
+  expiresAtOverride?: number,
 ): SandboxInfo {
   const id = labels[LABEL.id] ?? '';
   const userLabels: Record<string, string> = {};
   for (const [k, v] of Object.entries(labels)) {
     if (!RESERVED_LABELS.has(k)) userLabels[k] = v;
   }
-  const expiresAt = num(labels[LABEL.expires]);
+  const expiresAt = expiresAtOverride ?? num(labels[LABEL.expires]);
   return {
     id,
     host: labels[LABEL.host] ?? parseSandboxId(id).host,

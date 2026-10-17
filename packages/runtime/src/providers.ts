@@ -1,0 +1,164 @@
+import { join } from 'node:path';
+import {
+  loadConfig,
+  resolvePaths,
+  type AboxConfig,
+  type AboxPaths,
+  type BackendKind,
+  type HostConnection,
+  type ProviderFactory,
+} from '@abox/core';
+import { createDockerProvider, createPodmanProvider } from '@abox/backend-docker';
+import { createProcessProvider } from '@abox/backend-process';
+import { createPythonProvider } from '@abox/backend-python';
+import { createVmProvider } from '@abox/backend-vm';
+import { loadInstanceId } from './instance.js';
+
+/** What a provider-factory maker may use to configure its backend. */
+export interface ProviderContext {
+  env: NodeJS.ProcessEnv;
+  paths: AboxPaths;
+  config: AboxConfig;
+}
+
+/** Turns the runtime context into the `ProviderFactory` the manager calls once per host. */
+export type ProviderFactoryMaker = (ctx: ProviderContext) => ProviderFactory;
+
+const registry = new Map<BackendKind, ProviderFactoryMaker>();
+
+/**
+ * The stronger OCI runtime configured for an engine (`config.yaml` `backends.docker.runtime` /
+ * `backends.podman.runtime`, e.g. `runsc` or `kata`), read defensively: absent or not a non-empty
+ * string means none. The provider only reports isolation `hardened` when the engine really has it.
+ */
+export function configuredRuntime(
+  kind: 'docker' | 'podman',
+  config: AboxConfig,
+): string | undefined {
+  const v = (config.backends[kind] as { runtime?: unknown } | undefined)?.runtime;
+  return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+}
+
+/**
+ * The hardened runtime of an engine ON A HOST. A host profile's `runtimes` entry (hosts.yaml) is
+ * authoritative for that host. Only the local host falls back to `config.yaml`: the runtime
+ * installed in this machine's engine says nothing about the engine of a remote server, so a
+ * remote host without its own entry has no hardened runtime.
+ */
+export function hardenedRuntimeFor(
+  kind: 'docker' | 'podman',
+  config: AboxConfig,
+  host: HostConnection,
+): string | undefined {
+  return (
+    host.runtimes?.[kind] ?? (host.kind === 'local' ? configuredRuntime(kind, config) : undefined)
+  );
+}
+
+/** Socket of a container engine: config.yaml, then the environment, then the default location. */
+export function engineSocket(
+  kind: 'docker' | 'podman',
+  ctx: ProviderContext,
+  forwarded?: string,
+): string {
+  if (forwarded) return forwarded;
+  const configured = ctx.config.backends[kind].socket;
+  if (configured) return configured;
+  const { env } = ctx;
+  if (kind === 'docker') {
+    const host = env['DOCKER_HOST'];
+    if (host?.startsWith('unix://')) return host.slice('unix://'.length);
+    if (host) return host; // unusable for dockerode (tcp://...) -> the backend reports backend_unavailable
+    return '/var/run/docker.sock';
+  }
+  const host = env['CONTAINER_HOST'];
+  if (host?.startsWith('unix://')) return host.slice('unix://'.length);
+  const runtime = env['XDG_RUNTIME_DIR'] ?? `/run/user/${process.getuid?.() ?? 1000}`;
+  return join(runtime, 'podman', 'podman.sock');
+}
+
+function hardened(
+  kind: 'docker' | 'podman',
+  ctx: ProviderContext,
+  host: HostConnection,
+): { hardenedRuntime?: string } {
+  const rt = hardenedRuntimeFor(kind, ctx.config, host);
+  return rt ? { hardenedRuntime: rt } : {};
+}
+
+// The container backends stamp the id of this abox installation on everything they create and only
+// see objects carrying it (`DockerProviderOptions.instanceId`). Read lazily: only when a provider
+// is built, so commands that never touch an engine do not create the file.
+registry.set(
+  'docker',
+  (ctx) => (host) =>
+    createDockerProvider(host, {
+      socketPath: engineSocket('docker', ctx, host.engineSocket),
+      instanceId: loadInstanceId(ctx.paths.dataDir),
+      ...hardened('docker', ctx, host),
+    }),
+);
+registry.set(
+  'podman',
+  (ctx) => (host) =>
+    createPodmanProvider(host, {
+      socketPath: engineSocket('podman', ctx, host.engineSocket),
+      instanceId: loadInstanceId(ctx.paths.dataDir),
+      ...hardened('podman', ctx, host),
+    }),
+);
+registry.set(
+  'process',
+  (ctx) => (host) => createProcessProvider(host, { dataDir: host.dataDir ?? ctx.paths.dataDir }),
+);
+
+registry.set(
+  'vm',
+  (ctx) => (host) =>
+    createVmProvider(host, {
+      dataDir: host.dataDir ?? ctx.paths.dataDir,
+      cacheDir: join(ctx.paths.cacheDir, 'vm'),
+    }),
+);
+registry.set(
+  'python',
+  (ctx) => (host) =>
+    createPythonProvider(host, {
+      docker: {
+        socketPath: engineSocket('docker', ctx, host.engineSocket),
+        instanceId: loadInstanceId(ctx.paths.dataDir),
+        ...hardened('docker', ctx, host),
+      },
+      dataDir: host.dataDir ?? ctx.paths.dataDir,
+    }),
+);
+
+/** Registers (or replaces) the backend `kind`. Call before `openAbox`. */
+export function registerProvider(kind: BackendKind, maker: ProviderFactoryMaker): void {
+  registry.set(kind, maker);
+}
+
+/** Removes a registered backend (tests; a surface that wants to run without it). */
+export function unregisterProvider(kind: BackendKind): boolean {
+  return registry.delete(kind);
+}
+
+export function registeredBackends(): BackendKind[] {
+  return [...registry.keys()];
+}
+
+/**
+ * The provider factories for every registered backend, as `Abox.open({providers})` expects them.
+ * Used by the CLI/MCP (through `openAbox`) and by the GUI main process.
+ */
+export function providerFactories(
+  opts: { env?: NodeJS.ProcessEnv; paths?: AboxPaths; config?: AboxConfig } = {},
+): Partial<Record<BackendKind, ProviderFactory>> {
+  const env = opts.env ?? process.env;
+  const paths = opts.paths ?? resolvePaths(env);
+  const config = opts.config ?? loadConfig(paths.configFile);
+  const ctx: ProviderContext = { env, paths, config };
+  const out: Partial<Record<BackendKind, ProviderFactory>> = {};
+  for (const [kind, maker] of registry) out[kind] = maker(ctx);
+  return out;
+}

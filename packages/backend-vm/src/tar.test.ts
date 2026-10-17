@@ -138,6 +138,28 @@ describe('tar writer and extractor', () => {
     expect(skipped.sort()).toEqual(['abs', 'sub/up']);
   });
 
+  it("symlinks: 'preserve' keeps absolute and escaping links (private scratch tree of the export)", async () => {
+    const src = join(root, 'guest-links');
+    await mkdir(join(src, 'sub'), { recursive: true });
+    await symlink('/etc/passwd', join(src, 'abs'));
+    await symlink('../../outside', join(src, 'sub', 'up'));
+    const r = spawnSync(
+      'tar',
+      ['--format=posix', '--hard-dereference', '-C', src, '-cf', '-', '.'],
+      { maxBuffer: 1 << 24 },
+    );
+    expect(r.status).toBe(0);
+    const dest = join(root, 'dest-links');
+    const skipped: string[] = [];
+    await extractTar(chunked(r.stdout), dest, {
+      symlinks: 'preserve',
+      onSkip: (p) => skipped.push(p),
+    });
+    expect(await readlink(join(dest, 'abs'))).toBe('/etc/passwd');
+    expect(await readlink(join(dest, 'sub', 'up'))).toBe('../../outside');
+    expect(skipped).toEqual([]);
+  });
+
   it('single-file mode writes the entry to the destination path', async () => {
     await writeFile(join(root, 'one.bin'), 'x'.repeat(1500), { mode: 0o640 });
     const dest = join(root, 'copy.bin');
@@ -242,6 +264,110 @@ describe('tar writer and extractor', () => {
       expect((await stat(join(dest, 'suid'))).mode & 0o7777).toBe(0o755);
       expect(skipped.sort()).toEqual(['dev', 'fifo', 'hard']);
       expect((await readdir(dest)).sort()).toEqual(['suid']);
+    });
+
+    describe('symlink chains', () => {
+      // d/sub -> .., s -> d/sub, t -> s/..: each target is inside lexically, together they leave.
+      const chain = [
+        header('d/', '5'),
+        header('d/sub', '2', 0, '..'),
+        header('s', '2', 0, 'd/sub'),
+        header('t', '2', 0, 's/..'),
+      ];
+
+      it('drops the link whose chain leads out of the destination, keeps the others', async () => {
+        const dest = join(root, 'dest');
+        const skipped: string[] = [];
+        const res = await extractTar(chunked(Buffer.concat([...chain, END])), dest, {
+          onSkip: (p) => skipped.push(p),
+        });
+        expect(skipped).toEqual(['t']);
+        await expect(lstat(join(dest, 't'))).rejects.toThrow();
+        expect(await readlink(join(dest, 's'))).toBe('d/sub');
+        expect(res.symlinks).toBe(2);
+      });
+
+      it('catches it when the redirecting link is made after the one it redirects', async () => {
+        const dest = join(root, 'dest');
+        const [d, sub, s, t] = chain as [Buffer, Buffer, Buffer, Buffer];
+        const skipped: string[] = [];
+        await extractTar(chunked(Buffer.concat([d, sub, t, s, END])), dest, {
+          onSkip: (p) => skipped.push(p),
+        });
+        expect(skipped).toEqual(['t']);
+        await expect(lstat(join(dest, 't'))).rejects.toThrow();
+      });
+
+      it("keeps everything in 'preserve' mode (scratch tree, links never followed)", async () => {
+        const dest = join(root, 'dest');
+        const skipped: string[] = [];
+        await extractTar(chunked(Buffer.concat([...chain, END])), dest, {
+          symlinks: 'preserve',
+          onSkip: (p) => skipped.push(p),
+        });
+        expect(await readlink(join(dest, 't'))).toBe('s/..');
+        expect(skipped).toEqual([]);
+      });
+
+      it('keeps harmless chains, loops and dangling links', async () => {
+        const dest = join(root, 'dest');
+        const skipped: string[] = [];
+        await extractTar(
+          chunked(
+            Buffer.concat([
+              header('d/', '5'),
+              header('d/f', '0', 1),
+              body('F'),
+              header('d/self', '2', 0, '.'),
+              header('l1', '2', 0, 'd/self/f'),
+              header('l2', '2', 0, 'l1'),
+              header('a', '2', 0, 'b'),
+              header('b', '2', 0, 'a'),
+              header('dangling', '2', 0, 'nowhere/further/..'),
+              END,
+            ]),
+          ),
+          dest,
+          { onSkip: (p) => skipped.push(p) },
+        );
+        expect(skipped).toEqual([]);
+        expect(await readFile(join(dest, 'l2'), 'utf8')).toBe('F');
+      });
+    });
+
+    it('leaves out names with a backslash and extracts the rest', async () => {
+      const dest = join(root, 'dest');
+      const skipped: string[] = [];
+      await extractTar(
+        chunked(
+          Buffer.concat([
+            header('./ok.txt', '0', 2),
+            body('ok'),
+            header('./we\\ird.txt', '0', 3),
+            body('bad'),
+            header('./d\\ir/', '5'),
+            header('./d\\ir/inner', '0', 3),
+            body('bad'),
+            header('./tail.txt', '0', 4),
+            body('tail'),
+            END,
+          ]),
+        ),
+        dest,
+        { onSkip: (p, why) => skipped.push(`${p}: ${why}`) },
+      );
+      expect((await readdir(dest)).sort()).toEqual(['ok.txt', 'tail.txt']);
+      expect(skipped.map((x) => x.split(':')[0])).toEqual(['we\\ird.txt', 'd\\ir/', 'd\\ir/inner']);
+      expect(skipped[0]).toMatch(/backslash/);
+    });
+
+    it('still writes a single file whose own name has a backslash to the destination', async () => {
+      await writeFile(join(root, 'we\\ird'), 'single');
+      const dest = join(root, 'copy');
+      await extractTar(chunked(await collect(tarSingle(join(root, 'we\\ird'), 'we\\ird'))), dest, {
+        singleFile: true,
+      });
+      expect(await readFile(dest, 'utf8')).toBe('single');
     });
 
     it('enforces the size limit and detects truncated streams', async () => {

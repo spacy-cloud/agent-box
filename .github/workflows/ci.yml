@@ -27,9 +27,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: ESLint
         run: pnpm lint
-      - name: Prettier (informational for now)
+      - name: Prettier
         run: pnpm format:check
-        continue-on-error: true
 
   build:
     name: Build
@@ -57,6 +56,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test
+      # The root vitest run excludes packages/app and `tsc -b` does not reference it, so the GUI's
+      # typecheck (main, renderer, e2e) and its unit tests (Vitest with jsdom, no display or
+      # Electron needed) run as their own steps. They import the built workspace packages.
+      - name: GUI typecheck
+        run: pnpm --filter @abox/app typecheck
+      - name: GUI unit tests
+        run: pnpm --filter @abox/app test
 
   docker-tests:
     name: Docker integration tests
@@ -73,3 +79,41 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test:docker
+
+  gui-e2e:
+    name: GUI end-to-end tests
+    # Pinned: the package names and the AppArmor setting below are those of Ubuntu 24.04.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install a virtual display and the libraries Electron needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libgbm1 \
+            libasound2t64 libxss1 libxtst6 libatk-bridge2.0-0t64 libcups2t64
+      - name: Allow Chromium's sandbox (unprivileged user namespaces)
+        # Ubuntu 24.04 restricts them with AppArmor; without this Electron does not start.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Build node-pty (SSH terminals)
+        run: pnpm --filter @abox/app run native
+      # Builds the app, then runs Playwright under xvfb-run (see packages/app/package.json). The
+      # specs that need Docker (terminal, template build, ssh against a throwaway sshd) skip
+      # themselves because ABOX_TEST_DOCKER is not set; the rest never touches the Docker engine.
+      - name: Playwright (Electron)
+        run: pnpm --filter @abox/app test:e2e
+      - name: Upload traces of failed tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-e2e-test-results
+          path: packages/app/test-results
+          if-no-files-found: ignore
+          retention-days: 7

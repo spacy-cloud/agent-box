@@ -94,8 +94,10 @@ backing file name and format, one refcount table/block and an all-zero L1 table.
 else. The writer is validated by unit tests and, when `ABOX_TEST_QEMU_IMG` points to a `qemu-img`, by
 `qemu-img check`/`info`.
 
-The virtual size is `max(image size, resources.disk)`. A larger disk is grown at boot with `growpart`
-and `resize2fs`; the disk limit is therefore a hard upper bound, but it can not be smaller than the
+The virtual size is `max(image size, resources.disk, vm.diskSize)`: the template's `vm.diskSize`
+(e.g. `40g`) and the resource limit `resources.disk` (also as an override at creation) both only ever
+enlarge the disk, the larger one wins. A larger disk is grown at boot with `growpart` and
+`resize2fs`; the disk limit is therefore a hard upper bound, but it can not be smaller than the
 10 GiB image size (sparse, so it costs nothing until used).
 
 ### Control channel: QEMU guest agent
@@ -133,6 +135,10 @@ paths are limited to about 100 characters).
 - **`copyOut` treats the archive as hostile** (it comes from the guest): the extractor rejects absolute
   and `..` paths, never writes through symlinks, drops setuid/setgid bits, skips devices/FIFOs/sockets and
   hard links, and skips symlinks that point outside the copied tree (absolute targets, `..` escapes).
+  Symlinks are also checked again against the finished tree: a chain such as `d/sub -> ..`, `s -> d/sub`,
+  `t -> s/..` leads out although every target looks harmless, and the last link is removed and reported
+  (`onSkip`). Names with a backslash are left out and reported, too (also reported through
+  `CopyOutOptions.onSkip`, so the export flags them instead of failing).
   This is what `export` uses; "export a directory" works as `copyOut(dir, hostPath)`.
 - The user for `exec` is the template user; `user: 'root'` is accepted for internal use.
 
@@ -154,7 +160,11 @@ paths are limited to about 100 characters).
 - **TTL**: `inspect()`/`list()` report `expired` once `expiresAt < now`; `start()`/`exec()` refuse expired
   sandboxes. Enforcement does not depend on abox running: the guest arms a transient systemd timer
   (`systemd-run --on-active=<remaining>`) that powers it off at expiry, and the QEMU process runs under
-  `timeout` and is killed 30 s after expiry even if the guest is stuck or compromised.
+  a small `sh` watchdog and is killed 30 s after expiry even if the guest is stuck or compromised.
+  `extendExpiry()` (`abox extend`) moves all three: it re-arms the guest timer through the guest
+  agent, rewrites the kill time the watchdog re-reads every 2 s, and stores the new `expiresAt`; if
+  one of them fails the old deadline stays. A VM that was started by a version without the
+  watchdog answers `unsupported` until it is stopped and started once.
 - **Hardening of the QEMU process**: seccomp (`-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny`),
   `-nodefaults -no-user-config`, no display/VNC/SPICE, monitor and agent only on unix sockets in a 0700
   directory, no TCP listener of any kind, a bounded 64 KiB console ring buffer (`logs()`), a pid file and a

@@ -327,6 +327,33 @@ describe.skipIf(!VM_TESTS)('vm backend (real VMs)', () => {
       T,
     );
 
+    it(
+      'extendExpiry moves both the guest timer and the host kill time',
+      async () => {
+        const s = await spec({ expiresAt: Date.now() + 22_000 });
+        await p.create(s);
+        await p.start(s.id);
+        const moved = Date.now() + 180_000;
+        await p.extendExpiry(s.id, moved);
+        expect((await p.inspect(s.id)).expiresAt).toBe(moved);
+        const short = s.id.split('/')[1] as string;
+        const limit = (p as unknown as { layout: { hardLimitFile(s: string): string } }).layout;
+        const killAt = Number((await readFile(limit.hardLimitFile(short), 'utf8')).trim());
+        expect(killAt).toBeGreaterThanOrEqual(Math.ceil(moved / 1000) + 30);
+        // past the original expiry AND the original kill time (expiry + 30 s)
+        await new Promise((r) => setTimeout(r, Math.max(0, s.expiresAt + 36_000 - Date.now())));
+        expect((await p.inspect(s.id)).state).toBe('running');
+        expect((await sh(s.id, 'echo alive')).stdout).toBe('alive\n');
+        await p.stop(s.id);
+        await p.start(s.id);
+        expect((await sh(s.id, 'echo again')).stdout).toBe('again\n');
+        await expect(p.extendExpiry(s.id, s.expiresAt)).rejects.toMatchObject({
+          code: 'invalid_input',
+        });
+      },
+      T,
+    );
+
     it('expired sandboxes can not be started or used', async () => {
       const s = await spec({ expiresAt: Date.now() - 1000 });
       await p.create(s);

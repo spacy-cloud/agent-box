@@ -560,3 +560,119 @@ describe('export: hostile sandbox', () => {
     await applyCheck(ctx, r.content as string);
   });
 });
+
+describe('export: absolute symlinks the project already had', () => {
+  async function setupLinked(mode: 'copy' | 'clone'): Promise<Ctx & { secret: string }> {
+    const root = await tmp();
+    const src = await makeRepo(join(root, 'project'));
+    const secret = join(root, 'secretdir');
+    await mkdir(secret);
+    await symlink(secret, join(src, 'link-dir'));
+    await symlink('/etc/hostname', join(src, 'conf-link'));
+    git(src, 'add', '-A');
+    git(src, 'commit', '-q', '-m', 'links');
+    const sandboxDir = join(root, 'sandboxes', 'ab12cd34');
+    const r = await prepareWorkspace({ ...common, mode, source: src, sandboxDir });
+    const tree = join(root, 'sandbox-tree');
+    await cp(join(sandboxDir, 'staging'), tree, { recursive: true, verbatimSymlinks: true });
+    return {
+      root,
+      src,
+      sandboxDir,
+      record: r.record,
+      tree,
+      provider: new FakeProvider(tree),
+      tmpDir: join(root, 'export-tmp'),
+      secret,
+    };
+  }
+
+  it.each(['copy', 'clone'] as const)(
+    '%s: an unchanged absolute link is not a change in any format and copyOut preserves links',
+    async (mode) => {
+      const ctx = await setupLinked(mode);
+      const calls: unknown[] = [];
+      const spy = {
+        copyOut: async (...args: Parameters<FakeProvider['copyOut']>) => {
+          calls.push(args[3]);
+          await ctx.provider.copyOut(...args);
+        },
+      };
+      await write(join(ctx.tree, 'src/a.txt'), 'alpha\nchanged\n');
+      for (const format of ['diff', 'patch', 'files', 'branch'] as const) {
+        const outDir = join(ctx.root, `out-${format}`);
+        const r = await run(ctx, format, {
+          provider: spy,
+          ...(format === 'files' ? { outDir } : {}),
+          ...(format === 'branch' ? { branchName: 'abox/links' } : {}),
+        });
+        expect(r.files.map((f) => f.path)).toEqual(['src/a.txt']);
+        expect(r.flagged.filter((f) => /link/.test(f.path))).toEqual([]);
+        if (format === 'diff') expect(r.content).not.toContain('120000');
+        if (format === 'files') expect(await readdir(outDir)).toEqual(['src']);
+      }
+      expect(calls).toHaveLength(4);
+      expect(calls.every((o) => (o as { symlinks?: string }).symlinks === 'preserve')).toBe(true);
+    },
+  );
+
+  it('an untouched project with absolute links exports as "no changes"', async () => {
+    const ctx = await setupLinked('copy');
+    const r = await run(ctx, 'diff');
+    expect(r.files).toEqual([]);
+    expect(r.content).toBe('');
+    expect(r.warnings).toContain('no changes to export');
+  });
+
+  it('a new or retargeted absolute link is a symlink entry in diff/patch and flagged; files never writes it', async () => {
+    const ctx = await setupLinked('copy');
+    await rm(join(ctx.tree, 'link-dir'));
+    await symlink('/root/.ssh', join(ctx.tree, 'link-dir'));
+    await symlink('/etc/shadow', join(ctx.tree, 'new-link'));
+    await symlink('../../../etc', join(ctx.tree, 'src', 'up'));
+
+    const diff = await run(ctx, 'diff');
+    const byPath = Object.fromEntries(diff.files.map((f) => [f.path, f]));
+    expect(Object.keys(byPath).sort()).toEqual(['link-dir', 'new-link', 'src/up']);
+    expect(byPath['link-dir']).toMatchObject({
+      status: 'modified',
+      kind: 'symlink',
+      symlinkTarget: '/root/.ssh',
+    });
+    expect(byPath['new-link']).toMatchObject({ status: 'added', kind: 'symlink' });
+    expect(diff.content).toContain('new file mode 120000');
+    expect(diff.content).toContain('+/etc/shadow');
+    expect(diff.content).toContain('+/root/.ssh');
+    for (const p of ['link-dir', 'new-link', 'src/up'])
+      expect(diff.flagged.some((f) => f.path === p && /outside the workspace/.test(f.reason))).toBe(
+        true,
+      );
+    await applyCheck(ctx, diff.content as string);
+    const patch = await run(ctx, 'patch');
+    expect(patch.content).toContain('120000');
+
+    const outDir = join(ctx.root, 'out-files');
+    const files = await run(ctx, 'files', { outDir });
+    expect(files.written).toEqual([]);
+    expect(await readdir(outDir)).toEqual([]);
+    expect(files.warnings.join('\n')).toMatch(/never created in outDir/);
+    expect(
+      files.flagged.some((f) => f.path === 'new-link' && /not written to outDir/.test(f.reason)),
+    ).toBe(true);
+
+    // branch: the links only exist as git symlink entries, the user's work tree stays untouched
+    const before = porcelain(ctx.src);
+    const br = await run(ctx, 'branch', { branchName: 'abox/links' });
+    expect(br.branch).toBe('abox/links');
+    expect(git(ctx.src, 'ls-tree', 'abox/links', 'new-link')).toMatch(/^120000 blob /);
+    expect(porcelain(ctx.src)).toBe(before);
+    expect(existsSync(join(ctx.src, 'new-link'))).toBe(false);
+  });
+
+  it('a link the agent removed is a deletion, not a failure', async () => {
+    const ctx = await setupLinked('copy');
+    await rm(join(ctx.tree, 'link-dir'));
+    const r = await run(ctx, 'diff');
+    expect(r.files).toMatchObject([{ path: 'link-dir', status: 'deleted', kind: 'symlink' }]);
+  });
+});

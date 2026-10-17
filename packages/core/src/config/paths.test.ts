@@ -21,7 +21,6 @@ describe('resolvePaths', () => {
     expect(p.templatesDir).toBe('/x/abox-test/config/templates');
     expect(p.configFile).toBe('/x/abox-test/config/config.yaml');
     expect(p.policyFile).toBe('/x/abox-test/config/policy.yaml');
-    expect(p.agentsFile).toBe('/x/abox-test/config/agents.yaml');
     expect(p.hostsFile).toBe('/x/abox-test/config/hosts.yaml');
   });
 

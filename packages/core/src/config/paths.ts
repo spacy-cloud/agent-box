@@ -19,7 +19,6 @@ export interface AboxPaths {
   /** User templates (`*.yaml`). */
   templatesDir: string;
   policyFile: string;
-  agentsFile: string;
   hostsFile: string;
   configFile: string;
 }
@@ -75,7 +74,6 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): AboxPaths {
     runtimeDir,
     templatesDir: join(configDir, 'templates'),
     policyFile: join(configDir, 'policy.yaml'),
-    agentsFile: join(configDir, 'agents.yaml'),
     hostsFile: join(configDir, 'hosts.yaml'),
     configFile: join(configDir, 'config.yaml'),
   };

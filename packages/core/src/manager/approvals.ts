@@ -1,9 +1,11 @@
 import { AboxError } from '../errors.js';
 import type { Approval } from '../state/approval-queue.js';
 import { hashRequest } from '../state/approval-queue.js';
-import type { AgentContext } from '../policy/index.js';
+import type { AgentContext, ApprovalItem } from '../policy/index.js';
 import type { Internals } from './internals.js';
+import { trustSnapshot } from './templates.js';
 import type {
+  ApprovalBase,
   ApprovalDecision,
   ApprovalView,
   Caller,
@@ -17,6 +19,19 @@ export const DENIAL_COOLDOWN_MS = 10 * 60_000;
 /** A request that expired undecided is reported as `approval_expired` when repeated within this window. */
 export const EXPIRED_REPORT_WINDOW_MS = 120_000;
 
+/** The template base recorded in a create / template-trust request digest, if it is well-formed. */
+function requestBase(request: unknown): ApprovalBase | null {
+  const tpl = (request as { template?: { base?: unknown } } | null)?.template;
+  const raw = tpl && typeof tpl === 'object' ? tpl.base : undefined;
+  if (!raw || typeof raw !== 'object') return null;
+  const b = raw as Record<string, unknown>;
+  const out: ApprovalBase = {};
+  if (typeof b['os'] === 'string') out.os = b['os'];
+  if (typeof b['dockerfile'] === 'string') out.dockerfile = b['dockerfile'];
+  if (typeof b['registry'] === 'string') out.registry = b['registry'];
+  return out.os !== undefined || out.dockerfile !== undefined ? out : null;
+}
+
 export function toApprovalView(a: Approval): ApprovalView {
   return {
     id: a.id,
@@ -26,6 +41,15 @@ export function toApprovalView(a: Approval): ApprovalView {
     status: a.status,
     reason: a.reason,
     risks: a.risks,
+    items: a.items.map((i) => ({
+      kind: i.kind as ApprovalItem['kind'],
+      reason: i.reason,
+      risk: i.risk,
+      invariant: i.invariant,
+    })),
+    kinds: [...new Set(a.items.map((i) => i.kind))],
+    reasons: a.items.map((i) => i.reason),
+    base: requestBase(a.request),
     request: a.request,
     createdAt: a.createdAt,
     expiresAt: a.expiresAt,
@@ -44,6 +68,8 @@ export interface GateInput {
   request: Record<string, unknown>;
   reasons: string[];
   risks: string[];
+  /** The policy findings behind the request (stored with the approval so surfaces can show why). */
+  items: ApprovalItem[];
   /** Free text written by the agent (stored as untrusted). */
   agentReason?: string | undefined;
   waitMs: number;
@@ -121,6 +147,7 @@ export async function gate(I: Internals, g: GateInput): Promise<GateOutcome> {
       request: g.request,
       reason: g.agentReason?.slice(0, 4000) ?? '',
       risks: g.risks,
+      items: g.items,
       ttlMs: I.config.limits.approvalTtlMs,
     });
     I.audit(owner, 'approval.request', {
@@ -186,6 +213,7 @@ export async function gate(I: Internals, g: GateInput): Promise<GateOutcome> {
           status: 'pending_approval',
           approvalId: approval.id,
           kind: approval.kind,
+          kinds: [...new Set(g.items.map((i) => i.kind))],
           reasons: g.reasons,
           risks: g.risks,
           expiresAt: approval.expiresAt,
@@ -262,6 +290,8 @@ async function decide(
 ): Promise<ApprovalDecision> {
   const ctx = await I.context(caller);
   I.requireHuman(ctx, decision === 'approved' ? 'approval.approve' : 'approval.deny');
+  // Denying is always possible; approving grants rights, so it waits for a valid policy.
+  if (decision === 'approved') I.requirePolicyValid(ctx, 'approval.approve', 'approving requests');
   if (typeof id !== 'string' || id.length === 0 || id.length > 80)
     throw new AboxError('not_found', 'approval not found');
   const decided = I.state.approvals.decide(id, {
@@ -298,7 +328,14 @@ async function decide(
         ? { contentHash: tpl.contentHash, name: tpl.name, path: tpl.source?.path }
         : undefined;
       if (t?.contentHash && /^[0-9a-f]{64}$/.test(t.contentHash)) {
-        I.state.templateTrust.trust(t.contentHash, { path: t.path ?? t.name ?? '', by: ctx.owner });
+        // Keep what was approved, so the next change of this template is reviewed as a diff against it.
+        const snapshot = await trustSnapshot(I, t.path, t.contentHash);
+        I.state.templateTrust.trust(t.contentHash, {
+          path: t.path ?? t.name ?? '',
+          by: ctx.owner,
+          ...(t.name ? { name: t.name } : {}),
+          ...(snapshot ? { snapshot } : {}),
+        });
         I.audit(ctx.owner, 'template.trust', {
           decision: 'approved',
           details: {

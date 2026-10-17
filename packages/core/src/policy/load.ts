@@ -9,6 +9,8 @@ import { WORKSPACE_MODES } from '../types.js';
 import { NETWORK_PRESETS } from '../template/network-presets.js';
 import type { ContextDef, Policy, PolicySource, ResolvedProfile } from './model.js';
 import { PolicyFileSchema, type RawPolicy, type RawProfile } from './schema.js';
+import { DEFAULT_IMAGE_REGISTRIES } from './images.js';
+import { ANY_ROOT } from './paths.js';
 import { parseDuration, parseSize } from './units.js';
 
 // ---------------------------------------------------------------------------
@@ -17,6 +19,9 @@ import { parseDuration, parseSize } from './units.js';
 
 /**
  * Built-in profile of the human operator. Broad rights, but:
+ * - the roots are `*` (any directory, `ANY_ROOT`): a human is not limited to a part of the file
+ *   system, so a project below a symlink that leads off `$HOME` works. An explicit `roots` list
+ *   in a `human` profile of policy.yaml replaces it,
  * - forbidden host paths (see paths.ts) stay forbidden for everyone,
  * - isolation `none`, untrusted templates, shared hosts and secret env/file
  *   injection still need an explicit confirmation (`humanConfirmed`).
@@ -26,25 +31,55 @@ export const BUILTIN_HUMAN_PROFILE: RawProfile = {
   approval: 'open',
   templates: ['*'],
   limits: { sandboxes: 50, cpus: 64, memory: '512g', ttl: '30d' },
-  workspace: { roots: ['~'], modes: [...WORKSPACE_MODES] },
+  workspace: { roots: [ANY_ROOT], modes: [...WORKSPACE_MODES] },
   network: {
     modes: ['none', 'allowlist', 'open'],
     allow_presets: Object.keys(NETWORK_PRESETS),
     allow: ['*'],
   },
-  mounts: { roots: ['~'], access: ['ro', 'rw'] },
+  images: { registries: ['*'] },
+  mounts: { roots: [ANY_ROOT], access: ['ro', 'rw'] },
   secrets: { allowed: ['*'], inject: ['proxy', 'env', 'file'] },
   isolation: { min: 'none', network_open: 'none', mounts: 'none', secrets_env: 'none' },
   hosts: ['*'],
   exec: { approval: false },
 };
 
+/** Agent context ids of the built-in default policy (all use profile `default`). */
+export const BUILTIN_AGENT_CONTEXTS: readonly string[] = [
+  'default',
+  'claude-code',
+  'codex',
+  'cursor',
+  'orca',
+];
+
 /**
- * Policy used when no policy.yaml exists. The `default` profile may use any
- * directory below `~` as workspace root; the forbidden-path list (`~`, `~/.ssh`,
- * `~/.config`, ...) still applies. The agent context `default` lets an MCP/CLI
- * connection started with `--agent default` work out of the box; every other
- * agent context id is unknown and therefore denied.
+ * Workspace roots of the built-in `default` profile: the usual project directories (they need not
+ * exist). The home directory as a whole is never a root; for agents hidden directories below the
+ * home directory (`~/.claude`, `~/.cache`, ...) are refused on top of that (see `checkHostPath`).
+ */
+export const DEFAULT_WORKSPACE_ROOTS: readonly string[] = Object.freeze([
+  '~/projects',
+  '~/Projekte',
+  '~/src',
+  '~/code',
+  '~/dev',
+  '~/work',
+  '~/git',
+  '~/repos',
+]);
+
+/**
+ * Policy used when no policy.yaml exists. The `default` profile may use directories below the
+ * usual project folders (`DEFAULT_WORKSPACE_ROOTS`: ~/projects, ~/Projekte, ~/src, ...) as
+ * workspace; the home directory as a whole is no root, and the forbidden-path list (`~`,
+ * `~/.ssh`, `~/.config`, ...) plus the rule against hidden home directories still apply. Free
+ * image names are limited to the official Docker Hub images (`DEFAULT_IMAGE_REGISTRIES`). The agent
+ * context `default` lets an MCP/CLI connection started with `--agent <id>` work out of the box for the
+ * built-in agent contexts (`BUILTIN_AGENT_CONTEXTS`: default, claude-code, codex, cursor, orca; all
+ * mapped to profile `default`); every other context id is unknown and therefore denied.
+ * A policy.yaml replaces this policy completely (and so may redefine or drop these contexts).
  */
 export const DEFAULT_POLICY_YAML = `# abox built-in default policy (used when no policy.yaml exists)
 version: 1
@@ -53,15 +88,24 @@ profiles:
     approval: medium
     templates: [node-dev, py-dev, py-offline, alpine-min]
     limits: { sandboxes: 3, cpus: 4, memory: 8g, ttl: 4h }
-    workspace: { roots: ['~'], modes: [worktree, clone, copy, empty] }
+    # Agents: projects below these folders only (the home directory itself is never a root).
+    # Add your own with \`abox policy edit\`.
+    workspace: { roots: [${DEFAULT_WORKSPACE_ROOTS.join(', ')}], modes: [worktree, clone, copy, empty] }
     network: { modes: [none, allowlist], allow_presets: [npm, pypi, github], allow: [] }
+    # Registries free image names of a template base may come from (the base images of the built-in templates are always fine).
+    images: { registries: [${DEFAULT_IMAGE_REGISTRIES.join(', ')}] }
     mounts: deny
     secrets: { allowed: [], inject: [proxy] }
     isolation: { min: container, network_open: vm, mounts: container, secrets_env: container }
     hosts: [local]
     exec: { approval: false }
 contexts:
+  # Agent contexts of the supported agent integrations (\`abox mcp serve --agent <id>\`), all with the same profile.
   default: { profile: default }
+  claude-code: { profile: default }
+  codex: { profile: default }
+  cursor: { profile: default }
+  orca: { profile: default }
 `;
 
 export function policyContentHash(text: string): string {
@@ -90,6 +134,15 @@ export function defaultPolicy(): Policy {
 }
 
 /**
+ * The most restrictive policy: only the built-in `human` context, no agent context and no agent
+ * profile. Used by the manager when policy.yaml is invalid and no valid revision was ever recorded
+ * (degraded mode), so the human can still look at things and clean up while no agent can do anything.
+ */
+export function restrictivePolicy(): Policy {
+  return parsePolicy('version: 1\n', { kind: 'default' });
+}
+
+/**
  * Loads policy.yaml. A missing file yields the built-in default policy
  * (`source.kind === 'default'`); any other problem (unreadable, invalid YAML,
  * schema violation, inheritance cycle) throws `AboxError('invalid_input')`
@@ -113,7 +166,7 @@ export function loadPolicy(path: string = defaultPolicyPath()): Policy {
   return parsePolicy(text, { kind: 'file', path });
 }
 
-/** Parses and validates policy text. Exported for tests and for `abox policy check`. */
+/** Parses and validates policy text. Exported for tests and for `abox policy validate`. */
 export function parsePolicy(text: string, source: PolicySource): Policy {
   const where = source.kind === 'file' ? source.path : 'built-in default policy';
   const lc = new LineCounter();
@@ -228,7 +281,7 @@ function invalid(where: string, issues: ErrorIssue[]): AboxError {
     `invalid policy in ${where}: ${issues.length} problem(s), first: ${first?.path ? first.path + ': ' : ''}${first?.message ?? 'unknown'}${loc}`,
     {
       issues,
-      hint: 'Fix policy.yaml (only a human may edit it); `abox policy check` re-validates it.',
+      hint: 'Fix policy.yaml (only a human may edit it); `abox policy validate` re-validates it.',
     },
   );
 }
@@ -338,7 +391,15 @@ export function mergeProfiles(parent: RawProfile, child: RawProfile): RawProfile
   for (const key of ['approval', 'templates', 'hosts'] as const) {
     if (child[key] !== undefined) (out as Record<string, unknown>)[key] = child[key];
   }
-  for (const key of ['limits', 'workspace', 'network', 'secrets', 'isolation', 'exec'] as const) {
+  for (const key of [
+    'limits',
+    'workspace',
+    'network',
+    'images',
+    'secrets',
+    'isolation',
+    'exec',
+  ] as const) {
     if (child[key] !== undefined) {
       (out as Record<string, unknown>)[key] = { ...(parent[key] ?? {}), ...child[key] };
     }
@@ -380,6 +441,7 @@ function applyDefaults(name: string, p: RawProfile): ResolvedProfile {
       allow_presets: [...(p.network?.allow_presets ?? [])],
       allow: [...(p.network?.allow ?? [])],
     },
+    images: { registries: [...(p.images?.registries ?? DEFAULT_IMAGE_REGISTRIES)] },
     mounts,
     secrets: {
       allowed: [...(p.secrets?.allowed ?? [])],

@@ -1,8 +1,11 @@
+import { join } from 'node:path';
 import { AboxError, isAboxError } from '../errors.js';
+import { getEngineInfo, isSystemEngineSocket, type EngineInfo } from './engine-info.js';
 import { run } from './exec.js';
-import type { HostProfile } from './model.js';
+import { ZONE_DEFAULTS, type HostProfile } from './model.js';
 import { checkHostKey, type HostKeyStatus } from './known-hosts.js';
 import { buildSshArgs, sshBinary, type HostsEnv } from './ssh-args.js';
+import { openEngineTunnel } from './tunnel.js';
 
 export interface BackendProbe {
   ok: boolean;
@@ -28,6 +31,13 @@ export interface HostTestResult {
   engineSocket?: { path: string; exists: boolean };
   /** Rootless sockets found in the usual places (informational; never used automatically). */
   engineSocketCandidates: string[];
+  /**
+   * What the engine behind `engine_socket` itself reports (`/info` through a short-lived forward of
+   * that socket, the same path sandboxes use). Absent when there is no usable engine socket.
+   */
+  engine?: EngineInfo;
+  /** Is each runtime from the profile's `runtimes` known to the engine? */
+  runtimes: Array<{ engine: 'docker' | 'podman'; runtime: string; available: boolean }>;
   warnings: string[];
   error?: string;
 }
@@ -113,6 +123,7 @@ export async function testHost(profile: HostProfile, env: HostsEnv): Promise<Hos
     authOk: false,
     backends: {},
     engineSocketCandidates: [],
+    runtimes: [],
     warnings: [],
   };
   const audit = (extra: Record<string, unknown> = {}) =>
@@ -227,6 +238,79 @@ export async function testHost(profile: HostProfile, env: HostsEnv): Promise<Hos
       result.warnings.push(`Backend "${wanted}" is configured but not usable on the host.`);
     }
   }
+  await checkEngine(profile, env, result);
   audit();
   return result;
+}
+
+/**
+ * Asks the engine itself (not the `docker`/`podman` CLI of the remote login, which may point
+ * elsewhere): rootless or not, and which OCI runtimes it knows. Findings become warnings; the
+ * resolver enforces them when a sandbox host is used.
+ */
+async function checkEngine(
+  profile: HostProfile,
+  env: HostsEnv,
+  result: HostTestResult,
+): Promise<void> {
+  const engines = (['docker', 'podman'] as const).filter((e) => profile.backends.includes(e));
+  const socket = profile.engineSocket;
+  if (socket === undefined || engines.length === 0) return;
+  const strict = ZONE_DEFAULTS[profile.zone].requiresRootless;
+  if (isSystemEngineSocket(socket)) {
+    result.warnings.push(
+      `engine_socket ${socket} is the socket of a system-wide engine: access to it is root-equivalent on the host.${
+        strict && !profile.allowRootful
+          ? ` abox refuses it for zone ${profile.zone} (use a rootless engine of a dedicated user, or set allow_rootful: true).`
+          : ''
+      }`,
+    );
+  }
+  if (result.engineSocket?.exists !== true) return;
+  let info: EngineInfo | undefined;
+  const local = join(env.runtimeDir, 'tunnels', `${profile.id}.test-${process.pid}.sock`);
+  try {
+    const tunnel = await openEngineTunnel(profile, env, {
+      remoteSocket: socket,
+      localSocket: local,
+      readyTimeoutMs: 10_000,
+    });
+    try {
+      info = await getEngineInfo(tunnel.localSocket);
+    } finally {
+      await tunnel.close();
+    }
+  } catch (e) {
+    result.warnings.push(`Could not reach the engine through ${socket}: ${(e as Error).message}`);
+    return;
+  }
+  if (!info) {
+    result.warnings.push(
+      `The engine behind ${socket} did not report rootless mode or runtimes (no usable /info)${
+        strict && !profile.allowRootful
+          ? '; abox cannot verify that it is rootless and will refuse it'
+          : ''
+      }.`,
+    );
+    return;
+  }
+  result.engine = info;
+  if (!info.rootless) {
+    result.warnings.push(
+      strict && !profile.allowRootful
+        ? `The engine behind ${socket} is not rootless; abox refuses it for zone ${profile.zone}. Use a rootless engine of a dedicated user, or set allow_rootful: true if root-equivalent access is acceptable.`
+        : `The engine behind ${socket} is not rootless: access to it is root-equivalent on the host.`,
+    );
+  }
+  for (const engine of engines) {
+    const runtime = profile.runtimes?.[engine];
+    if (runtime === undefined) continue;
+    const available = info.runtimes.includes(runtime);
+    result.runtimes.push({ engine, runtime, available });
+    if (!available) {
+      result.warnings.push(
+        `Runtime "${runtime}" (runtimes.${engine}) is not installed in the engine behind ${socket} (it knows: ${info.runtimes.join(', ') || 'none'}). Sandboxes here stay at isolation "container", which zone ${profile.zone} does not accept.`,
+      );
+    }
+  }
 }

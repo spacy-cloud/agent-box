@@ -3,13 +3,17 @@ import { parse as parseYaml, YAMLParseError } from 'yaml';
 import { z } from 'zod';
 import { AboxError } from '../errors.js';
 import type { ErrorIssue } from '../errors.js';
-import { BACKEND_KINDS } from '../types.js';
 
 const MINUTE = 60_000;
 
 const socketSchema = z.strictObject({
   /** Unix socket path overriding auto-detection. */
   socket: z.string().min(1).optional(),
+  /**
+   * OCI runtime for isolation level `hardened` (e.g. `runsc` for gVisor, `kata-runtime`).
+   * Used only if the engine actually lists it; otherwise sandboxes stay at `container`.
+   */
+  runtime: z.string().min(1).optional(),
 });
 
 const secretSchema = z.strictObject({
@@ -23,14 +27,21 @@ const secretSchema = z.strictObject({
 export const configSchema = z.strictObject({
   backends: z
     .strictObject({
-      default: z.enum(BACKEND_KINDS).default('docker'),
+      /** Removed: a template names its backend itself (`backend:`), so there is nothing to default. */
+      default: z
+        .never({
+          error:
+            'backends.default was removed: every template names its backend (backend: docker|podman|process|python|vm); only socket paths are configured here',
+        })
+        .optional(),
       docker: socketSchema.prefault({}),
       podman: socketSchema.prefault({}),
     })
     .prefault({}),
   defaults: z
     .strictObject({
-      template: z.string().min(1).default('default'),
+      /** Template used by `abox create` / `sandbox_create` when none is given. Unset = a template is required. */
+      template: z.string().min(1).optional(),
     })
     .prefault({}),
   limits: z

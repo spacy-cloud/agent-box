@@ -16,6 +16,8 @@ defineProviderContract({
   // A cold start is ~4 s, prepare of a new image ~30 s - 3 min depending on the build steps.
   timeoutMs: 240_000,
   gc: GC,
+  // TTL of the expiry test = start budget + 2.5 s: a cold VM boot (3-6 s) must not eat the TTL.
+  startBudgetMs: 10_000,
   createProvider: async () =>
     GC ? createTestProvider({ cacheDir: await gcTestCacheDir() }) : createTestProvider(),
   template: () => vmTemplate(),

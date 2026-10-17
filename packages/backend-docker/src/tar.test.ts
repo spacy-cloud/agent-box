@@ -271,6 +271,249 @@ describe('extractArchiveSafe', () => {
   });
 });
 
+describe("extractArchiveSafe with symlinks: 'preserve' (private scratch tree for the export)", () => {
+  it('recreates absolute and escaping links as links, without following them', async () => {
+    const outside = path.join(dir, 'outside');
+    await fs.mkdir(outside);
+    const dest = path.join(dir, 'out');
+    await extractArchiveSafe(
+      await evil([
+        { name: 'ws/', type: 'directory' },
+        { name: 'ws/abs', type: 'symlink', linkname: outside },
+        { name: 'ws/up', type: 'symlink', linkname: '../../x' },
+        { name: 'ws/a.txt', data: 'A' },
+      ]),
+      dest,
+      { symlinks: 'preserve' },
+    );
+    expect(await fs.readlink(path.join(dest, 'abs'))).toBe(outside);
+    expect(await fs.readlink(path.join(dest, 'up'))).toBe('../../x');
+    expect(await fs.readdir(outside)).toEqual([]);
+    expect(await fs.readFile(path.join(dest, 'a.txt'), 'utf8')).toBe('A');
+  });
+
+  it('still refuses to write through a link, and an empty target', async () => {
+    const outside = path.join(dir, 'outside');
+    await fs.mkdir(outside);
+    await expect(
+      extractArchiveSafe(
+        await evil([
+          { name: 'ws/', type: 'directory' },
+          { name: 'ws/abs', type: 'symlink', linkname: outside },
+          { name: 'ws/abs/pwn.txt', data: 'x' },
+        ]),
+        path.join(dir, 'out'),
+        { symlinks: 'preserve' },
+      ),
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+    await expect(fs.access(path.join(outside, 'pwn.txt'))).rejects.toThrow();
+    await expect(
+      extractArchiveSafe(
+        await evil([
+          { name: 'ws/', type: 'directory' },
+          { name: 'ws/l', type: 'symlink', linkname: '' },
+        ]),
+        path.join(dir, 'out2'),
+        { symlinks: 'preserve' },
+      ),
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+  });
+
+  it('is opt-in: the default still refuses an absolute link', async () => {
+    await expect(
+      extractArchiveSafe(
+        await evil([
+          { name: 'ws/', type: 'directory' },
+          { name: 'ws/l', type: 'symlink', linkname: '/etc/passwd' },
+        ]),
+        path.join(dir, 'out'),
+      ),
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+  });
+});
+
+describe('extractArchiveSafe: symlink chains', () => {
+  // d/sub -> .., s -> d/sub, t -> s/..: each target is inside lexically, together they leave.
+  const chain = [
+    { name: 'ws/', type: 'directory' as const },
+    { name: 'ws/d/', type: 'directory' as const },
+    { name: 'ws/d/sub', type: 'symlink' as const, linkname: '..' },
+    { name: 'ws/s', type: 'symlink' as const, linkname: 'd/sub' },
+    { name: 'ws/t', type: 'symlink' as const, linkname: 's/..' },
+  ];
+
+  it('refuses a chain whose end leads out of the destination, and removes the link', async () => {
+    const dest = path.join(dir, 'out');
+    await expect(extractArchiveSafe(await evil(chain), dest)).rejects.toMatchObject({
+      code: 'policy_denied',
+      message: expect.stringContaining('through other links'),
+    });
+    await expect(fs.lstat(path.join(dest, 't'))).rejects.toThrow();
+  });
+
+  it('catches it when the redirecting link comes after the one it redirects', async () => {
+    const dest = path.join(dir, 'out');
+    const [ws, d, sub, s, t] = chain;
+    await expect(
+      extractArchiveSafe(await evil([ws!, d!, sub!, t!, s!]), dest),
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+  });
+
+  it('catches a link that goes through a link that points elsewhere inside first', async () => {
+    const dest = path.join(dir, 'out');
+    await expect(
+      extractArchiveSafe(
+        await evil([
+          { name: 'ws/', type: 'directory' },
+          { name: 'ws/a/', type: 'directory' },
+          { name: 'ws/a/b/', type: 'directory' },
+          { name: 'ws/up', type: 'symlink', linkname: '../..' },
+          { name: 'ws/a/b/x', type: 'symlink', linkname: '../../up/..' },
+        ]),
+        dest,
+      ),
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+  });
+
+  it('keeps harmless chains and links to links', async () => {
+    const dest = path.join(dir, 'out');
+    await extractArchiveSafe(
+      await evil([
+        { name: 'ws/', type: 'directory' },
+        { name: 'ws/d/', type: 'directory' },
+        { name: 'ws/d/f.txt', data: 'F' },
+        { name: 'ws/d/self', type: 'symlink', linkname: '.' },
+        { name: 'ws/l1', type: 'symlink', linkname: 'd/self/f.txt' },
+        { name: 'ws/l2', type: 'symlink', linkname: 'l1' },
+        { name: 'ws/loop-a', type: 'symlink', linkname: 'loop-b' },
+        { name: 'ws/loop-b', type: 'symlink', linkname: 'loop-a' },
+        { name: 'ws/dangling', type: 'symlink', linkname: 'nowhere/further/..' },
+      ]),
+      dest,
+    );
+    expect(await fs.readFile(path.join(dest, 'l2'), 'utf8')).toBe('F');
+    expect(await fs.readlink(path.join(dest, 'dangling'))).toBe('nowhere/further/..');
+  });
+
+  it("leaves the chain alone in 'preserve' mode (private scratch tree, links never followed)", async () => {
+    const dest = path.join(dir, 'out');
+    await extractArchiveSafe(await evil(chain), dest, { symlinks: 'preserve' });
+    expect(await fs.readlink(path.join(dest, 't'))).toBe('s/..');
+  });
+
+  it('does not write through any link of the chain', async () => {
+    const dest = path.join(dir, 'out');
+    await expect(
+      extractArchiveSafe(
+        await evil([
+          { name: 'ws/', type: 'directory' },
+          { name: 'ws/d/', type: 'directory' },
+          { name: 'ws/d/sub', type: 'symlink', linkname: '..' },
+          { name: 'ws/s', type: 'symlink', linkname: 'd/sub' },
+          { name: 'ws/s/inside.txt', data: 'x' },
+        ]),
+        dest,
+      ),
+    ).rejects.toMatchObject({ code: 'policy_denied' });
+    await expect(fs.access(path.join(dest, 'inside.txt'))).rejects.toThrow();
+  });
+});
+
+describe('extractArchiveSafe: hardlinks', () => {
+  const body = 'x'.repeat(1000);
+  const withLinks = (
+    n: number,
+  ): Array<{ name: string; type?: 'link'; linkname?: string; data?: string }> => [
+    { name: 'ws/big', data: body },
+    ...Array.from({ length: n }, (_, i) => ({
+      name: `ws/h${i}`,
+      type: 'link' as const,
+      linkname: 'ws/big',
+    })),
+  ];
+
+  it('stores a file with several names once (real hardlinks)', async () => {
+    const dest = path.join(dir, 'out');
+    await extractArchiveSafe(await evil(withLinks(3)), dest);
+    const first = await fs.stat(path.join(dest, 'big'));
+    expect(first.nlink).toBe(4);
+    expect(await fs.readFile(path.join(dest, 'h2'), 'utf8')).toBe(body);
+  });
+
+  it('refuses hardlinks that add up to more than the limit', async () => {
+    const dest = path.join(dir, 'out');
+    await expect(
+      extractArchiveSafe(await evil(withLinks(5)), dest, { maxHardlinkBytes: 2500 }),
+    ).rejects.toMatchObject({
+      code: 'policy_denied',
+      message: expect.stringContaining('hardlinks'),
+    });
+  });
+
+  it("with 'preserve' the links beyond the limit are left out and reported", async () => {
+    const dest = path.join(dir, 'out');
+    const skipped: Array<[string, string]> = [];
+    await extractArchiveSafe(await evil(withLinks(5)), dest, {
+      symlinks: 'preserve',
+      maxHardlinkBytes: 2500,
+      onSkip: (p, r) => skipped.push([p, r]),
+    });
+    expect((await fs.readdir(dest)).sort()).toEqual(['big', 'h0', 'h1']);
+    expect(skipped.map(([p]) => p)).toEqual(['h2', 'h3', 'h4']);
+    expect(skipped[0]?.[1]).toMatch(/hardlink/);
+  });
+
+  it("with 'preserve' a hardlink to something that was not extracted is left out, not fatal", async () => {
+    const dest = path.join(dir, 'out');
+    const skipped: string[] = [];
+    await extractArchiveSafe(
+      await evil([
+        { name: 'ws/', type: 'directory' },
+        { name: 'ws/ok.txt', data: 'ok' },
+        { name: 'ws/h', type: 'link', linkname: 'ws/fifo-that-was-skipped' },
+        { name: 'ws/self', type: 'link', linkname: 'ws/self' },
+        { name: 'ws/out', type: 'link', linkname: 'elsewhere/x' },
+      ]),
+      dest,
+      { symlinks: 'preserve', onSkip: (p) => skipped.push(p) },
+    );
+    expect(skipped.sort()).toEqual(['h', 'out', 'self']);
+    expect(await fs.readdir(dest)).toEqual(['ok.txt']);
+  });
+});
+
+describe('extractArchiveSafe: names with a backslash', () => {
+  const entries = [
+    { name: 'ws/', type: 'directory' as const },
+    { name: 'ws/ok.txt', data: 'ok' },
+    { name: 'ws/we\\ird.txt', data: 'bad' },
+    { name: 'ws/d\\ir/', type: 'directory' as const },
+    { name: 'ws/d\\ir/inner.txt', data: 'bad' },
+    { name: 'ws/ln', type: 'link' as const, linkname: 'ws/we\\ird.txt' },
+    { name: 'ws/tail.txt', data: 'tail' },
+  ];
+
+  it("'preserve' (export): leaves them out, reports them and extracts the rest", async () => {
+    const dest = path.join(dir, 'out');
+    const skipped: Array<[string, string]> = [];
+    await extractArchiveSafe(await evil(entries), dest, {
+      symlinks: 'preserve',
+      onSkip: (p, r) => skipped.push([p, r]),
+    });
+    expect((await fs.readdir(dest)).sort()).toEqual(['ok.txt', 'tail.txt']);
+    expect(skipped.map(([p]) => p)).toEqual(['we\\ird.txt', 'd\\ir', 'd\\ir/inner.txt', 'ln']);
+    expect(skipped[0]?.[1]).toMatch(/backslash/);
+  });
+
+  it("'refuse' (copy for the user) still refuses the archive", async () => {
+    const dest = path.join(dir, 'out');
+    await expect(extractArchiveSafe(await evil(entries), dest)).rejects.toMatchObject({
+      code: 'policy_denied',
+      message: expect.stringContaining('non-portable'),
+    });
+  });
+});
+
 describe('readFirstEntry', () => {
   it('caps the content and reports the full size', async () => {
     const buf = await tarFromEntries([{ name: 'f', data: Buffer.alloc(10_000, 7) }]);

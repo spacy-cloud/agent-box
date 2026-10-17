@@ -35,7 +35,8 @@ export function normalizeSandboxPath(input: string, base = '/'): string {
   if (typeof input !== 'string' || input.length === 0) {
     throw new AboxError('invalid_input', 'sandbox path must be a non-empty string');
   }
-  if (input.includes('\0')) throw new AboxError('invalid_input', 'sandbox path contains a NUL byte');
+  if (input.includes('\0'))
+    throw new AboxError('invalid_input', 'sandbox path contains a NUL byte');
   const full = input.startsWith('/') ? input : `${base}/${input}`;
   const stack: string[] = [];
   for (const seg of full.split('/')) {
@@ -112,13 +113,20 @@ export async function confine(
     try {
       const real = await realpath(cur);
       if (!isInside(rootReal, real)) throw escapes(normalized, 'a symlink points outside the root');
-      return { sandboxPath: normalized, hostPath: tail.length ? join(real, ...tail.reverse()) : real };
+      return {
+        sandboxPath: normalized,
+        hostPath: tail.length ? join(real, ...tail.reverse()) : real,
+      };
     } catch (e) {
       if (e instanceof AboxError) throw e;
       if (errno(e) !== 'ENOENT') throw mapFsError(e, `'${normalized}'`);
     }
     if (await lstatExists(cur)) throw escapes(normalized, 'dangling symlink');
-    if (cur === rootReal) throw mapFsError(Object.assign(new Error('sandbox root is missing'), { code: 'ENOENT' }), 'sandbox root');
+    if (cur === rootReal)
+      throw mapFsError(
+        Object.assign(new Error('sandbox root is missing'), { code: 'ENOENT' }),
+        'sandbox root',
+      );
     tail.push(basename(cur));
     cur = dirname(cur);
   }

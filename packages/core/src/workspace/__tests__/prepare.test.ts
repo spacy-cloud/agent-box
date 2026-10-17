@@ -40,6 +40,57 @@ describe('prepareWorkspace', () => {
     expect(JSON.parse(JSON.stringify(r.record))).toEqual(r.record);
   });
 
+  describe('mount: repository filter drivers (trusted config) vs sandbox-writable attributes', () => {
+    async function repoWithDrivers(): Promise<{ root: string; src: string; marker: string }> {
+      const { root, src } = await setup();
+      const marker = join(root, 'driver-ran');
+      for (const [k, v] of [
+        ['filter.evil.clean', `sh -c 'touch ${marker}; cat'`],
+        ['filter.evil.smudge', `sh -c 'touch ${marker}; cat'`],
+        ['filter.evil.process', `sh -c 'touch ${marker}'`],
+        ['filter.evil.required', 'true'],
+        ['diff.evil.textconv', `sh -c 'touch ${marker}; cat' --`],
+        ['diff.evil.command', `touch ${marker}`],
+        ['merge.evil.driver', `touch ${marker}`],
+      ] as const)
+        git(src, 'config', k, v);
+      return { root, src, marker };
+    }
+
+    it('the premise: plain git status DOES run the driver once .gitattributes activates it', async () => {
+      const { src, marker } = await repoWithDrivers();
+      await write(join(src, '.gitattributes'), '* filter=evil\n');
+      await write(join(src, 'src/a.txt'), 'alpha\nchanged\n'); // racy-clean files are not re-hashed
+      // (a required filter that fails makes git fail; the marker is what matters)
+      spawnSync('git', ['status', '--porcelain'], {
+        cwd: src,
+        stdio: 'ignore',
+        env: {
+          PATH: process.env['PATH'] ?? '',
+          HOME: '/nonexistent',
+          GIT_CONFIG_GLOBAL: '/dev/null',
+        },
+      });
+      expect(existsSync(marker)).toBe(true);
+    });
+
+    it('creating a mount workspace after a sandbox wrote .gitattributes runs no driver', async () => {
+      const { root, src, marker } = await repoWithDrivers();
+      // what an earlier rw mount sandbox could have left behind
+      await write(join(src, '.gitattributes'), '* filter=evil diff=evil merge=evil\n');
+      await write(join(src, 'src/.gitattributes'), '*.txt filter=evil\n');
+      await write(join(src, 'src/a.txt'), 'alpha\nchanged\n');
+      const r = await prepareWorkspace({
+        ...common,
+        mode: 'mount',
+        source: src,
+        sandboxDir: join(root, 'sandboxes', 'ab12cd34'),
+      });
+      expect(existsSync(marker), 'a driver from the repository config ran').toBe(false);
+      expect(r.warnings.join(' ')).toMatch(/uncommitted changes/);
+    });
+  });
+
   describe('mount', () => {
     it('binds the source with .git read-only and records host-owned baseline', async () => {
       const { src, sandboxDir } = await setup();

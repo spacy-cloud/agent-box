@@ -5,7 +5,7 @@ import { canonicalJson, hashJson } from './canonical.js';
 describe('redact', () => {
   it('masks sensitive keys recursively, case-insensitively', () => {
     const input = {
-      user: 'joern',
+      user: 'alice',
       apiToken: 'abc',
       nested: { Password: 'x', ok: 1, list: [{ authorization: 'Bearer z', keep: 'y' }] },
       PRIVATE_KEY: 'k',
@@ -17,7 +17,7 @@ describe('redact', () => {
       passphrase: 'p',
     };
     expect(redact(input)).toEqual({
-      user: 'joern',
+      user: 'alice',
       apiToken: REDACTED,
       nested: { Password: REDACTED, ok: 1, list: [{ authorization: REDACTED, keep: 'y' }] },
       PRIVATE_KEY: REDACTED,

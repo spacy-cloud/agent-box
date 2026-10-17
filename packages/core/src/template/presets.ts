@@ -312,7 +312,8 @@ export const TOOL_PRESETS: Readonly<Record<string, ToolPreset>> = {
       alpine: (v) =>
         [
           HEADER,
-          `apk add --no-cache ${shQuote(`openjdk${v}-jdk`)} || { echo "openjdk${v}-jdk is not available in this Alpine release (try another java major)" >&2; exit 1; }`,
+          // The real apk output stays in the build log (and its tail in the error): a failure can be the network or a mirror, not only a missing package.
+          `apk add --no-cache ${shQuote(`openjdk${v}-jdk`)} || { rc=$?; echo "abox: apk add openjdk${v}-jdk failed (exit $rc); see the apk output above. If it says the package is unknown, this Alpine release has no openjdk${v}: try another java major" >&2; exit $rc; }`,
           'java -version',
         ].join('\n'),
     },

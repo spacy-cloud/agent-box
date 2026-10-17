@@ -1,7 +1,7 @@
 # Architecture
 
-This document describes how abox is structured. abox is in early development: statements about
-planned components are marked as such, and the details will change. For the security model see
+This document describes how abox is structured. abox is pre-release: all components below exist
+in the repository, but nothing is published and the details will change. For the security model see
 [security.md](security.md).
 
 ## Principles
@@ -46,15 +46,17 @@ because the npm name `abox` is taken; the binary is `abox`.
 | `packages/core`            | Domain model, template engine, lifecycle, policy, approvals, audit, state     |
 | `packages/backend-docker`  | Docker and Podman via the engine API (Unix socket)                            |
 | `packages/backend-process` | Host process/venv, isolation `none`; reference backend for the contract suite |
-| `packages/backend-python`  | Python runtime, container with `uv`, optional venv level (planned)            |
-| `packages/backend-vm`      | VM or microVM backend (planned)                                               |
+| `packages/backend-python`  | Python runtime, container with `uv`, or a host venv (isolation `none`)        |
+| `packages/backend-vm`      | QEMU/KVM virtual machine backend (isolation `vm`)                             |
 | `packages/contract-tests`  | Shared contract suite that every backend must pass                            |
 | `packages/proxy`           | Egress proxy sidecar: domain allowlist, private-address blocking, injection   |
+| `packages/runtime`         | Wires config, hosts, backends and the manager together for CLI, MCP and GUI   |
 | `packages/cli`             | The `abox` command; text or `--json` output                                   |
 | `packages/mcp`             | MCP server on the official TypeScript SDK; stdio and local HTTP               |
 | `packages/app`             | Electron GUI; the main process uses the core, the renderer uses React         |
-| `packages/agent-kit`       | Claude Code plugin: skills, slash commands, `.mcp.json` (planned)             |
-| `packages/orca-plugin`     | Orca manifest and panel (planned)                                             |
+| `packages/agent-kit`       | Claude Code plugin: skills, slash commands, `.mcp.json`                       |
+| `packages/orca-plugin`     | Orca manifest and panel                                                       |
+| `packages/e2e`             | End-to-end and security tests against real Docker (opt-in)                    |
 
 Tooling: pnpm workspaces, strict TypeScript (ESM, `NodeNext`), Zod for schemas, Vitest,
 ESLint, Prettier, Node.js >= 24.
@@ -96,7 +98,9 @@ All backends run against the same contract suite in `packages/contract-tests`.
   an equivalent marker). On startup the core **reconciles** its registry with the backend: orphaned
   sandboxes are reported (`abox doctor`), not silently deleted.
 - **SQLite for metadata:** sandbox registry, template versions and trust decisions, approvals
-  (open, granted, denied), the audit log and policy revisions. It uses the built-in `node:sqlite`
+  (open, granted, denied), the audit log, policy revisions and the HTTP agent tokens (as SHA-256
+  hashes). The agent contexts and their profiles are not in the database: they are defined in
+  `policy.yaml`. There is no separate `agents.yaml`. The database uses the built-in `node:sqlite`
   module in WAL mode so the CLI, one or more MCP servers and the GUI can use the same database at
   the same time.
 - **Paths follow XDG:** configuration in `~/.config/abox` (including `policy.yaml` and user
@@ -154,13 +158,24 @@ the host (`local/ab12cd34`, `lab/ef56gh78`). The core hands each provider a `Hos
 tells it how to reach the engine (a local socket or a forwarded socket), so backend code is the
 same locally and remotely.
 
-- **Local first.** Remote hosts are planned and not part of the first releases.
+- **Local first.** `local` is the default and needs no configuration. Remote hosts over SSH are
+  implemented but experimental (see [hosts-ssh.md](hosts-ssh.md)).
 - **Agentless model (M1).** The local abox controls the container engine on the remote machine over
   SSH. Only an engine and SSH access are needed on the remote side. Policy and audit run locally,
   and the remote host trusts the controller. A possible later model (M2) would run abox headless on
   the remote host with its own policy and audit.
-- The image cache, the proxy sidecar and TTL enforcement live on the target host.
-- Workspace mode `mount` is not available remotely; use `clone`, `worktree`, `copy` or `sync`.
+- The image cache and the proxy sidecar live on the target host. The sandbox ends itself at its
+  deadline there; the TTL sweep of every open abox process covers the registry rows of all hosts
+  and stops overdue remote sandboxes through the provider of their host (and retries a host that
+  was down).
+- Workspace modes `mount` and `worktree` are not available remotely (the manager rejects them with
+  a message that names the remote host); use `clone`, `copy` or `sync`. `clone` is made locally and
+  uploaded, and `sync` is a one-shot copy; see
+  [differences from the design](hosts-ssh.md#differences-from-the-design).
+- What a host can deliver is its own: a profile's `runtimes` entry plus the engine's `/info` decide
+  `hardened`, and the host resolver refuses a rootful engine on `shared`/`restricted` hosts. The
+  runtime package prepares the providers of a remote host when its tunnel is up, because
+  `capabilities()` is synchronous.
 - Hosts have a **zone** and an optional minimum isolation level. See
   [security.md](security.md#remote-hosts-and-ssh).
 

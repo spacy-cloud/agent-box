@@ -27,12 +27,14 @@ need the `.js` suffix, for example `import { x } from './types.js'`. See the
 
 ## Test levels
 
-| Level              | How to run                                        | What it covers                                                                         |
-| ------------------ | ------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Unit               | `pnpm test`                                       | Pure logic: templates, policy, path canonicalization, proxy rules, state               |
-| Contract           | `pnpm test` (process backend), `pnpm test:docker` | The shared suite in `packages/contract-tests`; every backend must pass it              |
-| Docker integration | `pnpm test:docker` (sets `ABOX_TEST_DOCKER=1`)    | Real containers, networks and the proxy sidecar against a running Docker/Podman engine |
-| Security suite     | part of the levels above                          | Executable versions of the hardening claims in [docs/security.md](docs/security.md)    |
+| Level              | How to run                                        | What it covers                                                                                 |
+| ------------------ | ------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Unit               | `pnpm test`                                       | Pure logic: templates, policy, path canonicalization, proxy rules, state                       |
+| Contract           | `pnpm test` (process backend), `pnpm test:docker` | The shared suite in `packages/contract-tests`; every backend must pass it                      |
+| Docker integration | `pnpm test:docker` (sets `ABOX_TEST_DOCKER=1`)    | Real containers, networks and the proxy sidecar against a running Docker/Podman engine         |
+| Security suite     | part of the levels above                          | Executable versions of the hardening claims in [docs/security.md](docs/security.md)            |
+| GUI unit           | `pnpm --filter @abox/app test` (plus `typecheck`) | The Electron app's main-process and renderer logic (Vitest, jsdom); not part of `pnpm test`    |
+| GUI end-to-end     | `pnpm --filter @abox/app test:e2e` (virtual X11)  | The Electron app driven by Playwright; the Docker-guarded specs only with `ABOX_TEST_DOCKER=1` |
 
 Rules:
 
@@ -43,6 +45,45 @@ Rules:
 - A new backend is only done when it passes the contract suite. A new security claim in the docs
   should come with a test.
 - Never use real hostnames, credentials or personal paths in tests.
+- Docker builds in tests use `--force-rm` (or the API's `forcerm`): a failing `RUN` step otherwise
+  leaves an exited intermediate container on the engine. Check with
+  `docker ps -a --filter label=abox-test` after a run; nothing should be listed.
+
+### Opt-in test switches
+
+These environment variables turn on tests that are skipped by default. CI sets only
+`ABOX_TEST_DOCKER` (through `pnpm test:docker`).
+
+| Variable                  | Effect                                                                                                                                                                             |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ABOX_TEST_DOCKER=1`      | Tests that need a Docker/Podman engine (also the Docker-guarded GUI specs: terminal, template build, ssh against a throwaway sshd)                                                 |
+| `ABOX_TEST_DOCKER_FULL=1` | With `ABOX_TEST_DOCKER`: the full preset matrix of `packages/core/src/template/build.docker.test.ts` (long, downloads toolchains)                                                  |
+| `ABOX_TEST_ENGINE_SOCKET` | With `ABOX_TEST_DOCKER`: the engine socket of the backend-docker suite, `packages/e2e` and the docker contract suite (default: `/var/run/docker.sock`); see "Against Podman" below |
+| `ABOX_TEST_ENGINE=podman` | With `ABOX_TEST_DOCKER`: the backend-docker suite creates its providers with `createPodmanProvider` (default socket: Podman's user socket)                                         |
+| `ABOX_TEST_KEYRING=1`     | The `LibsecretStore (real keyring)` test in `packages/core/src/secrets/__tests__/secrets.test.ts` (see the warning below)                                                          |
+| `ABOX_TEST_VM=1`          | Tests that boot real QEMU/KVM VMs (needs `/dev/kvm`; `ABOX_TEST_VM_IMAGES=ubuntu-24.04,debian-12` adds distributions, 300-700 MB each)                                             |
+
+**Against Podman.** The Podman provider has never been run against a real Podman. Start its API
+socket and point the engine tests at it; the feature table in
+[docs/backends.md](docs/backends.md#podman-what-is-expected-to-work) says what is expected to work:
+
+```sh
+systemctl --user enable --now podman.socket
+export ABOX_TEST_DOCKER=1 ABOX_TEST_ENGINE_SOCKET=$XDG_RUNTIME_DIR/podman/podman.sock
+ABOX_TEST_ENGINE=podman npx vitest run packages/backend-docker --no-file-parallelism
+npx vitest run packages/e2e/src/contract-docker.test.ts --no-file-parallelism
+```
+
+`packages/e2e` uses the Docker provider against the given socket and the `docker` CLI with
+`DOCKER_HOST` set to it (the `podman-docker` package provides one); a failure there is a finding to
+report, not a reason to skip the test.
+
+**`ABOX_TEST_KEYRING=1` writes to your live keyring.** The test stores and deletes a secret in the
+real Secret Service of your desktop session (GNOME Keyring, KWallet) through `secret-tool`. It uses
+a unique service name `abox-test-<random>` and deletes its entry afterwards, even on failure, but it
+may pop up an unlock prompt and it does touch your real keyring, so run it only on a machine and
+session where that is acceptable, never in CI. Without it, `LibsecretStore` is tested only against a
+fake `secret-tool` runner, so CI does not show that a real libsecret/KWallet works.
 
 ## Coding rules
 
@@ -85,11 +126,14 @@ you agree that it is licensed under the project's [MIT license](LICENSE).
 
 ## Pull requests
 
-1. Fork, create a branch from `main`, make focused changes.
+1. Fork, create a branch from `dev` (the integration branch; `main` is the released state), make
+   focused changes, and open the pull request against `dev`.
 2. Run `pnpm build`, `pnpm test`, `pnpm lint` and `pnpm format:check` locally. If you touched a
    container backend or the proxy, run `pnpm test:docker` too.
 3. Update docs and `CHANGELOG.md` (the `Unreleased` section) for user-visible changes.
 4. Open a pull request and fill in the template. Small, reviewable PRs are merged faster.
 
-CI runs lint, build, tests and the Docker integration tests on every pull request. The formatting
-check is currently informational.
+CI runs lint (ESLint and the Prettier check), build, tests (including the GUI typecheck and unit
+tests), the Docker integration tests and the GUI end-to-end tests (the Electron app under a virtual
+display, without the Docker-guarded specs) on every pull request. Not run in CI: the VM tests, the
+real-keyring test and the Docker-guarded GUI specs.

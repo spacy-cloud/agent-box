@@ -5,6 +5,7 @@ import type {
   ExecEvent,
   ExecRequest,
   ExecResult,
+  ForeignResource,
   HostConnection,
   IsolationLevel,
   NetworkEvent,
@@ -12,6 +13,7 @@ import type {
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
+  ResourceUsage,
   ResolvedTemplate,
   SandboxFilter,
   SandboxId,
@@ -20,6 +22,25 @@ import type {
   TtyOptions,
   TtySession,
 } from './types.js';
+
+export interface CopyOutOptions {
+  /**
+   * `'refuse'` (default): a symlink with an absolute, empty or escaping target aborts the copy.
+   * `'preserve'`: such links are recreated as links. Only for a private scratch tree that abox
+   * merely inspects (lstat/readlink, never followed, executed or handed to the user), as the
+   * export does to compare the tree with its baseline. Entries are still never written through
+   * a link, and a backend that copies links verbatim anyway may ignore the option.
+   */
+  symlinks?: 'refuse' | 'preserve';
+  /**
+   * Called for every archive entry the backend leaves out instead of copying (a name that cannot
+   * be written safely to the host, a link that does not stay inside the copy, …); `path` is
+   * relative to the copied tree. A backend that leaves entries out must report them here (when
+   * given) rather than fail the whole copy for them in `'preserve'` mode, where the export needs a
+   * tree even when a hostile sandbox plants awkward names.
+   */
+  onSkip?: (path: string, reason: string) => void;
+}
 
 /**
  * Backend interface. Every backend (docker, podman, process, python, vm)
@@ -65,9 +86,22 @@ export interface SandboxProvider {
 
   /** Copy a host file or directory (recursively) into the sandbox. */
   copyIn(id: SandboxId, hostPath: string, sandboxPath: string): Promise<void>;
-  /** Copy a sandbox file or directory (recursively) to the host. */
-  copyOut(id: SandboxId, sandboxPath: string, hostPath: string): Promise<void>;
-  readFile(id: SandboxId, sandboxPath: string, maxBytes: number): Promise<{ data: Buffer; truncated: boolean; size: number }>;
+  /**
+   * Copy a sandbox file or directory (recursively) to the host. By default a symlink must stay
+   * inside the copied tree (an absolute, empty or escaping target is refused), because the result
+   * may be handed to the user.
+   */
+  copyOut(
+    id: SandboxId,
+    sandboxPath: string,
+    hostPath: string,
+    opts?: CopyOutOptions,
+  ): Promise<void>;
+  readFile(
+    id: SandboxId,
+    sandboxPath: string,
+    maxBytes: number,
+  ): Promise<{ data: Buffer; truncated: boolean; size: number }>;
   writeFile(id: SandboxId, sandboxPath: string, data: Buffer, mode?: number): Promise<void>;
   listDir(id: SandboxId, sandboxPath: string): Promise<DirEntry[]>;
 
@@ -83,6 +117,49 @@ export interface SandboxProvider {
    * Must not change the network mode (none ↔ allowlist ↔ open).
    */
   updateNetwork?(id: SandboxId, network: NetworkSpec): Promise<void>;
+
+  /**
+   * Objects of the backend that carry abox labels but belong to another installation or to none
+   * (the `abox.instance` label differs from this provider's, or is empty / missing). `list()` and
+   * every other method never see them; this is how `abox gc --orphans` finds what a deleted data
+   * directory left behind. Never returns objects without an abox label, objects of this instance, or
+   * infrastructure shared by all instances. Optional; absent = `unsupported`.
+   */
+  listForeign?(): Promise<ForeignResource[]>;
+  /**
+   * Remove one object returned by `listForeign`. Must re-check the object (still abox-labelled and
+   * still not of this instance) and refuse otherwise; a vanished object is not an error.
+   */
+  removeForeign?(resource: ForeignResource): Promise<void>;
+
+  /**
+   * Move the deadline at which the backend itself ends the sandbox to `expiresAt` (epoch ms) and
+   * make `inspect()` / `list()` / `start()` report and honour the new one. Called by the manager
+   * *before* it records the new expiry, so a backend that cannot move its deadline fails the
+   * extension instead of letting the sandbox die at the old time while the registry shows time
+   * left. Only ever extends: an `expiresAt` earlier than the current deadline is `invalid_input`,
+   * an equal one a no-op; an already expired sandbox is `conflict`. Optional (see
+   * `capabilities().extendExpiry`); absent = `unsupported`, as is a sandbox whose deadline cannot
+   * be moved (e.g. created by an older version).
+   */
+  extendExpiry?(id: SandboxId, expiresAt: number): Promise<void>;
+
+  /**
+   * Change the cpu and/or memory limit of an existing sandbox, running or stopped, to exactly
+   * these values (`access_request` kind=resources). Only the given fields change, and the change
+   * is permanent (a restart keeps it). The manager has already checked the values against the
+   * profile; a backend that refuses (e.g. a memory limit below what the sandbox uses now) fails
+   * and leaves the old limits. Optional (see `capabilities().updateResources`); absent =
+   * `unsupported`.
+   */
+  updateResources?(id: SandboxId, limits: { cpus?: number; memoryBytes?: number }): Promise<void>;
+
+  /**
+   * One sample of the live resource usage of a running sandbox (cpu %, memory, pids). Takes about a
+   * second on engines that need two readings for the cpu rate. A sandbox that is not running is
+   * `conflict`. Optional (see `capabilities().stats`); absent = `unsupported`.
+   */
+  stats?(id: SandboxId): Promise<ResourceUsage>;
 
   /** Egress decisions recorded by the proxy since `sinceTs` (allowlist mode only). */
   networkEvents?(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]>;

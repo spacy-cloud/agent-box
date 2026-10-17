@@ -9,6 +9,7 @@ export {
   isSshAlias,
   isSshUser,
   isSafeAbsPath,
+  isRuntimeName,
   isIdentityPath,
   isProxyJump,
   isForwardListen,
@@ -36,6 +37,18 @@ export {
   type SshArgsOptions,
 } from './ssh-args.js';
 export { closeSshConnection } from './control.js';
+export {
+  getEngineInfo,
+  parseEngineInfo,
+  isSystemEngineSocket,
+  type EngineInfo,
+} from './engine-info.js';
+export {
+  verifyForwardings,
+  parseForwardings,
+  unexpectedForwardings,
+  type EffectiveForward,
+} from './forwardings.js';
 export { getEffectiveSshConfig, parseSshG, type EffectiveSshConfig } from './effective.js';
 export {
   importSshConfig,
@@ -51,6 +64,7 @@ export {
   checkHostKey,
   trustHostKey,
   forgetHostKey,
+  renderScanPrelude,
   fingerprintOf,
   hostSpecOf,
   evaluateHostKey,
@@ -71,6 +85,7 @@ export {
   openEngineTunnel,
   pingEngine,
   tunnelSocketPath,
+  sweepStaleTunnels,
   TunnelManager,
   type EngineTunnel,
   type OpenTunnelOptions,

@@ -1,8 +1,10 @@
 import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createPodmanProvider, defaultSocketPath } from './index.js';
+import { TEST_ENGINE, TEST_SOCKET } from './__tests__/harness.js';
 
-const podmanSocket = defaultSocketPath('podman');
+// ABOX_TEST_ENGINE=podman [ABOX_TEST_ENGINE_SOCKET=...] points the whole integration suite at Podman.
+const podmanSocket = TEST_ENGINE === 'podman' ? TEST_SOCKET : defaultSocketPath('podman');
 const hasPodman = existsSync(podmanSocket);
 
 describe('podman provider', () => {

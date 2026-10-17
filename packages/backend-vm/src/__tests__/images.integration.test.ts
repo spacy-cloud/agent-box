@@ -2,7 +2,7 @@ import { makeTestSpec } from '@abox/contract-tests';
 import { afterAll, describe, expect, it } from 'vitest';
 import { VM_TESTS, createTestProvider, disposeTestDirs, vmTemplate } from './env.js';
 
-/** Other distributions: ABOX_TEST_VM=1 ABOX_TEST_VM_IMAGES=ubuntu-24.04,debian-13 (downloads 300-700 MB each, once). */
+/** Other distributions: ABOX_TEST_VM=1 ABOX_TEST_VM_IMAGES=ubuntu-24.04,debian-12 (downloads 300-700 MB each, once). */
 const wanted = (process.env['ABOX_TEST_VM_IMAGES'] ?? '')
   .split(',')
   .map((s) => s.trim())

@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { AboxError } from '../errors.js';
 import type { AgentContext, Policy } from './model.js';
-import { canonicalizePath } from './paths.js';
+import { ANY_ROOT, canonicalizePath } from './paths.js';
 
 export interface ResolveContextOptions {
   /** Home directory used to expand `~` in roots. Defaults to the current user's home. */
@@ -39,7 +39,7 @@ export function resolveContext(
   }
   const home = opts.home ?? homedir();
   const canon = (roots: readonly string[]): string[] => [
-    ...new Set(roots.map((r) => canonicalizePath(r, { home, cwd: home }))),
+    ...new Set(roots.map((r) => (r === ANY_ROOT ? r : canonicalizePath(r, { home, cwd: home })))),
   ];
   const kind = contextId === 'human' ? 'human' : 'agent';
   return {

@@ -34,6 +34,11 @@ describe('parseSize', () => {
   it.each(['', 'g', '-1g', '1.5.5g', '4 gigabytes', '0', '0g', '1x', '1e3'])('rejects %j', (s) => {
     expect(() => parseSize(s)).toThrow(RangeError);
   });
+  it('says "too large" for values beyond the safe integer range', () => {
+    expect(() => parseSize('99999999999999t')).toThrow(/too large/);
+    expect(() => parseSize('1e')).toThrow(RangeError);
+    expect(() => parseSize('0')).toThrow(/greater than zero/);
+  });
 });
 
 describe('parseDuration', () => {
@@ -47,6 +52,12 @@ describe('parseDuration', () => {
   });
   it.each(['', '2', 'h', '2x', '1h 30m', '-5m', '0s', '1.5h', 'abc'])('rejects %j', (s) => {
     expect(() => parseDuration(s)).toThrow(RangeError);
+  });
+  it('says "too large" for values beyond the safe integer range', () => {
+    expect(() => parseDuration('9999999999999999h')).toThrow(/too large/);
+    expect(() => parseDuration('99999999999999999999s')).toThrow(/too large/);
+    expect(() => parseDuration('0s')).toThrow(/greater than zero/);
+    expect(parseDuration('1000000d')).toBe(86_400_000_000_000);
   });
 });
 

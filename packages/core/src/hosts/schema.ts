@@ -27,6 +27,8 @@ const USER_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/;
 const SAFE_ABS_PATH_RE = /^\/[A-Za-z0-9_.@+=,/-]{1,200}$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
+/** Name of an OCI runtime as configured in the engine (`runsc`, `kata`, `io.containerd.kata.v2`, ...). */
+const RUNTIME_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 const TAG_RE = /^[\p{L}\p{N}][\p{L}\p{N}_.-]{0,31}$/u;
 const FORWARD_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
@@ -50,6 +52,10 @@ export function isSshAlias(v: string): boolean {
 
 export function isSshUser(v: string): boolean {
   return USER_RE.test(v);
+}
+
+export function isRuntimeName(v: string): boolean {
+  return RUNTIME_NAME_RE.test(v);
 }
 
 export function isSafeAbsPath(v: string): boolean {
@@ -215,6 +221,11 @@ const LimitsSchema = z.strictObject({
   sandboxes: z.number().int().min(0).max(10_000).optional(),
 });
 
+const RuntimesSchema = z.strictObject({
+  docker: str('runtime name', isRuntimeName, 'letters, digits, ._+- (e.g. runsc, kata)').optional(),
+  podman: str('runtime name', isRuntimeName, 'letters, digits, ._+- (e.g. runsc, kata)').optional(),
+});
+
 export const RawHostSchema = z
   .strictObject({
     kind: z.enum(['local', 'ssh']).optional(),
@@ -249,6 +260,8 @@ export const RawHostSchema = z
       isSafeAbsPath,
       'absolute path without spaces, quotes or ":"',
     ).optional(),
+    runtimes: RuntimesSchema.optional(),
+    allow_rootful: z.boolean().optional(),
     tags: z
       .array(str('tag', (v) => TAG_RE.test(v), 'letters, digits, ._-'))
       .max(32)
@@ -272,11 +285,26 @@ export const RawHostSchema = z
         if (h[k] !== undefined) add(k, `not allowed for kind "local"`);
       }
       if (h.port_forwards?.length) add('port_forwards', 'not allowed for kind "local"');
+      if (h.allow_rootful !== undefined) add('allow_rootful', 'not allowed for kind "local"');
     } else if (h.kind === 'ssh' && h.hostname === undefined && h.ssh_config_alias === undefined) {
       add('hostname', 'an ssh host needs "hostname" or "ssh_config_alias"');
     }
     if (h.backends && new Set(h.backends).size !== h.backends.length)
       add('backends', 'duplicate backend');
+    if (h.runtimes && h.backends) {
+      // a runtime for an engine the host does not offer would silently do nothing
+      const needs: Array<['docker' | 'podman', string[]]> = [
+        ['docker', ['docker', 'python']],
+        ['podman', ['podman']],
+      ];
+      for (const [engine, any] of needs) {
+        if (
+          h.runtimes[engine] !== undefined &&
+          !any.some((b) => (h.backends as string[]).includes(b))
+        )
+          add('runtimes', `runtimes.${engine} needs the backend ${any.join(' or ')} on this host`);
+      }
+    }
     if (h.port_forwards) {
       const names = new Set<string>();
       h.port_forwards.forEach((f, i) => {
@@ -337,7 +365,8 @@ export function rawToProfile(id: string, raw: RawHost): HostProfile {
     id,
     kind,
     zone: raw.zone ?? (kind === 'local' ? 'workstation' : 'shared'),
-    backends: raw.backends ?? (kind === 'local' ? ['docker', 'process'] : []),
+    // local: every backend there is (the manager only uses those that are registered and usable)
+    backends: raw.backends ?? (kind === 'local' ? [...HOST_BACKEND_KINDS] : []),
     tags: raw.tags ?? [],
     favorite: raw.favorite ?? false,
     portForwards: (raw.port_forwards ?? []).map((f) => ({
@@ -356,6 +385,13 @@ export function rawToProfile(id: string, raw: RawHost): HostProfile {
   if (raw.min_isolation !== undefined) profile.minIsolation = raw.min_isolation;
   if (raw.engine_socket !== undefined) profile.engineSocket = raw.engine_socket;
   if (raw.data_dir !== undefined) profile.dataDir = raw.data_dir;
+  if (raw.runtimes !== undefined && Object.values(raw.runtimes).some((v) => v !== undefined)) {
+    profile.runtimes = {
+      ...(raw.runtimes.docker !== undefined ? { docker: raw.runtimes.docker } : {}),
+      ...(raw.runtimes.podman !== undefined ? { podman: raw.runtimes.podman } : {}),
+    };
+  }
+  if (raw.allow_rootful !== undefined) profile.allowRootful = raw.allow_rootful;
   if (raw.limits !== undefined) profile.limits = { ...raw.limits };
   return profile;
 }
@@ -374,6 +410,9 @@ export function profileToRaw(p: HostProfile): RawHost {
   raw.backends = [...p.backends];
   if (p.engineSocket !== undefined) raw.engine_socket = p.engineSocket;
   if (p.dataDir !== undefined) raw.data_dir = p.dataDir;
+  if (p.runtimes !== undefined && Object.keys(p.runtimes).length > 0)
+    raw.runtimes = { ...p.runtimes };
+  if (p.allowRootful === true) raw.allow_rootful = true;
   if (p.tags.length > 0) raw.tags = [...p.tags];
   if (p.favorite) raw.favorite = true;
   if (p.limits !== undefined && Object.keys(p.limits).length > 0) raw.limits = { ...p.limits };

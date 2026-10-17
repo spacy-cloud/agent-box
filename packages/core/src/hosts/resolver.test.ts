@@ -32,7 +32,7 @@ describe('createHostResolver (no network)', () => {
       zone: 'workstation',
       minIsolation: 'none',
       limits: {},
-      backends: ['docker', 'process'],
+      backends: ['docker', 'podman', 'process', 'python', 'vm'],
       requiresApproval: false,
     });
   });

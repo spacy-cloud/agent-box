@@ -10,18 +10,20 @@ abox stores no secrets: `identity_file` is a path, auth is ssh-agent / keys / FI
 
 ## Files
 
-| File | Purpose |
-| --- | --- |
+| File                    | Purpose                                                                                      |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
 | `model.ts`, `schema.ts` | `HostProfile`, zone defaults, strict Zod schema of `hosts.yaml` (snake_case), value grammars |
-| `registry.ts` | `HostRegistry`: list/get/add/update/remove/resolve, atomic 0600 writes, lock, comments kept |
-| `ssh-config.ts` | read-only `~/.ssh/config` parser (`Include`, globs, wildcards skipped) and `importSshConfig` |
-| `effective.ts` | `ssh -G` wrapper (`getEffectiveSshConfig`) |
-| `ssh-args.ts` | `buildSshArgs`, `sshSessionArgs`, `portForwardArgs`, generated hardened config |
-| `known-hosts.ts` | `scanHostKey`, `checkHostKey`, `trustHostKey`, `forgetHostKey` |
-| `test-host.ts` | `testHost` (one ssh call running a fixed probe) |
-| `tunnel.ts` | `openEngineTunnel`, `TunnelManager` |
-| `resolver.ts` | `createHostResolver` for the manager |
-| `control.ts` | `closeSshConnection` (ControlMaster) |
+| `registry.ts`           | `HostRegistry`: list/get/add/update/remove/resolve, atomic 0600 writes, lock, comments kept  |
+| `ssh-config.ts`         | read-only `~/.ssh/config` parser (`Include`, globs, wildcards skipped) and `importSshConfig` |
+| `effective.ts`          | `ssh -G` wrapper (`getEffectiveSshConfig`)                                                   |
+| `ssh-args.ts`           | `buildSshArgs`, `sshSessionArgs`, `portForwardArgs`, generated hardened config               |
+| `known-hosts.ts`        | `scanHostKey`, `checkHostKey`, `trustHostKey`, `forgetHostKey`                               |
+| `test-host.ts`          | `testHost` (one ssh call running a fixed probe)                                              |
+| `tunnel.ts`             | `openEngineTunnel`, `TunnelManager`, supervisor, `sweepStaleTunnels`                         |
+| `forwardings.ts`        | `verifyForwardings`: what `ssh -G` would forward, refuse anything but the engine socket      |
+| `engine-info.ts`        | `getEngineInfo` (`/info`: rootless, runtimes), `isSystemEngineSocket`                        |
+| `resolver.ts`           | `createHostResolver` for the manager (rootless check on shared/restricted zones)             |
+| `control.ts`            | `closeSshConnection` (ControlMaster)                                                         |
 
 ## Decisions
 
@@ -38,9 +40,25 @@ abox stores no secrets: `identity_file` is a path, auth is ssh-agent / keys / FI
   pass `-F`; so every call uses a generated config (`<runtimeDir>/ssh/abox-<mode>-<hash>.conf`) with
   the hardening in `Host *`, followed by `Match all` + `Include <user ssh config>`. Hardening comes
   first, so it wins ("first value wins"). `identity_file` (`-i`) applies to the destination only.
-- **Scanning**: direct hosts via `ssh-keyscan` (falls back to `-4`/`-6`); hosts behind a ProxyJump via
-  a throwaway ssh handshake that stops before authentication (`PreferredAuthentications none`, scratch
-  known_hosts for the target only; the hops must already be trusted).
+- **Scanning**: direct hosts via `ssh-keyscan` (falls back to `-4`/`-6`); hosts behind a ProxyJump or
+  a ProxyCommand (both read from `ssh -G`, i.e. the effective config) via a throwaway ssh handshake
+  that stops before authentication (`PreferredAuthentications none`, scratch known_hosts for the
+  target only; the hops must already be trusted). A direct scan would show whatever answers directly.
+- **Local environment stays local.** `SendEnv` accumulates (no "first value wins"), so the generated
+  config ends with `Match all` + `SendEnv -*` AFTER the include of the user config.
+- **Tunnel forwards.** `ClearAllForwardings=yes` also clears the command-line `-L`, so it cannot be
+  used for the tunnel; `verifyForwardings` runs `ssh -G` over the exact argv and refuses any
+  Local/Remote/DynamicForward that is not the engine `-L` (`details.reason = config_forwards`).
+  OpenSSH 10 prints a stream-local `-L a:b` also as `dynamicforward a`; that line is accepted when it
+  is our own listen path.
+- **Tunnel lifetime.** ssh runs below `sh -c TUNNEL_SUPERVISOR`: it polls the owner pid and kills ssh
+  when the owner is gone (kill -9 of abox), and writes `<ssh pid> <owner pid>` to `<socket>.pid`.
+  `sweepStaleTunnels` (first `TunnelManager.get`) removes tunnels whose owner is dead; a tunnel of a
+  live other owner is left alone and the new one uses `<host>.<pid>.sock`.
+- **Engine checks.** `createHostResolver` asks the engine behind the tunnel for `/info` (once per
+  tunnel connection). Zones `shared`/`restricted` (`ZONE_DEFAULTS.requiresRootless`) refuse a system
+  socket path, a non-rootless engine and an engine that does not say, unless `allow_rootful`;
+  `HostConnection.runtimes` carries the profile's `runtimes` to the backends.
 - **Import** (`importSshConfig`): read-only. Proposed profiles get zone **`shared`** (needs approval,
   min isolation `hardened`), `backends: []` (SSH-only until the user declares an engine and
   `engine_socket`), tag `imported`, and only the identity file path. The login user of an alias is

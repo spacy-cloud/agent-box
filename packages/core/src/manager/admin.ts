@@ -3,18 +3,20 @@ import { readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { AboxError, isAboxError } from '../errors.js';
+import type { SandboxProvider } from '../provider.js';
 import type { AuditEntry, AuditQuery } from '../state/audit-log.js';
 import type { SandboxRecord } from '../state/sandbox-registry.js';
 import { sha256Hex } from '../state/canonical.js';
 import { parsePolicy } from '../policy/index.js';
-import type { BackendKind, SandboxId, SandboxInfo } from '../types.js';
+import type { BackendKind, ForeignResource, SandboxId, SandboxInfo } from '../types.js';
 import type { WorkspaceRecord } from '../workspace/index.js';
 import { cleanupWorkspace } from '../workspace/index.js';
 import { expireApprovals as expireApprovalsOp } from './approvals.js';
 import type { Internals } from './internals.js';
 import { destroySandbox } from './lifecycle.js';
+import { collectAllNetworkEvents, collectNetworkEvents } from './network-audit.js';
 import { rotateLogs } from './exec.js';
-import { gcImagesInternal } from './templates.js';
+import { catalogFor, gcImagesInternal } from './templates.js';
 import type {
   AgentTokenView,
   AuditFilter,
@@ -24,7 +26,10 @@ import type {
   DoctorCheck,
   DoctorReport,
   GcOptions,
+  GcOrphansOptions,
+  GcOrphansReport,
   GcReport,
+  OrphanResource,
   PolicyValidation,
   PolicyView,
   ReconcileEntry,
@@ -57,6 +62,7 @@ export async function showPolicy(I: Internals, caller: Caller): Promise<PolicyVi
     },
   };
   if (ctx.kind === 'human') {
+    if (I.policyProblem) view.policy.reloadError = { ...I.policyProblem };
     view.profiles = { ...I.policy.profiles };
     view.contexts = Object.fromEntries(
       Object.entries(I.policy.contexts).map(([k, v]) => [
@@ -89,6 +95,76 @@ export function validatePolicyText(text: string): PolicyValidation {
       };
     throw e;
   }
+}
+
+const UNKNOWN_TOOL_WINDOW_MS = 60_000;
+const UNKNOWN_TOOL_BUDGET = 10;
+const unknownToolBudgets = new WeakMap<
+  Internals,
+  Map<string, { start: number; used: number; suppressed: number }>
+>();
+
+/** Strips control, zero-width and bidi characters and cuts the text: attacker-controlled names go into the audit log. */
+function cleanLabel(v: unknown, max: number): string {
+  const t = typeof v === 'string' ? v : String(v);
+  let clean = '';
+  for (const ch of t) {
+    const c = ch.codePointAt(0)!;
+    const bad =
+      c < 0x20 ||
+      (c >= 0x7f && c <= 0x9f) ||
+      (c >= 0x200b && c <= 0x200f) ||
+      (c >= 0x202a && c <= 0x202e) ||
+      (c >= 0x2066 && c <= 0x2069) ||
+      c === 0xfeff;
+    clean += bad ? '?' : ch;
+  }
+  return clean.length > max ? `${clean.slice(0, max)}...` : clean;
+}
+
+/**
+ * MCP surfaces report a tool call for a tool that does not exist (an agent probing for `policy_set`,
+ * `approve`, `ssh_exec`, ...). Recorded as `mcp.unknown_tool` with the tool name, the context and the
+ * names (never the values) of the arguments. Rate limited per agent owner (same tool once a minute,
+ * at most 10 entries a minute; the entry after a burst carries `suppressed`), so probing cannot flood the log.
+ * Humans are ignored. Returns whether an entry was written.
+ */
+export async function auditUnknownTool(
+  I: Internals,
+  caller: Caller,
+  tool: string,
+  argNames: readonly string[] = [],
+): Promise<boolean> {
+  const ctx = await I.context(caller);
+  if (ctx.kind === 'human') return false;
+  const name = cleanLabel(tool, 64);
+  const now = Date.now();
+  let budgets = unknownToolBudgets.get(I);
+  if (!budgets) unknownToolBudgets.set(I, (budgets = new Map()));
+  if (budgets.size > 1000) budgets.clear();
+  let b = budgets.get(ctx.owner);
+  if (!b || now - b.start >= UNKNOWN_TOOL_WINDOW_MS) {
+    b = { start: now, used: 0, suppressed: b?.suppressed ?? 0 };
+    budgets.set(ctx.owner, b);
+  }
+  if (!I.firstWithin(`unknown-tool|${ctx.owner}|${name}`, UNKNOWN_TOOL_WINDOW_MS)) return false;
+  if (b.used >= UNKNOWN_TOOL_BUDGET) {
+    b.suppressed++;
+    return false;
+  }
+  b.used++;
+  const suppressed = b.suppressed;
+  b.suppressed = 0;
+  I.audit(ctx.owner, 'mcp.unknown_tool', {
+    decision: 'deny',
+    details: {
+      tool: name,
+      context: ctx.id,
+      argNames: argNames.slice(0, 10).map((a) => cleanLabel(a, 40)),
+      ...(suppressed > 0 ? { suppressed } : {}),
+    },
+  });
+  return true;
 }
 
 export async function setPolicy(
@@ -162,6 +238,14 @@ export async function queryAudit(
     limit: Math.min(Math.max(1, Math.trunc(filter.limit ?? 100)), 5000),
     ...(filter.order ? { order: filter.order } : {}),
   };
+  // Proxy egress decisions reach the audit log lazily; pull in what is new before looking.
+  if (filter.sandboxId) {
+    const target = I.state.sandboxes.get(filter.sandboxId);
+    if (target && (ctx.kind === 'human' || target.owner === ctx.owner))
+      await collectNetworkEvents(I, target, { throttleMs: 1000 });
+  } else {
+    await collectAllNetworkEvents(I, ctx.kind === 'human' ? undefined : ctx.owner, 5000);
+  }
   if (ctx.kind === 'human') return I.state.audit.query(q);
 
   // Agents: their own actions, plus everything that happened to their own sandboxes.
@@ -211,6 +295,7 @@ export async function createAgentToken(
 ): Promise<AgentTokenView & { token: string }> {
   const ctx = await I.context(caller);
   I.requireHuman(ctx, 'token.create');
+  I.requirePolicyValid(ctx, 'token.create', 'creating agent tokens');
   if (
     typeof contextId !== 'string' ||
     contextId === 'human' ||
@@ -274,6 +359,23 @@ function entry(
   return { id: r.id, host: r.host, backend, detail };
 }
 
+/** Every (host, backend) pair worth asking: the ones with registry rows and the local host's backends. */
+async function backendGroups(
+  I: Internals,
+  recs: Array<{ host: string; backend: BackendKind }>,
+): Promise<Array<{ host: string; backend: BackendKind }>> {
+  const groups = new Map<string, { host: string; backend: BackendKind }>();
+  for (const r of recs) groups.set(`${r.host}|${r.backend}`, { host: r.host, backend: r.backend });
+  try {
+    const local = await I.resolveHost('local');
+    for (const b of local.backends)
+      if (I.providerFactories[b]) groups.set(`local|${b}`, { host: 'local', backend: b });
+  } catch {
+    /* no local host */
+  }
+  return [...groups.values()];
+}
+
 export async function reconcileInternal(
   I: Internals,
   o: ReconcileOptions,
@@ -289,17 +391,9 @@ export async function reconcileInternal(
     applied: { removed: [], markedFailed: [], markedStale: [], orphansRemoved: [] },
   };
   const recs = I.state.sandboxes.list();
-  const groups = new Map<string, { host: string; backend: BackendKind }>();
-  for (const r of recs) groups.set(`${r.host}|${r.backend}`, { host: r.host, backend: r.backend });
-  try {
-    const local = await I.resolveHost('local');
-    for (const b of local.backends)
-      if (I.providerFactories[b]) groups.set(`local|${b}`, { host: 'local', backend: b });
-  } catch {
-    /* no local host */
-  }
+  const groups = await backendGroups(I, recs);
 
-  for (const g of groups.values()) {
+  for (const g of groups) {
     let infos: SandboxInfo[];
     let provider;
     try {
@@ -451,6 +545,24 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   const backends: BackendReport[] = [];
   const add = (c: DoctorCheck): void => void checks.push(c);
 
+  // Backends nobody needs (no template of the user's and no sandbox uses them) only warn when they are
+  // unusable: a missing Podman must not make `abox doctor` fail for a Docker user (and a missing Docker
+  // not for a Podman user). Exception: with no container engine at all the Docker check is an error,
+  // because most builtin templates need one.
+  const needed = new Set<BackendKind>();
+  try {
+    const { templates } = await catalogFor(I, I.projectDir).listAll();
+    // builtin templates exist for every backend; only the user's own templates say what is needed
+    for (const t of templates) if (t.source.kind !== 'builtin') needed.add(t.backend);
+  } catch {
+    /* an unreadable template directory is reported by the template commands */
+  }
+  for (const r of I.state.sandboxes.list()) needed.add(r.backend);
+  const unusableLevel = (kind: BackendKind): 'warn' | 'error' =>
+    needed.has(kind) ? 'error' : 'warn';
+  const optionalNote = (kind: BackendKind): string =>
+    needed.has(kind) ? '' : ' (optional: no template of yours or sandbox uses it)';
+
   // backends
   const hostIds = new Set<string>(['local']);
   for (const r of I.state.sandboxes.list()) hostIds.add(r.host);
@@ -487,18 +599,31 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
         });
         add({
           id: `backend.${hostId}.${kind}`,
-          level: status.ok ? (status.warnings.length > 0 ? 'warn' : 'ok') : 'error',
-          title: `backend ${kind} on ${hostId}: ${status.ok ? 'ok' : 'not usable'}`,
+          level: status.ok ? (status.warnings.length > 0 ? 'warn' : 'ok') : unusableLevel(kind),
+          title: `backend ${kind} on ${hostId}: ${status.ok ? 'ok' : `not usable${optionalNote(kind)}`}`,
           detail: [...status.details, ...status.warnings].join('; '),
         });
       } catch (e) {
         backends.push({ host: hostId, backend: kind, available: false, error: errMessage(e) });
         add({
           id: `backend.${hostId}.${kind}`,
-          level: 'error',
-          title: `backend ${kind} on ${hostId} failed`,
+          level: unusableLevel(kind),
+          title: `backend ${kind} on ${hostId} failed${optionalNote(kind)}`,
           detail: errMessage(e),
         });
+      }
+    }
+  }
+  const engineUsable = backends.some(
+    (b) => (b.backend === 'docker' || b.backend === 'podman') && b.available,
+  );
+  if (!engineUsable) {
+    for (const c of checks) {
+      if (c.level === 'warn' && c.id.startsWith('backend.') && c.id.endsWith('.docker')) {
+        c.level = 'error';
+        c.title = c.title.replace(/ \(optional: [^)]*\)/, '');
+        c.hint =
+          'Install and start Docker or Podman (the builtin templates need a container engine).';
       }
     }
   }
@@ -544,6 +669,24 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
   }
 
   // policy file
+  if (I.policyProblem) {
+    const p = I.policyProblem;
+    add({
+      id: 'policy.invalid',
+      level: 'error',
+      title:
+        'policy.yaml is invalid: creating sandboxes, granting access, approving and every agent are refused',
+      detail: [
+        p.message,
+        ...p.issues
+          .slice(0, 10)
+          .map(
+            (i) => `${i.line ? `line ${i.line}: ` : ''}${i.path ? `${i.path}: ` : ''}${i.message}`,
+          ),
+      ].join('\n'),
+      hint: `\`abox policy validate\` shows all problems, \`abox policy edit\` repairs the file. Until then ${p.fallback === 'last_valid' ? 'the last valid policy is only used to look at things and clean up' : 'no valid policy was ever recorded, only the human context exists'}.`,
+    });
+  }
   let fileMode: string | undefined;
   if (I.policy.source.kind === 'file') {
     try {
@@ -771,6 +914,192 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
       workspaces: report.workspaces.length,
       images: report.images.flatMap((i) => i.refs).length,
       logFiles: report.logs.files,
+      errors: report.errors.length,
+    },
+  });
+  return report;
+}
+
+// ---------------------------------------------------------------------------
+// gc --orphans
+// ---------------------------------------------------------------------------
+
+const ORPHAN_KIND_ORDER = ['container', 'network', 'volume'] as const;
+
+/** Resources created or started less than this long ago count as in use. */
+const ORPHAN_ACTIVE_WINDOW_MS = 3_600_000;
+
+function ageText(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 48 ? `${h}h${String(m % 60).padStart(2, '0')}m` : `${Math.floor(h / 24)}d`;
+}
+
+const newestOf = (r: ForeignResource): number | undefined => {
+  const t = Math.max(r.createdAt ?? 0, r.startedAt ?? 0);
+  return t > 0 ? t : undefined;
+};
+const isRunning = (r: ForeignResource): boolean =>
+  r.state === 'running' || r.state === 'restarting';
+
+/**
+ * Finds (and with `remove` deletes) backend objects that carry abox labels but whose `abox.instance`
+ * is not this installation's. Instances are separated on purpose: these may belong to another abox
+ * home on the same machine that is alive, so nothing is removed unless the caller asks for it, and
+ * objects without abox labels are never listed. Needed when a data directory was deleted: its
+ * instance id is gone and no manager sees its containers any more.
+ *
+ * Resources of an instance that has a running container or anything created or started within the
+ * last hour are listed but not selected for removal (`skip`), because that is what another live
+ * abox home looks like; only `includeActive` or naming the instance selects them. Resources
+ * without an instance label are judged one by one.
+ */
+export async function gcOrphans(
+  I: Internals,
+  caller: Caller,
+  o: GcOrphansOptions = {},
+): Promise<GcOrphansReport> {
+  const ctx = await I.context(caller);
+  I.requireHuman(ctx, 'gc.orphans');
+  const remove = o.remove === true;
+  const now = I.now();
+  const report: GcOrphansReport = {
+    dryRun: !remove,
+    now,
+    resources: [],
+    instances: [],
+    removed: [],
+    skipped: [],
+    errors: [],
+  };
+  const seen = new Set<string>();
+  const providers = new Map<OrphanResource, SandboxProvider>();
+  for (const g of await backendGroups(I, I.state.sandboxes.list())) {
+    let provider: SandboxProvider;
+    try {
+      provider = I.providerFor(await I.resolveHost(g.host), g.backend);
+    } catch (e) {
+      report.skipped.push({ host: g.host, backend: g.backend, reason: errMessage(e) });
+      continue;
+    }
+    if (!provider.listForeign || !provider.removeForeign) {
+      report.skipped.push({ host: g.host, backend: g.backend, reason: 'not supported' });
+      continue;
+    }
+    let found;
+    try {
+      found = await provider.listForeign();
+    } catch (e) {
+      report.skipped.push({ host: g.host, backend: g.backend, reason: errMessage(e) });
+      continue;
+    }
+    for (const f of found) {
+      if (o.instance !== undefined && f.instance !== o.instance) continue;
+      // One engine can be reached through several backends (docker and python): list it once.
+      const key = `${g.host}|${f.engine}|${f.kind}|${f.ref}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const r: OrphanResource = { ...f, host: g.host, backend: g.backend };
+      report.resources.push(r);
+      providers.set(r, provider);
+    }
+  }
+  const order = (r: OrphanResource): number => ORPHAN_KIND_ORDER.indexOf(r.kind);
+  report.resources.sort(
+    (a, b) =>
+      order(a) - order(b) || (a.createdAt ?? 0) - (b.createdAt ?? 0) || (a.name < b.name ? -1 : 1),
+  );
+
+  // Per instance: how much of it runs, how new it is, and whether it is selected.
+  const explicit = o.includeActive === true || o.instance !== undefined;
+  const activity = (list: OrphanResource[]): { running: number; newestAt?: number } => {
+    const times = list.map(newestOf).filter((t): t is number => t !== undefined);
+    return {
+      running: list.filter(isRunning).length,
+      ...(times.length ? { newestAt: Math.max(...times) } : {}),
+    };
+  };
+  const looksActive = (a: { running: number; newestAt?: number }): boolean =>
+    a.running > 0 || (a.newestAt !== undefined && now - a.newestAt < ORPHAN_ACTIVE_WINDOW_MS);
+  const describe = (a: { running: number; newestAt?: number }): string =>
+    `${a.running} running${a.newestAt === undefined ? '' : `, newest ${ageText(now - a.newestAt)} ago`}`;
+  const byInstance = new Map<string, OrphanResource[]>();
+  for (const r of report.resources) {
+    const list = byInstance.get(r.instance) ?? [];
+    list.push(r);
+    byInstance.set(r.instance, list);
+  }
+  for (const [instance, list] of byInstance) {
+    const whole = activity(list);
+    let skipReason: string | undefined;
+    for (const r of list) {
+      // Without an instance label nothing ties the resources together: each counts by its own state.
+      const a = instance === '' ? activity([r]) : whole;
+      if (explicit || !looksActive(a)) continue;
+      r.skip =
+        instance === ''
+          ? `${r.kind} ${r.name} looks active (${describe(a)}) - probably another abox home in use`
+          : `instance ${instance} looks active (${describe(a)}) - probably another abox home in use`;
+      skipReason ??= r.skip;
+    }
+    const skippedCount = list.filter((r) => r.skip !== undefined).length;
+    report.instances.push({
+      instance,
+      resources: list.length,
+      running: whole.running,
+      ...(whole.newestAt !== undefined ? { newestAt: whole.newestAt } : {}),
+      active: looksActive(whole),
+      selected: list.length - skippedCount,
+      ...(skipReason !== undefined ? { skipReason } : {}),
+    });
+  }
+  // Stale instances first, then the oldest: the order of the confirmation prompt.
+  report.instances.sort(
+    (a, b) =>
+      Number(a.active) - Number(b.active) ||
+      (a.newestAt ?? 0) - (b.newestAt ?? 0) ||
+      (a.instance < b.instance ? -1 : 1),
+  );
+
+  if (remove) {
+    for (const r of report.resources) {
+      if (r.skip !== undefined) continue;
+      const details = {
+        kind: r.kind,
+        name: r.name,
+        ref: r.ref,
+        instance: r.instance,
+        aboxName: r.aboxName ?? null,
+        sandboxId: r.sandboxId ?? null,
+        host: r.host,
+        backend: r.backend,
+      };
+      try {
+        await providers.get(r)!.removeForeign!(r);
+        report.removed.push(r);
+        I.audit(ctx.owner, 'resource.gc_orphan', { decision: 'allow', details });
+      } catch (e) {
+        report.errors.push(`${r.kind} ${r.name}: ${errMessage(e)}`);
+        I.audit(ctx.owner, 'resource.gc_orphan', {
+          decision: 'error',
+          details: { ...details, message: errMessage(e) },
+        });
+      }
+    }
+  }
+  I.audit(ctx.owner, 'gc.orphans', {
+    decision: 'info',
+    details: {
+      remove,
+      instance: o.instance ?? null,
+      includeActive: o.includeActive === true,
+      found: report.resources.length,
+      activeSkipped: report.resources.filter((r) => r.skip !== undefined).length,
+      removed: report.removed.length,
+      skipped: report.skipped.length,
       errors: report.errors.length,
     },
   });

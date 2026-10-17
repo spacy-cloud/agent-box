@@ -222,6 +222,7 @@ export async function guestCopyOut(
   sandboxPath: string,
   hostPath: string,
   onSkip?: (path: string, reason: string) => void,
+  symlinks?: 'refuse' | 'preserve',
 ): Promise<void> {
   const kind = await runInGuest(
     qga,
@@ -271,6 +272,7 @@ export async function guestCopyOut(
       await extractTar(streamGuestFile(qga, `${dir}/out`), dest, {
         singleFile: !isDir,
         ...(onSkip ? { onSkip } : {}),
+        ...(symlinks ? { symlinks } : {}),
       });
     } catch (e) {
       throw e instanceof AboxError ? e : mapFsError(e, `writing '${hostPath}'`);

@@ -29,6 +29,15 @@ import { cleanupSandbox, makeTestSpec, randomId, sleep, waitFor } from './helper
  * - A failed `create()` (including every `unsupported` rejection) leaves nothing behind.
  * - `inspect`/`list` report state `expired` once `expiresAt < now`, regardless of the
  *   lifecycle state. `create()` with an `expiresAt` in the past succeeds.
+ * - `extendExpiry(id, t)` (only with `capabilities().extendExpiry`) moves the deadline at which
+ *   the backend itself ends the sandbox, not just the reported one: a sandbox extended past its
+ *   original `expiresAt` keeps running, can be stopped and started again, and reports `t`.
+ *   It never shortens (`invalid_input`); without the capability the method is absent or rejects
+ *   with `unsupported`.
+ * - `updateResources(id, limits)` (only with `capabilities().updateResources`) changes the cpu and/or
+ *   memory limit of a running or stopped sandbox and keeps it across a restart; an empty or
+ *   invalid request is `invalid_input`; without the capability the method is absent or rejects
+ *   with `unsupported`.
  * - `copyIn(host, p)` / `copyOut(p, host)`: the entry at the source *becomes* the entry at the
  *   destination path (like `cp -a src dst` with a non-existing `dst`); the destination's parent
  *   must exist. Directories are copied recursively.
@@ -54,6 +63,12 @@ export interface ContractOptions {
    * (default false).
    */
   gc?: boolean;
+  /**
+   * Time in ms a `create` + `start` may take on this backend (default 0). The "running sandbox
+   * becomes expired" test sets the TTL to `startBudgetMs + 2500` so that slow-booting backends
+   * (a cold VM needs 3-6 s) are still running when they have started.
+   */
+  startBudgetMs?: number;
   /** Called once after the suite, e.g. to delete a temp data directory. */
   dispose?(provider: SandboxProvider): Promise<void> | void;
 }
@@ -76,10 +91,17 @@ async function captureError(p: Promise<unknown>): Promise<unknown> {
 /** Asserts that `p` rejects with an `AboxError` carrying one of `codes`. */
 async function expectRejects(p: Promise<unknown>, ...codes: ErrorCode[]): Promise<void> {
   const err = await captureError(p);
-  expect(err, `expected a rejection with code ${codes.join(' | ')}, but the call succeeded`).toBeDefined();
+  expect(
+    err,
+    `expected a rejection with code ${codes.join(' | ')}, but the call succeeded`,
+  ).toBeDefined();
   const e = err as ErrorLike;
-  expect(e.name, `expected an AboxError, got: ${String((err as Error)?.stack ?? err)}`).toBe('AboxError');
-  expect(codes, `unexpected error code '${String(e.code)}': ${String(e.message)}`).toContain(e.code);
+  expect(e.name, `expected an AboxError, got: ${String((err as Error)?.stack ?? err)}`).toBe(
+    'AboxError',
+  );
+  expect(codes, `unexpected error code '${String(e.code)}': ${String(e.message)}`).toContain(
+    e.code,
+  );
 }
 
 async function collect(iter: AsyncIterable<ExecEvent>): Promise<Array<ExecEvent & { at: number }>> {
@@ -136,7 +158,8 @@ export function defineProviderContract(opts: ContractOptions): void {
 
     // -- plumbing --------------------------------------------------------------------------
 
-    const test = (name: string, fn: (ctx: TestContext) => Promise<void>) => it(name, { timeout }, fn);
+    const test = (name: string, fn: (ctx: TestContext) => Promise<void>) =>
+      it(name, { timeout }, fn);
 
     /** Builds a spec (base -> `opts.spec` hook -> overrides) and registers it for the final sweep. */
     async function mk(overrides: Partial<SandboxSpec> = {}): Promise<SandboxSpec> {
@@ -168,8 +191,11 @@ export function defineProviderContract(opts: ContractOptions): void {
       await cleanupSandbox(provider, id);
     }
 
-    const sh = (id: string, command: string, extra: Partial<ExecRequest> = {}): Promise<ExecResult> =>
-      provider.exec(id, { command, ...extra });
+    const sh = (
+      id: string,
+      command: string,
+      extra: Partial<ExecRequest> = {},
+    ): Promise<ExecResult> => provider.exec(id, { command, ...extra });
 
     async function expectNothingLeft(id: string): Promise<void> {
       const all = await provider.list();
@@ -179,7 +205,13 @@ export function defineProviderContract(opts: ContractOptions): void {
 
     /** True once `kill -0 pid` fails inside the sandbox (the process is gone). */
     async function processGone(id: string, pid: string): Promise<boolean> {
-      return waitFor(async () => (await provider.exec(id, { argv: ['sh', '-c', 'kill -0 "$1"', 'sh', pid] })).exitCode !== 0, 8000, 100);
+      return waitFor(
+        async () =>
+          (await provider.exec(id, { argv: ['sh', '-c', 'kill -0 "$1"', 'sh', pid] })).exitCode !==
+          0,
+        8000,
+        100,
+      );
     }
 
     beforeAll(async () => {
@@ -210,10 +242,18 @@ export function defineProviderContract(opts: ContractOptions): void {
         for (const m of caps.networkModes) expect(NETWORK_MODES).toContain(m);
         expect(caps.workspaceDelivery).toContain('none');
         for (const k of caps.workspaceDelivery) expect(['none', 'bind', 'copy']).toContain(k);
-        for (const flag of [caps.networkFilter, caps.mounts, caps.snapshots, caps.tty, caps.nonRootUser, caps.remote]) {
+        for (const flag of [
+          caps.networkFilter,
+          caps.mounts,
+          caps.snapshots,
+          caps.tty,
+          caps.nonRootUser,
+          caps.remote,
+        ]) {
           expect(typeof flag).toBe('boolean');
         }
-        for (const l of ['cpus', 'memory', 'pids', 'disk'] as const) expect(typeof caps.limits[l]).toBe('boolean');
+        for (const l of ['cpus', 'memory', 'pids', 'disk'] as const)
+          expect(typeof caps.limits[l]).toBe('boolean');
         for (const s of caps.secretInjection) expect(['proxy', 'env', 'file']).toContain(s);
         expect(caps.osFamilies.length).toBeGreaterThan(0);
       });
@@ -223,6 +263,10 @@ export function defineProviderContract(opts: ContractOptions): void {
         expect(caps.networkFilter).toBe(caps.networkModes.includes('allowlist'));
         // A remote host cannot bind-mount host directories.
         if (caps.remote) expect(caps.workspaceDelivery).not.toContain('bind');
+        // `extendExpiry` is present exactly when the capability is claimed.
+        expect(typeof provider.extendExpiry === 'function').toBe(caps.extendExpiry === true);
+        // A backend that claims `updateResources` provides it (the python wrapper always has the method).
+        if (caps.updateResources) expect(typeof provider.updateResources).toBe('function');
         // Snapshot methods are present exactly when snapshots are supported.
         if (caps.snapshots) {
           expect(typeof provider.snapshot).toBe('function');
@@ -241,7 +285,10 @@ export function defineProviderContract(opts: ContractOptions): void {
         expect(typeof s.ok).toBe('boolean');
         expect(Array.isArray(s.details)).toBe(true);
         expect(Array.isArray(s.warnings)).toBe(true);
-        expect(s.ok, `status details: ${s.details.join('; ')} / warnings: ${s.warnings.join('; ')}`).toBe(true);
+        expect(
+          s.ok,
+          `status details: ${s.details.join('; ')} / warnings: ${s.warnings.join('; ')}`,
+        ).toBe(true);
         await expect(provider.status()).resolves.toBeDefined();
       });
     });
@@ -344,11 +391,38 @@ export function defineProviderContract(opts: ContractOptions): void {
         try {
           await provider.stop(id);
           expect((await provider.inspect(id)).state).toBe('stopped');
-          expect(((await provider.list()).find((s) => s.id === id) ?? { state: '' }).state).toBe('stopped');
+          expect(((await provider.list()).find((s) => s.id === id) ?? { state: '' }).state).toBe(
+            'stopped',
+          );
           await provider.start(id);
           expect((await provider.inspect(id)).state).toBe('running');
           const r = await provider.exec(id, { argv: ['echo', 'again'] });
           expect(r.stdout).toBe('again\n');
+        } finally {
+          await finish(id);
+        }
+      });
+
+      test('a stopped sandbox is read with the rights of the sandbox user, not as root', async () => {
+        const id = await startSandbox();
+        try {
+          const name = `ct-stopped-${randomId('', 4)}.txt`;
+          await provider.writeFile(id, wsPath(name), Buffer.from('mine\n'));
+          await sh(id, `ln -s /etc/shadow ct-shadow-link-${name}`);
+          await provider.stop(id);
+          // root-only files stay unreadable, also through a link planted in the workspace
+          for (const p of ['/etc/shadow', wsPath(`ct-shadow-link-${name}`)]) {
+            const err = await captureError(provider.readFile(id, p, 100));
+            expect(err, `reading ${p} of a stopped sandbox must be refused`).toBeDefined();
+            expect((err as ErrorLike).name).toBe('AboxError');
+          }
+          // what the sandbox user owns is readable, or the backend needs the sandbox running
+          const ok = await captureError(provider.readFile(id, wsPath(name), 100));
+          if (ok === undefined) {
+            expect((await provider.readFile(id, wsPath(name), 100)).data.toString()).toBe('mine\n');
+          } else {
+            expect((ok as ErrorLike).code).toBe('conflict');
+          }
         } finally {
           await finish(id);
         }
@@ -362,10 +436,14 @@ export function defineProviderContract(opts: ContractOptions): void {
           expect(r.exitCode).toBe(0);
           const pid = (await provider.readFile(id, wsPath(pidFile), 64)).data.toString().trim();
           expect(pid).toMatch(/^\d+$/);
-          expect((await provider.exec(id, { argv: ['sh', '-c', 'kill -0 "$1"', 'sh', pid] })).exitCode).toBe(0);
+          expect(
+            (await provider.exec(id, { argv: ['sh', '-c', 'kill -0 "$1"', 'sh', pid] })).exitCode,
+          ).toBe(0);
           await provider.stop(id);
           await provider.start(id);
-          expect(await processGone(id, pid), `background process ${pid} survived stop()`).toBe(true);
+          expect(await processGone(id, pid), `background process ${pid} survived stop()`).toBe(
+            true,
+          );
         } finally {
           await finish(id);
         }
@@ -376,7 +454,10 @@ export function defineProviderContract(opts: ContractOptions): void {
         await provider.create(spec);
         try {
           await expectRejects(provider.exec(spec.id, { argv: ['echo', 'x'] }), 'conflict');
-          await expectRejects(collect(provider.spawn(spec.id, { argv: ['echo', 'x'] })), 'conflict');
+          await expectRejects(
+            collect(provider.spawn(spec.id, { argv: ['echo', 'x'] })),
+            'conflict',
+          );
           await provider.start(spec.id);
           await provider.stop(spec.id);
           await expectRejects(provider.exec(spec.id, { argv: ['echo', 'x'] }), 'conflict');
@@ -415,7 +496,9 @@ export function defineProviderContract(opts: ContractOptions): void {
         await provider.remove(id);
         await expectNothingLeft(id);
         await expect(provider.remove(id)).resolves.toBeUndefined();
-        await expect(provider.remove(`${provider.host.host}/ct${randomId('', 6)}`)).resolves.toBeUndefined();
+        await expect(
+          provider.remove(`${provider.host.host}/ct${randomId('', 6)}`),
+        ).resolves.toBeUndefined();
       });
 
       test('remove works on a running sandbox with a background process', async () => {
@@ -433,19 +516,21 @@ export function defineProviderContract(opts: ContractOptions): void {
           const listed = (await provider.list()).find((s) => s.id === spec.id);
           expect(listed?.state).toBe('expired');
           expect((await provider.list({ state: 'expired' })).map((s) => s.id)).toContain(spec.id);
-          expect((await provider.list({ state: 'created' })).map((s) => s.id)).not.toContain(spec.id);
+          expect((await provider.list({ state: 'created' })).map((s) => s.id)).not.toContain(
+            spec.id,
+          );
         } finally {
           await finish(spec.id);
         }
       });
 
       test('a running sandbox becomes expired when expiresAt passes', async () => {
-        const spec = await mk({ expiresAt: Date.now() + 2500 });
+        const spec = await mk({ expiresAt: Date.now() + (opts.startBudgetMs ?? 0) + 2500 });
         await provider.create(spec);
         try {
           await provider.start(spec.id);
           expect((await provider.inspect(spec.id)).state).toBe('running');
-          await sleep(3000);
+          await sleep(Math.max(0, spec.expiresAt - Date.now()) + 500);
           expect((await provider.inspect(spec.id)).state).toBe('expired');
           expect((await provider.list({ state: 'expired' })).map((s) => s.id)).toContain(spec.id);
         } finally {
@@ -464,7 +549,10 @@ export function defineProviderContract(opts: ContractOptions): void {
         await expectRejects(provider.writeFile(id, wsPath('x'), Buffer.from('x')), 'not_found');
         await expectRejects(provider.listDir(id, ws), 'not_found');
         await expectRejects(provider.copyIn(id, tmpdir(), wsPath('x')), 'not_found');
-        await expectRejects(provider.copyOut(id, ws, join(tmpdir(), `abox-ct-${randomId('', 4)}`)), 'not_found');
+        await expectRejects(
+          provider.copyOut(id, ws, join(tmpdir(), `abox-ct-${randomId('', 4)}`)),
+          'not_found',
+        );
         await expect(provider.remove(id)).resolves.toBeUndefined();
       });
     });
@@ -541,9 +629,13 @@ export function defineProviderContract(opts: ContractOptions): void {
         });
 
         test('stdin (string and Buffer) is passed to the process', async () => {
-          expect((await provider.exec(id, { argv: ['cat'], stdin: 'ping\n' })).stdout).toBe('ping\n');
+          expect((await provider.exec(id, { argv: ['cat'], stdin: 'ping\n' })).stdout).toBe(
+            'ping\n',
+          );
           const bin = Buffer.from('buffer-data\n');
-          expect((await provider.exec(id, { argv: ['cat'], stdin: bin })).stdout).toBe('buffer-data\n');
+          expect((await provider.exec(id, { argv: ['cat'], stdin: bin })).stdout).toBe(
+            'buffer-data\n',
+          );
         });
 
         test('a process that reads stdin without any being given sees EOF', async () => {
@@ -582,7 +674,9 @@ export function defineProviderContract(opts: ContractOptions): void {
           expect(r.stdout).toMatch(/^a+$/);
           expect(r.exitCode).toBe(0);
 
-          const e = await sh(id, "head -c 2000 /dev/zero | tr '\\0' b 1>&2", { maxOutputBytes: 50 });
+          const e = await sh(id, "head -c 2000 /dev/zero | tr '\\0' b 1>&2", {
+            maxOutputBytes: 50,
+          });
           expect(e.truncated).toBe(true);
           expect(e.stderr.length).toBeLessThanOrEqual(50);
 
@@ -603,7 +697,9 @@ export function defineProviderContract(opts: ContractOptions): void {
         });
 
         test('a missing binary yields a non-zero exit code or an AboxError, never a crash', async () => {
-          const err = await captureError(provider.exec(id, { argv: [`ct-no-such-binary-${randomId('', 4)}`] }));
+          const err = await captureError(
+            provider.exec(id, { argv: [`ct-no-such-binary-${randomId('', 4)}`] }),
+          );
           if (err !== undefined) {
             expect((err as ErrorLike).name).toBe('AboxError');
           } else {
@@ -638,7 +734,9 @@ export function defineProviderContract(opts: ContractOptions): void {
 
       describe('spawn', () => {
         test('yields stdout events, then exactly one exit event last', async () => {
-          const events = await collect(provider.spawn(id, { command: 'echo a; sleep 0.3; echo b' }));
+          const events = await collect(
+            provider.spawn(id, { command: 'echo a; sleep 0.3; echo b' }),
+          );
           expect(joinData(events, 'stdout')).toBe('a\nb\n');
           const last = events[events.length - 1];
           expect(last?.type).toBe('exit');
@@ -653,7 +751,9 @@ export function defineProviderContract(opts: ContractOptions): void {
         });
 
         test('separates stderr and propagates the exit code', async () => {
-          const events = await collect(provider.spawn(id, { command: 'echo out; echo err 1>&2; exit 5' }));
+          const events = await collect(
+            provider.spawn(id, { command: 'echo out; echo err 1>&2; exit 5' }),
+          );
           expect(joinData(events, 'stdout')).toBe('out\n');
           expect(joinData(events, 'stderr')).toBe('err\n');
           const last = events[events.length - 1];
@@ -661,7 +761,9 @@ export function defineProviderContract(opts: ContractOptions): void {
         });
 
         test('streams: the first output arrives before the process ends', async () => {
-          const events = await collect(provider.spawn(id, { command: 'echo first; sleep 1; echo second' }));
+          const events = await collect(
+            provider.spawn(id, { command: 'echo first; sleep 1; echo second' }),
+          );
           const first = events.find((e) => e.type === 'stdout');
           const exit = events.find((e) => e.type === 'exit');
           expect(first).toBeDefined();
@@ -673,14 +775,21 @@ export function defineProviderContract(opts: ContractOptions): void {
           const dir = `ct-spawn-${randomId('', 4)}`;
           await provider.writeFile(id, wsPath(`${dir}/f.txt`), Buffer.from('x'));
           const events = await collect(
-            provider.spawn(id, { command: 'cat; ls; printf "%s" "$CT_S"', stdin: 'in\n', env: { CT_S: 'env' }, cwd: wsPath(dir) }),
+            provider.spawn(id, {
+              command: 'cat; ls; printf "%s" "$CT_S"',
+              stdin: 'in\n',
+              env: { CT_S: 'env' },
+              cwd: wsPath(dir),
+            }),
           );
           expect(joinData(events, 'stdout')).toBe('in\nf.txt\nenv');
         });
 
         test('timeoutMs ends the stream with timedOut=true', async () => {
           const started = Date.now();
-          const events = await collect(provider.spawn(id, { argv: ['sleep', '30'], timeoutMs: 500 }));
+          const events = await collect(
+            provider.spawn(id, { argv: ['sleep', '30'], timeoutMs: 500 }),
+          );
           const last = events[events.length - 1];
           expect(last?.type).toBe('exit');
           if (last?.type === 'exit') {
@@ -737,7 +846,12 @@ export function defineProviderContract(opts: ContractOptions): void {
 
         test('writeFile applies the requested mode and the file is executable', async () => {
           const name = `ct-${randomId('', 4)}.sh`;
-          await provider.writeFile(id, wsPath(name), Buffer.from('#!/bin/sh\necho from-script\n'), 0o755);
+          await provider.writeFile(
+            id,
+            wsPath(name),
+            Buffer.from('#!/bin/sh\necho from-script\n'),
+            0o755,
+          );
           const entry = (await provider.listDir(id, ws)).find((e) => e.name === name);
           expect(entry).toBeDefined();
           expect((entry?.mode ?? 0) & 0o777).toBe(0o755);
@@ -756,13 +870,18 @@ export function defineProviderContract(opts: ContractOptions): void {
         test('files written by exec are visible to readFile and vice versa', async () => {
           const name = `ct-${randomId('', 4)}.txt`;
           await sh(id, `echo via-exec > ${name}`);
-          expect((await provider.readFile(id, wsPath(name), 100)).data.toString()).toBe('via-exec\n');
+          expect((await provider.readFile(id, wsPath(name), 100)).data.toString()).toBe(
+            'via-exec\n',
+          );
           await provider.writeFile(id, wsPath(name), Buffer.from('via-api\n'));
           expect((await provider.exec(id, { argv: ['cat', name] })).stdout).toBe('via-api\n');
         });
 
         test('readFile of a missing path rejects with not_found; of a directory rejects', async () => {
-          await expectRejects(provider.readFile(id, wsPath(`ct-missing-${randomId('', 4)}`), 10), 'not_found');
+          await expectRejects(
+            provider.readFile(id, wsPath(`ct-missing-${randomId('', 4)}`), 10),
+            'not_found',
+          );
           const err = await captureError(provider.readFile(id, ws, 10));
           expect(err, 'reading a directory as a file must fail').toBeDefined();
           expect((err as ErrorLike).name).toBe('AboxError');
@@ -800,9 +919,15 @@ export function defineProviderContract(opts: ContractOptions): void {
           const dest = wsPath(`ct-tree-${randomId('', 4)}`);
           await provider.copyIn(id, src, dest);
           expect((await provider.readFile(id, `${dest}/top.txt`, 100)).data.toString()).toBe('top');
-          expect((await provider.readFile(id, `${dest}/a/mid.txt`, 100)).data.toString()).toBe('mid');
-          expect((await provider.readFile(id, `${dest}/a/b/deep.txt`, 100)).data.toString()).toBe('deep');
-          expect((await provider.readFile(id, `${dest}/a/b/data.bin`, 1 << 20)).data.equals(BINARY)).toBe(true);
+          expect((await provider.readFile(id, `${dest}/a/mid.txt`, 100)).data.toString()).toBe(
+            'mid',
+          );
+          expect((await provider.readFile(id, `${dest}/a/b/deep.txt`, 100)).data.toString()).toBe(
+            'deep',
+          );
+          expect(
+            (await provider.readFile(id, `${dest}/a/b/data.bin`, 1 << 20)).data.equals(BINARY),
+          ).toBe(true);
           const empty = (await provider.listDir(id, dest)).find((e) => e.name === 'empty');
           expect(empty?.type).toBe('dir');
           expect((await provider.listDir(id, `${dest}/empty`)).length).toBe(0);
@@ -822,10 +947,56 @@ export function defineProviderContract(opts: ContractOptions): void {
           expect((await readFile(join(dir, 'back.bin'))).equals(BINARY)).toBe(true);
         });
 
+        // /tmp is a tmpfs on some backends (docker): the file APIs must all see the same /tmp, whatever
+        // way the data got there (a copy that lands in a hidden directory is silent data loss).
+        test('copyIn/copyOut under /tmp of a running sandbox see the same files as readFile/writeFile', async () => {
+          const dir = `/tmp/ct-tmpcopy-${randomId('', 4)}`;
+          await provider.writeFile(id, `${dir}/seed`, Buffer.from('seed'));
+          const src = join(await tmp(), 'tree');
+          await mkdir(join(src, 'sub'), { recursive: true });
+          await writeFile(join(src, 'top.txt'), 'top');
+          await writeFile(join(src, 'sub', 'data.bin'), BINARY);
+
+          await provider.copyIn(id, src, `${dir}/in`);
+          expect((await provider.readFile(id, `${dir}/in/top.txt`, 100)).data.toString()).toBe(
+            'top',
+          );
+          expect(
+            (await provider.readFile(id, `${dir}/in/sub/data.bin`, 1 << 20)).data.equals(BINARY),
+          ).toBe(true);
+          expect((await provider.listDir(id, `${dir}/in`)).map((e) => e.name).sort()).toEqual([
+            'sub',
+            'top.txt',
+          ]);
+
+          const one = join(await tmp(), 'one.bin');
+          await writeFile(one, BINARY);
+          await provider.copyIn(id, one, `${dir}/one.bin`);
+          expect((await provider.readFile(id, `${dir}/one.bin`, 1 << 20)).data.equals(BINARY)).toBe(
+            true,
+          );
+
+          // what was written through the file API (or by a command) is what copyOut returns
+          await provider.writeFile(id, `${dir}/written.bin`, BINARY);
+          const back = join(await tmp(), 'written.bin');
+          await provider.copyOut(id, `${dir}/written.bin`, back);
+          expect((await readFile(back)).equals(BINARY)).toBe(true);
+          const tree = join(await tmp(), 'tree-out');
+          await provider.copyOut(id, `${dir}/in`, tree);
+          expect(await readTree(tree)).toEqual(await readTree(src));
+          await expectRejects(
+            provider.copyOut(id, `${dir}/missing-${randomId('', 4)}`, join(await tmp(), 'nope')),
+            'not_found',
+          );
+        });
+
         test('copyIn of a missing host path and copyOut of a missing sandbox path reject with not_found', async () => {
           const dir = await tmp();
           await expectRejects(provider.copyIn(id, join(dir, 'nope'), wsPath('x')), 'not_found');
-          await expectRejects(provider.copyOut(id, wsPath(`ct-nope-${randomId('', 4)}`), join(dir, 'out')), 'not_found');
+          await expectRejects(
+            provider.copyOut(id, wsPath(`ct-nope-${randomId('', 4)}`), join(dir, 'out')),
+            'not_found',
+          );
         });
       });
     });
@@ -862,12 +1033,18 @@ export function defineProviderContract(opts: ContractOptions): void {
       test('copy delivery places the host tree in the sandbox (honouring exclude)', async (ctx) => {
         if (!caps.workspaceDelivery.includes('copy')) return ctx.skip();
         const hostPath = await hostTree();
-        const spec = await mk({ workspace: { kind: 'copy', hostPath, sandboxPath: ws, exclude: ['node_modules'] } });
+        const spec = await mk({
+          workspace: { kind: 'copy', hostPath, sandboxPath: ws, exclude: ['node_modules'] },
+        });
         await provider.create(spec);
         try {
           await provider.start(spec.id);
-          expect((await provider.readFile(spec.id, wsPath('a.txt'), 100)).data.toString()).toBe('host-a');
-          expect((await provider.readFile(spec.id, wsPath('sub/b.txt'), 100)).data.toString()).toBe('host-b');
+          expect((await provider.readFile(spec.id, wsPath('a.txt'), 100)).data.toString()).toBe(
+            'host-a',
+          );
+          expect((await provider.readFile(spec.id, wsPath('sub/b.txt'), 100)).data.toString()).toBe(
+            'host-b',
+          );
           const names = (await provider.listDir(spec.id, ws)).map((e) => e.name);
           expect(names).not.toContain('node_modules');
           // a copy is decoupled from the host: changes in the sandbox do not reach the host
@@ -891,12 +1068,18 @@ export function defineProviderContract(opts: ContractOptions): void {
       test('bind delivery shows the host directory in the sandbox', async (ctx) => {
         if (!caps.workspaceDelivery.includes('bind')) return ctx.skip();
         const hostPath = await hostTree();
-        const spec = await mk({ workspace: { kind: 'bind', hostPath, sandboxPath: ws, access: 'ro' } });
+        const spec = await mk({
+          workspace: { kind: 'bind', hostPath, sandboxPath: ws, access: 'ro' },
+        });
         await provider.create(spec);
         try {
           await provider.start(spec.id);
-          expect((await provider.readFile(spec.id, wsPath('a.txt'), 100)).data.toString()).toBe('host-a');
-          expect((await provider.readFile(spec.id, wsPath('sub/b.txt'), 100)).data.toString()).toBe('host-b');
+          expect((await provider.readFile(spec.id, wsPath('a.txt'), 100)).data.toString()).toBe(
+            'host-a',
+          );
+          expect((await provider.readFile(spec.id, wsPath('sub/b.txt'), 100)).data.toString()).toBe(
+            'host-b',
+          );
         } finally {
           await finish(spec.id);
         }
@@ -905,7 +1088,9 @@ export function defineProviderContract(opts: ContractOptions): void {
       test('extra mounts are rejected with unsupported when mounts=false (nothing left behind)', async (ctx) => {
         if (caps.mounts) return ctx.skip();
         const hostPath = await hostTree();
-        const spec = await mk({ mounts: [{ hostPath, sandboxPath: '/mnt/ct-extra', access: 'ro' }] });
+        const spec = await mk({
+          mounts: [{ hostPath, sandboxPath: '/mnt/ct-extra', access: 'ro' }],
+        });
         await expectRejects(provider.create(spec), 'unsupported');
         await expectNothingLeft(spec.id);
       });
@@ -913,11 +1098,15 @@ export function defineProviderContract(opts: ContractOptions): void {
       test('extra mounts are visible in the sandbox when mounts=true', async (ctx) => {
         if (!caps.mounts) return ctx.skip();
         const hostPath = await hostTree();
-        const spec = await mk({ mounts: [{ hostPath, sandboxPath: '/mnt/ct-extra', access: 'ro' }] });
+        const spec = await mk({
+          mounts: [{ hostPath, sandboxPath: '/mnt/ct-extra', access: 'ro' }],
+        });
         await provider.create(spec);
         try {
           await provider.start(spec.id);
-          expect((await provider.readFile(spec.id, '/mnt/ct-extra/a.txt', 100)).data.toString()).toBe('host-a');
+          expect(
+            (await provider.readFile(spec.id, '/mnt/ct-extra/a.txt', 100)).data.toString(),
+          ).toBe('host-a');
         } finally {
           await finish(spec.id);
         }
@@ -929,7 +1118,13 @@ export function defineProviderContract(opts: ContractOptions): void {
         test(`mode '${mode}' that is not advertised is rejected with unsupported and leaves nothing behind`, async (ctx) => {
           if (caps.networkModes.includes(mode)) return ctx.skip();
           const spec = await mk({
-            network: { mode, allow: mode === 'allowlist' ? ['example.org'] : [], blockPrivate: true, privateExceptions: [], injections: [] },
+            network: {
+              mode,
+              allow: mode === 'allowlist' ? ['example.org'] : [],
+              blockPrivate: true,
+              privateExceptions: [],
+              injections: [],
+            },
           });
           await expectRejects(provider.create(spec), 'unsupported');
           await expectNothingLeft(spec.id);
@@ -951,7 +1146,10 @@ export function defineProviderContract(opts: ContractOptions): void {
         if (caps.secretInjection.includes('proxy')) return ctx.skip();
         const base = await mk();
         const spec = await mk({
-          network: { ...base.network, injections: [{ host: 'api.example.org', header: 'Authorization', value: 'Bearer ct' }] },
+          network: {
+            ...base.network,
+            injections: [{ host: 'api.example.org', header: 'Authorization', value: 'Bearer ct' }],
+          },
         });
         await expectRejects(provider.create(spec), 'unsupported');
         await expectNothingLeft(spec.id);
@@ -971,8 +1169,12 @@ export function defineProviderContract(opts: ContractOptions): void {
         await provider.create(spec);
         try {
           await provider.start(spec.id);
-          expect((await provider.readFile(spec.id, `${dir}/secret.txt`, 100)).data.toString()).toBe('s3cret');
-          expect((await provider.readFile(spec.id, `${dir}/bin.dat`, 1 << 20)).data.equals(BINARY)).toBe(true);
+          expect((await provider.readFile(spec.id, `${dir}/secret.txt`, 100)).data.toString()).toBe(
+            's3cret',
+          );
+          expect(
+            (await provider.readFile(spec.id, `${dir}/bin.dat`, 1 << 20)).data.equals(BINARY),
+          ).toBe(true);
           const entry = (await provider.listDir(spec.id, dir)).find((e) => e.name === 'secret.txt');
           expect((entry?.mode ?? 0) & 0o777).toBe(0o600);
         } finally {
@@ -982,7 +1184,9 @@ export function defineProviderContract(opts: ContractOptions): void {
 
       test('files are rejected with unsupported when secretInjection lacks file', async (ctx) => {
         if (caps.secretInjection.includes('file')) return ctx.skip();
-        const spec = await mk({ files: [{ sandboxPath: '/tmp/ct-secret', content: Buffer.from('x'), mode: 0o600 }] });
+        const spec = await mk({
+          files: [{ sandboxPath: '/tmp/ct-secret', content: Buffer.from('x'), mode: 0o600 }],
+        });
         await expectRejects(provider.create(spec), 'unsupported');
         await expectNothingLeft(spec.id);
       });
@@ -1019,7 +1223,9 @@ export function defineProviderContract(opts: ContractOptions): void {
           expect((await provider.readFile(id, keep, 100)).data.toString()).toBe('v1');
           await expectRejects(provider.readFile(id, extra, 100), 'not_found');
           // the sandbox is fully usable afterwards
-          expect((await provider.exec(id, { argv: ['echo', 'post-restore'] })).stdout).toBe('post-restore\n');
+          expect((await provider.exec(id, { argv: ['echo', 'post-restore'] })).stdout).toBe(
+            'post-restore\n',
+          );
         } finally {
           await finish(id);
         }
@@ -1030,6 +1236,149 @@ export function defineProviderContract(opts: ContractOptions): void {
         const ghost = `${provider.host.host}/ct${randomId('', 6)}`;
         await expectRejects(provider.snapshot(ghost, 'x'), 'not_found');
         await expectRejects(provider.restore(ghost, 'x'), 'not_found');
+      });
+    });
+
+    // -- expiry ----------------------------------------------------------------------------
+
+    describe('extendExpiry', () => {
+      test('without the capability the call is absent or rejects with unsupported', async (ctx) => {
+        if (caps.extendExpiry) return ctx.skip();
+        const id = await startSandbox();
+        try {
+          if (provider.extendExpiry)
+            await expectRejects(provider.extendExpiry(id, Date.now() + 3_600_000), 'unsupported');
+        } finally {
+          await finish(id);
+        }
+      });
+
+      test('extend moves the backend deadline', async (ctx) => {
+        if (!caps.extendExpiry || !provider.extendExpiry) return ctx.skip();
+        const spec = await mk({ expiresAt: Date.now() + (opts.startBudgetMs ?? 0) + 6000 });
+        await provider.create(spec);
+        try {
+          await provider.start(spec.id);
+          expect((await provider.inspect(spec.id)).state).toBe('running');
+          const moved = Date.now() + 120_000;
+          await provider.extendExpiry(spec.id, moved);
+          const after = await provider.inspect(spec.id);
+          expect(after.expiresAt).toBeGreaterThanOrEqual(moved);
+          expect(after.expiresAt).toBeLessThan(moved + 1000);
+          // Well past the deadline the sandbox was created with.
+          await sleep(Math.max(0, spec.expiresAt - Date.now()) + 3000);
+          expect((await provider.inspect(spec.id)).state).toBe('running');
+          expect((await provider.list({ state: 'expired' })).map((s) => s.id)).not.toContain(
+            spec.id,
+          );
+          expect((await provider.exec(spec.id, { argv: ['echo', 'still-here'] })).stdout).toBe(
+            'still-here\n',
+          );
+          // A restart honours the moved deadline too (the old one is over).
+          await provider.stop(spec.id);
+          await provider.start(spec.id);
+          expect((await provider.inspect(spec.id)).state).toBe('running');
+          expect((await provider.exec(spec.id, { argv: ['echo', 'again'] })).stdout).toBe(
+            'again\n',
+          );
+        } finally {
+          await finish(spec.id);
+        }
+      });
+
+      test('never shortens; unknown ids reject with not_found', async (ctx) => {
+        if (!caps.extendExpiry || !provider.extendExpiry) return ctx.skip();
+        const spec = await mk({ expiresAt: Date.now() + 3_600_000 });
+        await provider.create(spec);
+        try {
+          await expectRejects(
+            provider.extendExpiry(spec.id, spec.expiresAt - 60_000),
+            'invalid_input',
+          );
+          expect((await provider.inspect(spec.id)).expiresAt).toBeGreaterThanOrEqual(
+            spec.expiresAt,
+          );
+          expect((await provider.inspect(spec.id)).expiresAt).toBeLessThan(spec.expiresAt + 1000);
+          await expectRejects(
+            provider.extendExpiry(`${provider.host.host}/ct${randomId('', 6)}`, spec.expiresAt),
+            'not_found',
+          );
+        } finally {
+          await finish(spec.id);
+        }
+      });
+
+      test('an expired sandbox cannot be extended', async (ctx) => {
+        if (!caps.extendExpiry || !provider.extendExpiry) return ctx.skip();
+        const spec = await mk({ expiresAt: Date.now() - 1000 });
+        await provider.create(spec);
+        try {
+          await expectRejects(provider.extendExpiry(spec.id, Date.now() + 3_600_000), 'conflict');
+          expect((await provider.inspect(spec.id)).state).toBe('expired');
+        } finally {
+          await finish(spec.id);
+        }
+      });
+    });
+
+    // -- resource limits -------------------------------------------------------------------
+
+    describe('updateResources', () => {
+      test('without the capability the call is absent or rejects with unsupported', async (ctx) => {
+        if (caps.updateResources) return ctx.skip();
+        const id = await startSandbox();
+        try {
+          if (provider.updateResources)
+            await expectRejects(provider.updateResources(id, { cpus: 1 }), 'unsupported');
+        } finally {
+          await finish(id);
+        }
+      });
+
+      test('changes the limits of a running sandbox and keeps them across a restart', async (ctx) => {
+        if (!caps.updateResources || !provider.updateResources) return ctx.skip();
+        const id = await startSandbox();
+        try {
+          const memory = 384 * 1024 * 1024;
+          await provider.updateResources(id, { cpus: 0.5, memoryBytes: memory });
+          expect((await sh(id, 'echo still-here')).stdout).toBe('still-here\n');
+          // Backends that report their limits report the new ones.
+          const check = async (): Promise<void> => {
+            const eff = (await provider.inspect(id)).effective ?? {};
+            if (typeof eff['cpus'] === 'number') expect(eff['cpus']).toBeCloseTo(0.5, 5);
+            if (typeof eff['memoryBytes'] === 'number') expect(eff['memoryBytes']).toBe(memory);
+          };
+          await check();
+          // Only the named field changes.
+          await provider.updateResources(id, { cpus: 1 });
+          const eff = (await provider.inspect(id)).effective ?? {};
+          if (typeof eff['cpus'] === 'number') expect(eff['cpus']).toBeCloseTo(1, 5);
+          if (typeof eff['memoryBytes'] === 'number') expect(eff['memoryBytes']).toBe(memory);
+          await provider.stop(id);
+          await provider.updateResources(id, { cpus: 0.5 });
+          await provider.start(id);
+          expect((await provider.inspect(id)).state).toBe('running');
+          await check();
+        } finally {
+          await finish(id);
+        }
+      });
+
+      test('rejects an empty or invalid request, and unknown ids', async (ctx) => {
+        if (!caps.updateResources || !provider.updateResources) return ctx.skip();
+        const id = await startSandbox();
+        try {
+          await expectRejects(provider.updateResources(id, {}), 'invalid_input');
+          await expectRejects(provider.updateResources(id, { cpus: -1 }), 'invalid_input');
+          await expectRejects(provider.updateResources(id, { memoryBytes: 0 }), 'invalid_input');
+          await expectRejects(provider.updateResources(id, { cpus: Number.NaN }), 'invalid_input');
+          await expectRejects(
+            provider.updateResources(`${provider.host.host}/ct${randomId('', 6)}`, { cpus: 1 }),
+            'not_found',
+          );
+        } finally {
+          await finish(id);
+        }
       });
     });
 

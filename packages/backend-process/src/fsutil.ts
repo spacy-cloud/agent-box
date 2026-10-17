@@ -4,7 +4,9 @@ import { randomBytes } from 'node:crypto';
 import { AboxError } from '@abox/core';
 
 export function errno(e: unknown): string | undefined {
-  return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : undefined;
+  return typeof e === 'object' && e !== null && 'code' in e
+    ? String((e as { code: unknown }).code)
+    : undefined;
 }
 
 /** Maps a Node fs error to a stable AboxError code. AboxErrors pass through. */
@@ -40,7 +42,11 @@ export function isInside(parent: string, child: string): boolean {
 }
 
 /** Writes a file atomically (temp file + rename) so readers never see partial JSON. */
-export async function writeFileAtomic(file: string, data: string | Buffer, mode = 0o644): Promise<void> {
+export async function writeFileAtomic(
+  file: string,
+  data: string | Buffer,
+  mode = 0o644,
+): Promise<void> {
   const tmp = join(dirname(file), `.${basename(file)}.${randomSuffix()}.tmp`);
   try {
     await writeFile(tmp, data, { mode });
@@ -55,7 +61,8 @@ async function makeWritable(p: string): Promise<void> {
   const st = await lstat(p).catch(() => undefined);
   if (!st || st.isSymbolicLink() || !st.isDirectory()) return;
   await chmod(p, st.mode | 0o700).catch(() => undefined);
-  for (const name of await readdir(p).catch(() => [] as string[])) await makeWritable(join(p, name));
+  for (const name of await readdir(p).catch(() => [] as string[]))
+    await makeWritable(join(p, name));
 }
 
 /**
@@ -129,7 +136,11 @@ export function makeExcludeFilter(
  * Recursive copy that never follows symlinks (they are copied verbatim as symlinks),
  * merges into existing directories and preserves modes and timestamps.
  */
-export async function copyTree(src: string, dest: string, filter?: (src: string) => boolean): Promise<void> {
+export async function copyTree(
+  src: string,
+  dest: string,
+  filter?: (src: string) => boolean,
+): Promise<void> {
   await cp(src, dest, {
     recursive: true,
     force: true,

@@ -1,6 +1,6 @@
 import type { AboxPaths } from '../config/paths.js';
 import type { AboxConfig } from '../config/config.js';
-import type { DirEntry } from '../types.js';
+import type { DirEntry, TtySession } from '../types.js';
 import {
   accessRequest,
   applyApprovedAccess,
@@ -11,6 +11,7 @@ import {
   doctor,
   exportAudit,
   gc,
+  gcOrphans,
   listAgentTokens,
   createAgentToken,
   queryAudit,
@@ -18,6 +19,7 @@ import {
   reconcileInternal,
   revokeAgentToken,
   setPolicy,
+  auditUnknownTool,
   showPolicy,
   validatePolicyText,
   verifyAgentToken,
@@ -38,6 +40,15 @@ import {
   stopProcess,
   writeSandboxFile,
 } from './exec.js';
+import {
+  attachSandbox,
+  copyIn,
+  copyOut,
+  getPolicyRevision,
+  listPolicyRevisions,
+  listSnapshots,
+  sandboxLogs,
+} from './interactive.js';
 import { Internals } from './internals.js';
 import type { AboxOptions } from './internals.js';
 import {
@@ -52,9 +63,11 @@ import {
   buildTemplate,
   gcImages,
   listTemplates,
+  reviewTemplate,
   showTemplate,
   validateTemplateOp,
 } from './templates.js';
+import { sandboxStats } from './usage.js';
 import type {
   AboxEvent,
   AccessResult,
@@ -62,6 +75,7 @@ import type {
   AgentTokenView,
   ApprovalDecision,
   ApprovalView,
+  AttachOptions,
   AuditEntry,
   AuditFilter,
   BuildResult,
@@ -79,8 +93,12 @@ import type {
   ExportSandboxResult,
   GcImagesResult,
   GcOptions,
+  GcOrphansOptions,
+  GcOrphansReport,
   GcReport,
   InspectResult,
+  PolicyRevisionDetail,
+  PolicyRevisionSummary,
   PolicyValidation,
   PolicyView,
   ProcessLogsOptions,
@@ -92,13 +110,20 @@ import type {
   ReconcileReport,
   SandboxFilterInput,
   SandboxList,
+  SandboxLogsOptions,
+  SandboxStatsResult,
   SandboxView,
   SetPolicyResult,
+  SnapshotView,
   StartProcessResult,
   TemplateDetails,
   TemplateList,
+  TemplateReview,
   TemplateValidation,
 } from './types.js';
+
+/** How often `startTtlWatcher` enforces deadlines by default. */
+export const DEFAULT_TTL_WATCH_MS = 15_000;
 
 export interface AboxOpenOptions extends AboxOptions {
   /** Run the light reconcile (TTL sweep, ghost/stale marking; nothing is deleted) on open. Default true. */
@@ -153,15 +178,34 @@ export class Abox {
   }
 
   // -- templates -------------------------------------------------------------------------------------
-  listTemplates(caller: Caller, o: { projectDir?: string } = {}): Promise<TemplateList> {
+  /**
+   * `workspacePath`: the workspace a create would use; its `.sandbox` templates are listed too
+   * (agents: only below their workspace roots, otherwise `policy_denied`).
+   */
+  listTemplates(
+    caller: Caller,
+    o: { projectDir?: string; workspacePath?: string } = {},
+  ): Promise<TemplateList> {
     return listTemplates(this.I, caller, o);
   }
   showTemplate(
     caller: Caller,
     name: string,
-    o: { projectDir?: string } = {},
+    o: { projectDir?: string; workspacePath?: string } = {},
   ): Promise<TemplateDetails> {
     return showTemplate(this.I, caller, name, o);
+  }
+  /**
+   * Review material for trusting a project template: the resolved template as a diff against what
+   * it extends (or its last trusted version), and its risks. `expectedContentHash` (from an
+   * approval request) flags a file that changed since.
+   */
+  reviewTemplate(
+    caller: Caller,
+    name: string,
+    o: { projectDir?: string; workspacePath?: string; expectedContentHash?: string } = {},
+  ): Promise<TemplateReview> {
+    return reviewTemplate(this.I, caller, name, o);
   }
   validateTemplate(
     caller: Caller,
@@ -191,6 +235,13 @@ export class Abox {
   }
   inspectSandbox(caller: Caller, id: string): Promise<InspectResult> {
     return inspectSandbox(this.I, caller, id);
+  }
+  /**
+   * Live cpu / memory / pids of running sandboxes (human only, best effort): ids without data
+   * (stopped, backend without `stats`, host unreachable) are left out of `usage`.
+   */
+  sandboxStats(caller: Caller, ids: string[]): Promise<SandboxStatsResult> {
+    return sandboxStats(this.I, caller, ids);
   }
   startSandbox(caller: Caller, id: string): Promise<SandboxView> {
     return startSandbox(this.I, caller, id);
@@ -289,6 +340,29 @@ export class Abox {
   restore(caller: Caller, id: string, snapshotId: string): Promise<{ restored: string }> {
     return restoreSandbox(this.I, caller, id, snapshotId);
   }
+  /** Snapshots taken through `snapshot`, oldest first (owner or human). */
+  listSnapshots(caller: Caller, id: string): Promise<SnapshotView[]> {
+    return listSnapshots(this.I, caller, id);
+  }
+  /**
+   * Human only. Interactive terminal in a running sandbox; the audit log gets `sandbox.attach` and
+   * `sandbox.attach.end` (duration, exit code), never the content. Agents get `policy_denied`.
+   */
+  attach(caller: Caller, id: string, opts: AttachOptions): Promise<TtySession> {
+    return attachSandbox(this.I, caller, id, opts);
+  }
+  /** Human only. Host file/dir -> sandbox. The host path must not be a protected path (~/.ssh, ...). */
+  copyIn(caller: Caller, id: string, hostPath: string, sandboxPath: string): Promise<void> {
+    return copyIn(this.I, caller, id, hostPath, sandboxPath);
+  }
+  /** Human only. Sandbox file/dir -> host. The destination must not be an abox/protected path. */
+  copyOut(caller: Caller, id: string, sandboxPath: string, hostPath: string): Promise<void> {
+    return copyOut(this.I, caller, id, sandboxPath, hostPath);
+  }
+  /** Output of the sandbox's main process (owner or human), secrets masked. */
+  sandboxLogs(caller: Caller, id: string, opts: SandboxLogsOptions = {}): Promise<string> {
+    return sandboxLogs(this.I, caller, id, opts);
+  }
   /** Produces diff/patch/branch/files; never applies anything to the original project. */
   exportSandbox(caller: Caller, id: string, params: ExportParams): Promise<ExportSandboxResult> {
     return exportSandbox(this.I, caller, id, params);
@@ -328,9 +402,29 @@ export class Abox {
   validatePolicy(text: string): PolicyValidation {
     return validatePolicyText(text);
   }
+  /** Human only. Revisions of policy.yaml, newest first. */
+  listPolicyRevisions(caller: Caller): Promise<PolicyRevisionSummary[]> {
+    return listPolicyRevisions(this.I, caller);
+  }
+  /** Human only. One revision with its full text. */
+  getPolicyRevision(caller: Caller, rev: number): Promise<PolicyRevisionDetail> {
+    return getPolicyRevision(this.I, caller, rev);
+  }
   /** Human only. An attempt by an agent is audited as `policy_change_denied`. */
   setPolicy(caller: Caller, text: string): Promise<SetPolicyResult> {
     return setPolicy(this.I, caller, text);
+  }
+
+  /**
+   * For surfaces (MCP): an agent called a tool that does not exist. Audited as `mcp.unknown_tool`
+   * (tool name, context, argument names only), rate limited. No-op for humans.
+   */
+  auditUnknownTool(
+    caller: Caller,
+    tool: string,
+    argNames: readonly string[] = [],
+  ): Promise<boolean> {
+    return auditUnknownTool(this.I, caller, tool, argNames);
   }
 
   // -- audit ------------------------------------------------------------------------------------------------
@@ -382,6 +476,25 @@ export class Abox {
   /** Human only. */
   gc(caller: Caller, o: GcOptions = {}): Promise<GcReport> {
     return gc(this.I, caller, o);
+  }
+  /**
+   * Human only. Lists (and with `remove` deletes) abox-labelled backend objects of other abox
+   * installations or of none, e.g. what is left after a data directory was deleted. They may belong
+   * to a live installation: removal is explicit.
+   */
+  gcOrphans(caller: Caller, o: GcOrphansOptions = {}): Promise<GcOrphansReport> {
+    return gcOrphans(this.I, caller, o);
+  }
+  /**
+   * For long-running processes (`abox mcp serve`, the GUI): enforce sandbox deadlines in the
+   * background, every `intervalMs` (default 15 s), so a sandbox is stopped on time even when no
+   * other abox command runs. It stops what is overdue (as the sweep on every call does) and retries
+   * stops that failed; removal stays with `gc`. Safe next to other abox processes on the same data
+   * directory. The timer is unref'd and ends with `close()`; returns a function that stops it
+   * earlier. `onError` is told about a failed round (the next one retries).
+   */
+  startTtlWatcher(o: { intervalMs?: number; onError?: (e: unknown) => void } = {}): () => void {
+    return this.I.startTtlWatcher(o.intervalMs ?? DEFAULT_TTL_WATCH_MS, o.onError);
   }
   /** Run the TTL sweep now (it also runs, rate limited, on every call). Human only. */
   async sweepTtl(caller: Caller): Promise<string[]> {

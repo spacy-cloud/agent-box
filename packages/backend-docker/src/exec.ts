@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { Writable } from 'node:stream';
+import { PassThrough, Writable, type Readable } from 'node:stream';
 import type Docker from 'dockerode';
 import { AboxError } from '@abox/core';
 import type { ExecRequest, TtyOptions, TtySession } from '@abox/core';
@@ -43,17 +43,29 @@ reap() {
 }
 `;
 
+/**
+ * PATH the wrappers use for their own helpers (`sleep`, `rm`). The command gets the environment the
+ * caller asked for, `PATH` included; the wrapper must not depend on it (a `PATH` without `/bin`
+ * would make the watchdog's `sleep` fail, which reads as an instant timeout).
+ */
+const WRAPPER_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
 /** `sh -c` script: args are <pidfile> <timeout-seconds|""> <argv...>. */
 export const WRAP_SCRIPT = `${SH_LIB}
 f=$1; t=$2; shift 2
+_hp=\${PATH+x}; _up=\${PATH-}
+PATH=${WRAPPER_PATH}
 echo $$ > "$f"
 wd=
 if [ -n "$t" ]; then
   ( sleep "$t" 2>/dev/null || sleep "\${t%%.*}"; read -r me _ < /proc/self/stat; : > "$f.t"; reap "$$" "$me" ) &
   wd=$!
 fi
+# the command runs with the PATH it was given (or none)
+if [ -n "$_hp" ]; then PATH=$_up; else unset PATH; fi
 "$@"
 rc=$?
+PATH=${WRAPPER_PATH}
 if [ -n "$wd" ]; then
   desc "$wd"; for _p in $wd $D; do kill -KILL "$_p" 2>/dev/null; done
 fi
@@ -64,6 +76,7 @@ exit $rc
 
 /** `sh -c` script: args are <pidfile>. Kills the wrapper's process tree (including the wrapper). */
 export const KILL_SCRIPT = `${SH_LIB}
+PATH=${WRAPPER_PATH}
 f=$1; i=0
 while [ ! -s "$f" ] && [ "$i" -lt 30 ]; do i=$((i+1)); sleep 0.1 2>/dev/null || sleep 1; done
 [ -s "$f" ] || exit 0
@@ -77,24 +90,52 @@ exit 0
 /** `sh -c` script for TTY sessions: records its pid, then replaces itself with the command. */
 const TTY_SCRIPT = `echo $$ > "$1"; shift; exec "$@"`;
 
-/** Demultiplexer for the Docker stream format (8-byte header: type, 0, 0, 0, uint32 BE length). */
+function isThenable(v: unknown): v is PromiseLike<unknown> {
+  return (
+    typeof v === 'object' && v !== null && typeof (v as { then?: unknown }).then === 'function'
+  );
+}
+
+/**
+ * Demultiplexer for the Docker stream format (8-byte header: type, 0, 0, 0, uint32 BE length).
+ * `onData` may return a promise (any other return value is ignored): the next frame (and the next chunk of the engine stream) waits
+ * for it, which is how a consumer applies backpressure.
+ */
 export class Demux extends Writable {
   private buf: Buffer = Buffer.alloc(0);
-  constructor(private readonly onData: (kind: 'stdout' | 'stderr', data: Buffer) => void) {
+  constructor(private readonly onData: (kind: 'stdout' | 'stderr', data: Buffer) => unknown) {
     super();
   }
   override _write(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null) => void): void {
     this.buf = this.buf.length === 0 ? chunk : Buffer.concat([this.buf, chunk]);
+    const frames: Array<['stdout' | 'stderr', Buffer]> = [];
     while (this.buf.length >= 8) {
       const type = this.buf[0] as number;
       const len = this.buf.readUInt32BE(4);
       if (this.buf.length < 8 + len) break;
       const payload = this.buf.subarray(8, 8 + len);
       this.buf = this.buf.subarray(8 + len);
-      if (type === 1) this.onData('stdout', Buffer.from(payload));
-      else if (type === 2) this.onData('stderr', Buffer.from(payload));
+      if (type === 1) frames.push(['stdout', Buffer.from(payload)]);
+      else if (type === 2) frames.push(['stderr', Buffer.from(payload)]);
     }
-    cb();
+    const next = (i: number): void => {
+      for (let j = i; j < frames.length; j++) {
+        const [kind, data] = frames[j] as ['stdout' | 'stderr', Buffer];
+        let r: unknown;
+        try {
+          r = this.onData(kind, data);
+        } catch (e) {
+          cb(e instanceof Error ? e : new Error(String(e)));
+          return;
+        }
+        if (isThenable(r)) {
+          r.then(() => next(j + 1), cb);
+          return;
+        }
+      }
+      cb();
+    };
+    next(0);
   }
 }
 
@@ -108,13 +149,19 @@ function envList(env: Record<string, string> | undefined): string[] | undefined 
   return Object.entries(env).map(([k, v]) => `${k}=${v}`);
 }
 
+export interface SimpleExecResult {
+  exitCode: number;
+  stdout: Buffer;
+  stderr: Buffer;
+}
+
 /** Run a command to completion without a wrapper; collects its output. Used for internal probes. */
 export async function simpleExec(
   docker: Docker,
   containerId: string,
   cmd: string[],
   opts: { user?: string; stdin?: Buffer; cwd?: string } = {},
-): Promise<{ exitCode: number; stdout: Buffer; stderr: Buffer }> {
+): Promise<SimpleExecResult> {
   const exec = await docker.getContainer(containerId).exec({
     Cmd: cmd,
     AttachStdin: opts.stdin !== undefined,
@@ -138,6 +185,93 @@ export async function simpleExec(
   await done;
   const exitCode = await waitExit(exec);
   return { exitCode, stdout: Buffer.concat(out), stderr: Buffer.concat(err) };
+}
+
+export interface StreamedExec {
+  /** Standard output of the command, with backpressure; ends when the command closed it. */
+  stdout: Readable;
+  /** Settles after `stdout` ended and the command exited. Never rejects for a failing command. */
+  result: Promise<{ exitCode: number; stderr: Buffer }>;
+}
+
+const STREAM_STDERR_CAP = 64 * 1024;
+
+/**
+ * Run a command and stream its output (and optionally feed its stdin from a stream) without
+ * buffering it in memory. Destroying `stdout` early tears the connection down, which ends the
+ * command with SIGPIPE/EOF. Stderr is kept up to 64 KiB for error messages.
+ */
+export async function streamExec(
+  docker: Docker,
+  containerId: string,
+  cmd: string[],
+  opts: { user?: string; stdin?: Readable; cwd?: string } = {},
+): Promise<StreamedExec> {
+  const exec = await docker.getContainer(containerId).exec({
+    Cmd: cmd,
+    AttachStdin: opts.stdin !== undefined,
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: false,
+    ...(opts.user ? { User: opts.user } : {}),
+    ...(opts.cwd ? { WorkingDir: opts.cwd } : {}),
+  });
+  const stream = await exec.start({ hijack: true, stdin: opts.stdin !== undefined });
+  const stdout = new PassThrough();
+  const err: Buffer[] = [];
+  let errLen = 0;
+  const demux = new Demux((kind, data) => {
+    if (kind === 'stderr') {
+      if (errLen < STREAM_STDERR_CAP) {
+        err.push(data.subarray(0, STREAM_STDERR_CAP - errLen));
+        errLen += err[err.length - 1]?.length ?? 0;
+      }
+      return undefined;
+    }
+    if (stdout.destroyed || stdout.write(data)) return undefined;
+    return new Promise<void>((res) => {
+      const done = (): void => {
+        stdout.removeListener('drain', done);
+        stdout.removeListener('close', done);
+        res();
+      };
+      stdout.once('drain', done);
+      stdout.once('close', done);
+    });
+  });
+  const ended = new Promise<void>((res) => {
+    demux.once('finish', res);
+    demux.once('error', res);
+    stream.once('error', (e: Error) => {
+      stdout.destroy(e);
+      res();
+    });
+  });
+  stream.pipe(demux);
+  // A connection that closes without a clean end still lets the frames in flight finish.
+  stream.once('close', () => demux.end());
+  stdout.once('close', () => {
+    if (!stream.destroyed) stream.destroy();
+  });
+  const input = opts.stdin;
+  if (input) {
+    // The command may exit before it has read everything (tar failing): a broken pipe is then
+    // not an error of its own, the exit code and stderr say what happened.
+    stream.on('error', () => undefined);
+    if (input.destroyed) stream.destroy();
+    else {
+      input.once('error', (e) => stream.destroy(e));
+      input.pipe(stream as unknown as NodeJS.WritableStream);
+    }
+  }
+  const result = (async () => {
+    await ended;
+    if (!stdout.destroyed) stdout.end();
+    const exitCode = await waitExit(exec);
+    return { exitCode, stderr: Buffer.concat(err) };
+  })();
+  result.catch(() => undefined);
+  return { stdout, result };
 }
 
 async function waitExit(exec: Docker.Exec, maxMs = 10_000): Promise<number> {
@@ -212,9 +346,10 @@ export async function runExec(
     demux.once('finish', res);
     demux.once('error', () => res());
     stream.once('error', () => res());
-    stream.once('close', res);
   });
   stream.pipe(demux);
+  // A connection that closes without a clean end still lets the frames in flight finish.
+  stream.once('close', () => demux.end());
   stream.once('end', () => (streamClosed = true));
   if (hasStdin) stream.end(typeof req.stdin === 'string' ? Buffer.from(req.stdin) : req.stdin);
 

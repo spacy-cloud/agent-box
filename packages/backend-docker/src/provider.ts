@@ -2,23 +2,27 @@ import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { Readable } from 'node:stream';
-import { Readable as ReadableCtor } from 'node:stream';
+import { PassThrough, Readable as ReadableCtor, pipeline } from 'node:stream';
 import Docker from 'dockerode';
-import { AboxError, parseSandboxId } from '@abox/core';
+import { AboxError, collectBuildContext, parseSandboxId } from '@abox/core';
 import type {
   BackendKind,
   BackendStatus,
+  CopyOutOptions,
   DirEntry,
   ExecEvent,
   ExecRequest,
   ExecResult,
+  ForeignResource,
   HostConnection,
   IsolationLevel,
   NetworkEvent,
+  NetworkSpec,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
   ResolvedTemplate,
+  ResourceUsage,
   SandboxFilter,
   SandboxId,
   SandboxInfo,
@@ -29,16 +33,39 @@ import type {
 } from '@abox/core';
 import { buildImage, pullImage } from './build.js';
 import { renderDockerfile } from './dockerfile.js';
+import {
+  EXPIRY_STORAGE_RESOLUTION_MS,
+  effectiveExpiresAt,
+  hasMovableExpiry,
+  toEpochSeconds,
+  writeExpiryFile,
+} from './expiry.js';
 import { effectiveFromInspect, infoFromLabels } from './info.js';
 import { isAbortError, mapEngineError, statusOf } from './errors.js';
-import { Demux, openTty, runExec, simpleExec } from './exec.js';
-import { getFile, mkdirP, putArchiveStream, putFile, reownDir, sandboxPath } from './files.js';
+import { Demux, openTty, runExec, simpleExec, streamExec } from './exec.js';
+import {
+  FILE_EXIT,
+  READ_FILE_SCRIPT,
+  UNPACK_SCRIPT,
+  WRITE_FILE_SCRIPT,
+  assertStoppedWriteAllowed,
+  assertWritablePath,
+  fileScriptError,
+  getFile,
+  mkdirP,
+  putArchiveStream,
+  putFile,
+  reownDir,
+  resolveStoppedReadable,
+  sandboxPath,
+} from './files.js';
 import { buildHostConfig, checkBindSource, checkMountTarget, ttlEntrypoint } from './hostconfig.js';
 import {
   CA_BUNDLE_PATH,
   CA_CERT_PATH,
   CA_DIR,
   EGRESS_NETWORK,
+  EXPIRY_FILE,
   LABEL,
   OPEN_NETWORK,
   PROXY_ALIAS,
@@ -48,6 +75,7 @@ import {
   imageRepoName,
   internalNetName,
   isValidHost,
+  isValidInstanceId,
   isValidShort,
   proxyName,
   snapshotRepo,
@@ -55,6 +83,7 @@ import {
 import {
   PROXY_CA_PATH,
   PROXY_CONFIG_DIR,
+  PROXY_CONFIG_PATH,
   PROXY_RUN_DIR,
   PROXY_USER,
   PROXY_USER_UID,
@@ -64,14 +93,34 @@ import {
   proxyConfigJson,
   type ProxyAssets,
 } from './proxy.js';
+import { usageFromEngineStats } from './stats.js';
+import type { EngineStats } from './stats.js';
 import { extractArchiveSafe, packHostPath, tarFromEntries, tarEntries } from './tar.js';
 
 const MiB = 1024 * 1024;
 const DEFAULT_MAX_OUTPUT = 16 * MiB;
 
 export interface DockerProviderOptions {
-  /** `docker` (default) or `podman`. */
+  /** The container engine: `docker` (default) or `podman`. Decides the default socket and the wording. */
   kind?: 'docker' | 'podman';
+  /**
+   * Backend kind that is reported (`SandboxInfo.backend`), stamped as label `abox.backend` and used to
+   * filter `list()` / `inspect()`: a provider only sees the sandboxes of its own backend kind, so the
+   * plain docker provider does not list the sandboxes of the python backend (which is built on this
+   * provider) and vice versa. Default: the engine `kind`.
+   */
+  backendKind?: 'docker' | 'podman' | 'python';
+  /**
+   * Id of the abox installation that uses this provider. It is stamped as label `abox.instance` on
+   * every container, network, proxy sidecar, built image and snapshot image, and `list`, `inspect`,
+   * `remove`, `gcImages` and the network cleanup only see objects carrying the same id. Two
+   * installations (another `ABOX_HOME`, another user in the docker group, CI) on one engine therefore
+   * never treat each other's sandboxes as orphans. Objects without the label (older versions, other
+   * tools) belong to nobody: they are never listed, removed or garbage-collected, `status()` only
+   * reports how many exist. Without an id the provider only sees objects that carry no instance
+   * label either. `@abox/runtime` generates and persists one id per data directory.
+   */
+  instanceId?: string;
   /** Engine socket; overrides `host.engineSocket`. */
   socketPath?: string;
   /** Inject a pre-built client (tests). */
@@ -122,9 +171,36 @@ function userIds(c: Docker.ContainerInspectInfo): { uid: number; gid: number } {
   return { uid, gid: Number.isInteger(gid) ? gid : uid };
 }
 
-function underTmp(p: string): boolean {
-  return p === '/tmp' || p.startsWith('/tmp/');
+/** `uid:gid` to run the read-only file scripts as, the container's own default when it has none. */
+function execUser(c: Docker.ContainerInspectInfo): string | undefined {
+  try {
+    const { uid, gid } = userIds(c);
+    return `${uid}:${gid}`;
+  } catch {
+    return undefined;
+  }
 }
+
+/**
+ * Mount points of the sandbox's tmpfs mounts (always `/tmp`). The archive API cannot see them: it
+ * reads and writes the image directory hidden below the mount.
+ */
+function tmpfsRoots(c: Docker.ContainerInspectInfo): string[] {
+  const roots = new Set<string>(['/tmp']);
+  for (const t of Object.keys(c.HostConfig?.Tmpfs ?? {})) roots.add(path.posix.normalize(t));
+  for (const m of c.Mounts ?? [])
+    if (m.Type === 'tmpfs') roots.add(path.posix.normalize(m.Destination));
+  return [...roots];
+}
+
+/** The tmpfs mount point that contains (or is) `p`, if any. */
+function tmpfsRootOf(c: Docker.ContainerInspectInfo, p: string): string | undefined {
+  return tmpfsRoots(c).find((r) => p === r || p.startsWith(`${r}/`));
+}
+
+/** `sh -c` script: args are <path>; packs it as `./<basename>` (exit 3 when it does not exist). */
+const TMPFS_PACK_SCRIPT =
+  '[ -e "$1" ] || [ -L "$1" ] || exit 3; d=${1%/*}; [ -n "$d" ] || d=/; exec tar -cf - -C "$d" -- "./${1##*/}"';
 
 function envArray(env: Record<string, string>): string[] {
   return Object.entries(env).map(([k, v]) => `${k}=${v}`);
@@ -136,6 +212,10 @@ function sleep(ms: number): Promise<void> {
 
 export class DockerProvider implements SandboxProvider {
   readonly kind: BackendKind;
+  /** The container engine behind this provider (not the reported backend kind). */
+  readonly engine: 'docker' | 'podman';
+  /** Instance id stamped on and required of every engine object; `undefined` = unlabelled objects only. */
+  readonly instanceId: string | undefined;
   readonly host: HostConnection;
   private currentIsolation: IsolationLevel = 'container';
   private readonly docker: Docker;
@@ -146,10 +226,17 @@ export class DockerProvider implements SandboxProvider {
   private readonly inflight = new Map<string, Promise<PreparedImage>>();
 
   constructor(host: HostConnection, opts: DockerProviderOptions = {}) {
-    this.kind = opts.kind ?? 'docker';
+    this.engine = opts.kind ?? 'docker';
+    this.kind = opts.backendKind ?? this.engine;
     this.host = host;
     this.opts = opts;
-    this.socketPath = opts.socketPath ?? host.engineSocket ?? defaultSocketPath(this.kind);
+    if (opts.instanceId !== undefined && !isValidInstanceId(opts.instanceId))
+      throw new AboxError(
+        'invalid_input',
+        `Invalid instance id "${opts.instanceId}" (use 1-64 characters of [A-Za-z0-9_.-])`,
+      );
+    this.instanceId = opts.instanceId;
+    this.socketPath = opts.socketPath ?? host.engineSocket ?? defaultSocketPath(this.engine);
     this.docker = opts.docker ?? new Docker({ socketPath: this.socketPath });
     this.proxyAssets = opts.proxy === false ? undefined : (opts.proxy ?? defaultProxyAssets);
     if (!isValidHost(host.host))
@@ -160,12 +247,44 @@ export class DockerProvider implements SandboxProvider {
     return this.currentIsolation;
   }
 
+  /** The configured stronger OCI runtime (`runsc`, `kata`, ...); isolation is `hardened` only once the engine is known to have it. */
+  get hardenedRuntime(): string | undefined {
+    return this.opts.hardenedRuntime;
+  }
+
   private get remote(): boolean {
     return this.host.kind === 'ssh';
   }
 
+  /** Labels for every engine object abox creates: the extra labels and the instance id. */
   private get extra(): Record<string, string> {
-    return this.opts.extraLabels ?? {};
+    return {
+      ...(this.opts.extraLabels ?? {}),
+      ...(this.instanceId !== undefined ? { [LABEL.instance]: this.instanceId } : {}),
+    };
+  }
+
+  /**
+   * Labels for containers. A container inherits the labels of its image, and the environment image
+   * cache is keyed by template hash only: an unscoped provider (no instance id) that reuses an
+   * image built by an installation with an instance id would inherit that foreign `abox.instance`
+   * and could not find its own sandbox right after `create` ("Unknown sandbox"). Containers
+   * therefore always carry the instance label explicitly, with the empty string (read as "no
+   * instance" by `ownsInstance`) for an unscoped provider.
+   */
+  private get containerExtra(): Record<string, string> {
+    return { ...this.extra, [LABEL.instance]: this.instanceId ?? '' };
+  }
+
+  /** Does an engine object (by its labels) belong to this provider's instance? */
+  private ownsInstance(labels: Record<string, string> | null | undefined): boolean {
+    const v = labels?.[LABEL.instance];
+    return (v === undefined || v === '' ? undefined : v) === this.instanceId;
+  }
+
+  /** Does a sandbox (by its labels) belong to this provider: same instance and same backend kind. */
+  private ownsSandbox(labels: Record<string, string> | null | undefined): boolean {
+    return this.ownsInstance(labels) && (labels?.[LABEL.backend] ?? this.kind) === this.kind;
   }
 
   // -------------------------------------------------------------------------
@@ -231,6 +350,9 @@ export class DockerProvider implements SandboxProvider {
       mounts: !this.remote,
       snapshots: true,
       tty: true,
+      extendExpiry: true,
+      updateResources: true,
+      stats: true,
       limits: { cpus: true, memory: true, pids: true, disk: this.facts?.diskQuota ?? false },
       nonRootUser: true,
       secretInjection: ['proxy', 'env', 'file'],
@@ -249,7 +371,7 @@ export class DockerProvider implements SandboxProvider {
       return {
         ok: false,
         details: [
-          `${this.kind} engine unreachable at ${this.socketPath}: ${err.message}`,
+          `${this.engine} engine unreachable at ${this.socketPath}: ${err.message}`,
           ...(err.hint ? [err.hint] : []),
         ],
         warnings,
@@ -258,7 +380,7 @@ export class DockerProvider implements SandboxProvider {
     try {
       this.facts = undefined;
       const f = await this.engineFacts();
-      details.push(`${this.kind} ${f.version} (API ${f.apiVersion}) at ${this.socketPath}`);
+      details.push(`${this.engine} ${f.version} (API ${f.apiVersion}) at ${this.socketPath}`);
       details.push(`storage driver: ${f.storageDriver}${f.backingFs ? ` on ${f.backingFs}` : ''}`);
       details.push(`runtimes: ${f.runtimes.join(', ') || 'default'}`);
       if (f.cgroupVersion) details.push(`cgroup v${f.cgroupVersion}`);
@@ -271,7 +393,7 @@ export class DockerProvider implements SandboxProvider {
       }
       if (!f.rootless) {
         warnings.push(
-          `The ${this.kind} daemon is rootful: access to its socket (e.g. membership of the docker group) is root-equivalent on the host. Prefer a rootless engine.`,
+          `The ${this.engine} daemon is rootful: access to its socket (e.g. membership of the docker group) is root-equivalent on the host. Prefer a rootless engine.`,
         );
       }
       if (!this.proxyAssets)
@@ -279,11 +401,31 @@ export class DockerProvider implements SandboxProvider {
           'Egress proxy runtime not available: network mode "allowlist" is unsupported',
         );
       details.push(`internal networks: ${await this.probeInternalNetwork()}`);
+      details.push(
+        this.instanceId !== undefined
+          ? `instance: ${this.instanceId}`
+          : 'instance: none (only sees objects without an instance label)',
+      );
+      const foreign = await this.countForeignSandboxes().catch(() => 0);
+      if (foreign > 0) {
+        warnings.push(
+          `${foreign} abox resource${foreign === 1 ? '' : 's'} (sandboxes) of another or unknown instance present on this engine: not listed and never touched by this installation (see "abox gc --orphans")`,
+        );
+      }
       return { ok: true, version: f.version, rootless: f.rootless, details, warnings };
     } catch (e) {
       const err = mapEngineError(e, this.socketPath);
       return { ok: false, details: [...details, err.message], warnings };
     }
+  }
+
+  /** Sandbox containers of the engine that belong to another or no instance (or another backend kind's instance). */
+  private async countForeignSandboxes(): Promise<number> {
+    const items = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`${LABEL.managed}=1`, `${LABEL.role}=sandbox`] },
+    });
+    return items.filter((i) => !this.ownsInstance(i.Labels)).length;
   }
 
   private async probeInternalNetwork(): Promise<string> {
@@ -449,7 +591,7 @@ export class DockerProvider implements SandboxProvider {
       ...(progress ? { onProgress: progress } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
-    if (existing) {
+    if (existing && this.ownsInstance(existing.Config?.Labels)) {
       const fresh = await this.imageInspect(tag);
       if (fresh && fresh.Id !== existing.Id)
         await this.docker
@@ -474,6 +616,25 @@ export class DockerProvider implements SandboxProvider {
     const dockerfilePath = this.dockerfilePath(template) as string;
     const contextDir = path.dirname(dockerfilePath);
     const baseTag = `abox/${imageRepoName(template.name)}-base:${cacheKey}`;
+    // What was reviewed and approved is the context with this digest: build nothing else. Checked
+    // right before the pack and again once the engine has the files, so a file swapped in between
+    // (the context is the user's or a project's directory) never ends up in an image.
+    const approved = template.buildContext?.digest;
+    const assertUnchanged = async (): Promise<void> => {
+      if (approved === undefined) return;
+      const now = await collectBuildContext(dockerfilePath);
+      if (now.digest !== approved) {
+        throw new AboxError(
+          'conflict',
+          `The build context of template "${template.name}" changed since it was approved; review again`,
+          {
+            hint: 'Review the template again (`abox template show` / the approval) and retry.',
+            details: { approved, current: now.digest },
+          },
+        );
+      }
+    };
+    await assertUnchanged();
     await buildImage(this.docker, packHostPath(contextDir, '', { uid: 0, gid: 0 }), {
       tag: baseTag,
       dockerfile: path.basename(dockerfilePath),
@@ -487,6 +648,15 @@ export class DockerProvider implements SandboxProvider {
       ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
+    try {
+      await assertUnchanged();
+    } catch (e) {
+      await this.docker
+        .getImage(baseTag)
+        .remove()
+        .catch(() => undefined);
+      throw e;
+    }
     return baseTag;
   }
 
@@ -500,6 +670,8 @@ export class DockerProvider implements SandboxProvider {
       for (const img of images) {
         const labels = img.Labels ?? {};
         if (labels[LABEL.role] === 'proxy') continue;
+        // Base/environment images are shared caches: only delete what this instance built.
+        if (!this.ownsInstance(labels)) continue;
         const hash = labels[LABEL.templateHash];
         if (!hash || keepSet.has(hash)) continue;
         const tags = (img.RepoTags ?? []).filter(
@@ -547,15 +719,21 @@ export class DockerProvider implements SandboxProvider {
       throw e;
     }
     const l = c.Config.Labels ?? {};
-    if (l[LABEL.managed] !== '1' || l[LABEL.role] !== 'sandbox' || l[LABEL.id] !== id) {
+    if (
+      l[LABEL.managed] !== '1' ||
+      l[LABEL.role] !== 'sandbox' ||
+      l[LABEL.id] !== id ||
+      !this.ownsSandbox(l)
+    ) {
       throw new AboxError('not_found', `Unknown sandbox ${id}`);
     }
     return c;
   }
 
-  private toInfo(c: Docker.ContainerInspectInfo): SandboxInfo {
+  private async toInfo(c: Docker.ContainerInspectInfo): Promise<SandboxInfo> {
+    const labels = c.Config.Labels ?? {};
     const info = infoFromLabels(
-      c.Config.Labels ?? {},
+      labels,
       c.State.Status,
       c.Id,
       this.kind,
@@ -564,13 +742,14 @@ export class DockerProvider implements SandboxProvider {
         error: Boolean(c.State.Error),
         oomKilled: Boolean(c.State.OOMKilled),
       },
+      await effectiveExpiresAt(this.docker.getContainer(c.Id), labels),
     );
     info.effective = effectiveFromInspect(c);
     return info;
   }
 
   async inspect(id: SandboxId): Promise<SandboxInfo> {
-    return this.guard(async () => this.toInfo(await this.load(id)));
+    return this.guard(async () => await this.toInfo(await this.load(id)));
   }
 
   async list(filter: SandboxFilter = {}): Promise<SandboxInfo[]> {
@@ -582,12 +761,157 @@ export class DockerProvider implements SandboxProvider {
       ];
       if (filter.owner) label.push(`${LABEL.owner}=${filter.owner}`);
       if (filter.template) label.push(`${LABEL.template}=${filter.template}`);
+      if (this.instanceId !== undefined) label.push(`${LABEL.instance}=${this.instanceId}`);
       const items = await this.docker.listContainers({ all: true, filters: { label } });
       const now = Date.now();
-      return items
-        .map((i) => infoFromLabels(i.Labels ?? {}, i.State, i.Id, this.kind, now))
+      // A deadline that was moved after creation lives in the container, not in the labels.
+      const infos = await Promise.all(
+        items
+          .filter((i) => this.ownsSandbox(i.Labels))
+          .map(async (i) =>
+            infoFromLabels(
+              i.Labels ?? {},
+              i.State,
+              i.Id,
+              this.kind,
+              now,
+              undefined,
+              await effectiveExpiresAt(this.docker.getContainer(i.Id), i.Labels),
+            ),
+          ),
+      );
+      return infos
         .filter((i) => i.id !== '' && (!filter.state || i.state === filter.state))
         .sort((a, b) => a.createdAt - b.createdAt);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Foreign objects (what a deleted data directory leaves behind)
+  // -------------------------------------------------------------------------
+
+  /** The networks every instance on the engine shares: never listed, never removed. */
+  private isSharedNetwork(name: string): boolean {
+    return name === OPEN_NETWORK || name === EGRESS_NETWORK;
+  }
+
+  private foreignBase(
+    labels: Record<string, string>,
+  ): Pick<ForeignResource, 'instance' | 'engine'> &
+    Partial<Pick<ForeignResource, 'aboxName' | 'sandboxId' | 'role'>> {
+    return {
+      instance: labels[LABEL.instance] ?? '',
+      engine: this.engine,
+      ...(labels[LABEL.name] ? { aboxName: labels[LABEL.name] as string } : {}),
+      ...(labels[LABEL.id] ? { sandboxId: labels[LABEL.id] as string } : {}),
+      ...(labels[LABEL.role] ? { role: labels[LABEL.role] as string } : {}),
+    };
+  }
+
+  /**
+   * Containers (sandboxes and proxy sidecars), networks and volumes that carry `abox.managed=1`
+   * but not this provider's instance id (another installation, an empty or missing id). Objects
+   * without any abox label and the shared `abox-open` / `abox-egress` networks are never listed.
+   */
+  async listForeign(): Promise<ForeignResource[]> {
+    return this.guard(async () => {
+      const filters = { label: [`${LABEL.managed}=1`] };
+      const out: ForeignResource[] = [];
+      const containers = await this.docker.listContainers({ all: true, filters });
+      const foreignContainers = containers.filter((c) => !this.ownsInstance(c.Labels ?? {}));
+      // The list call has no start time; "was this started a minute ago" decides whether a foreign
+      // container is another abox home's live sandbox, so ask for it (a vanished one is skipped).
+      const startedAt = await Promise.all(
+        foreignContainers.map(async (c) => {
+          try {
+            const started = Date.parse(
+              (await this.docker.getContainer(c.Id).inspect()).State?.StartedAt,
+            );
+            return started > 0 ? started : undefined; // "0001-01-01..." = never started
+          } catch {
+            return undefined;
+          }
+        }),
+      );
+      foreignContainers.forEach((c, i) => {
+        out.push({
+          kind: 'container',
+          ref: c.Id,
+          name: (c.Names?.[0] ?? c.Id.slice(0, 12)).replace(/^\//, ''),
+          state: c.State,
+          ...(c.Created ? { createdAt: c.Created * 1000 } : {}),
+          ...(startedAt[i] !== undefined ? { startedAt: startedAt[i] } : {}),
+          ...this.foreignBase(c.Labels ?? {}),
+        });
+      });
+      const networks = await this.docker.listNetworks({ filters });
+      for (const n of networks) {
+        const labels = n.Labels ?? {};
+        if (this.ownsInstance(labels) || this.isSharedNetwork(n.Name)) continue;
+        const created = n.Created ? Date.parse(n.Created) : NaN;
+        out.push({
+          kind: 'network',
+          ref: n.Id,
+          name: n.Name,
+          ...(Number.isFinite(created) ? { createdAt: created } : {}),
+          ...this.foreignBase(labels),
+        });
+      }
+      const volumes = await this.docker.listVolumes({ filters });
+      for (const v of volumes.Volumes ?? []) {
+        const labels = v.Labels ?? {};
+        if (this.ownsInstance(labels)) continue;
+        const created = Date.parse((v as { CreatedAt?: string }).CreatedAt ?? '');
+        out.push({
+          kind: 'volume',
+          ref: v.Name,
+          name: v.Name,
+          ...(Number.isFinite(created) ? { createdAt: created } : {}),
+          ...this.foreignBase(labels),
+        });
+      }
+      return out;
+    });
+  }
+
+  /**
+   * Removes one object that `listForeign` returned. The object is inspected again: it must still
+   * be abox-managed and must not belong to this instance (nor be a shared network), otherwise
+   * nothing happens and the call fails. Containers are removed with their anonymous volumes.
+   */
+  async removeForeign(resource: ForeignResource): Promise<void> {
+    return this.guard(async () => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(resource.ref))
+        throw new AboxError('invalid_input', `Invalid backend reference "${resource.ref}"`);
+      const refuse = (): never => {
+        throw new AboxError(
+          'conflict',
+          `Refusing to remove ${resource.kind} ${resource.name}: not a foreign abox object`,
+        );
+      };
+      try {
+        if (resource.kind === 'container') {
+          const c = await this.docker.getContainer(resource.ref).inspect();
+          const l = c.Config.Labels ?? {};
+          if (l[LABEL.managed] !== '1' || this.ownsInstance(l)) refuse();
+          await this.docker.getContainer(c.Id).remove({ force: true, v: true });
+        } else if (resource.kind === 'network') {
+          const n = this.docker.getNetwork(resource.ref);
+          const info = await n.inspect();
+          const l = info.Labels ?? {};
+          if (l[LABEL.managed] !== '1' || this.ownsInstance(l) || this.isSharedNetwork(info.Name))
+            refuse();
+          await n.remove();
+        } else {
+          const v = this.docker.getVolume(resource.ref);
+          const info = await v.inspect();
+          const l = info.Labels ?? {};
+          if (l[LABEL.managed] !== '1' || this.ownsInstance(l)) refuse();
+          await v.remove();
+        }
+      } catch (e) {
+        if (statusOf(e) !== 404) throw e; // already gone
+      }
     });
   }
 
@@ -716,7 +1040,7 @@ export class DockerProvider implements SandboxProvider {
         Name: name,
         Driver: 'bridge',
         CheckDuplicate: true,
-        Labels: { [LABEL.managed]: '1', [LABEL.role]: role, ...this.extra },
+        Labels: { [LABEL.managed]: '1', [LABEL.role]: role },
       });
     } catch (e) {
       if (statusOf(e) !== 409) throw e; // created concurrently
@@ -868,6 +1192,10 @@ export class DockerProvider implements SandboxProvider {
     for (const f of spec.files) {
       const p = sandboxPath(f.sandboxPath, 'file path');
       if (p === '/tmp') throw new AboxError('invalid_input', 'Cannot place a file at /tmp itself');
+      // Only `extendExpiry` writes the deadline: a spec file there would be a deadline nobody approved.
+      if (p === EXPIRY_FILE) {
+        throw new AboxError('invalid_input', `${p} is managed by abox and cannot be a spec file`);
+      }
       if (
         ro &&
         !(
@@ -941,7 +1269,7 @@ export class DockerProvider implements SandboxProvider {
       if (!k.startsWith('abox.') || k === LABEL.readonlyRootfs) userLabels[k] = v;
     const labels: Record<string, string> = {
       ...userLabels,
-      ...this.extra,
+      ...this.containerExtra,
       [LABEL.managed]: '1',
       [LABEL.role]: 'sandbox',
       [LABEL.id]: spec.id,
@@ -954,6 +1282,7 @@ export class DockerProvider implements SandboxProvider {
       [LABEL.isolation]: this.currentIsolation,
       [LABEL.created]: String(spec.createdAt),
       [LABEL.expires]: String(spec.expiresAt),
+      [LABEL.expiryFile]: '1',
       [LABEL.networkMode]: spec.network.mode,
       [LABEL.user]: `${spec.user.name}:${templateUid}`,
       [LABEL.workspacePath]: wsPath,
@@ -976,7 +1305,7 @@ export class DockerProvider implements SandboxProvider {
       }),
       User: `${uid}:${gid}`,
       WorkingDir: wsPath,
-      Entrypoint: ttlEntrypoint(spec.expiresAt),
+      Entrypoint: ttlEntrypoint(spec.expiresAt, EXPIRY_FILE),
       Cmd: [],
       Tty: false,
       OpenStdin: false,
@@ -1048,7 +1377,7 @@ export class DockerProvider implements SandboxProvider {
     // Proxy CA
     if (proxyId && spec.network.injections.length > 0) await this.installCa(proxyId, created.id);
 
-    return this.toInfo(await c.inspect());
+    return await this.toInfo(await c.inspect());
   }
 
   // -------------------------------------------------------------------------
@@ -1062,7 +1391,10 @@ export class DockerProvider implements SandboxProvider {
   ): Promise<{ network: string; proxyId: string }> {
     const assets = this.proxyAssets;
     if (!assets) throw new AboxError('unsupported', 'Egress proxy runtime is not available');
-    const image = await ensureProxyImage(this.docker, assets, this.extra);
+    // The proxy image and the `abox-open` / `abox-egress` networks are infrastructure that every
+    // instance on this engine shares: they carry no instance id (and no extra labels), and are never
+    // removed by a provider.
+    const image = await ensureProxyImage(this.docker, assets, {});
     await this.ensureNetwork(EGRESS_NETWORK, 'network');
 
     const intName = internalNetName(short);
@@ -1071,7 +1403,7 @@ export class DockerProvider implements SandboxProvider {
       [LABEL.id]: spec.id,
       [LABEL.host]: spec.host,
       [LABEL.owner]: spec.owner,
-      ...this.extra,
+      ...this.containerExtra,
     };
     const net = await this.docker.createNetwork({
       Name: intName,
@@ -1113,13 +1445,29 @@ export class DockerProvider implements SandboxProvider {
     cleanup.push(() => created.remove({ force: true, v: true }));
     await this.docker.getNetwork(EGRESS_NETWORK).connect({ Container: created.id });
 
-    const pc = this.docker.getContainer(created.id);
     // Config contains secret header values: placed as a file before start, never env/labels.
-    await pc.putArchive(
+    await this.writeProxyConfig(created.id, Buffer.from(proxyConfigJson(spec.network)));
+    await this.startProxy(created.id);
+    return { network: intName, proxyId: created.id };
+  }
+
+  /** Does the proxy's current config contain header injections (i.e. does it generate a CA)? */
+  private async proxyInjects(proxyId: string): Promise<boolean> {
+    const cfg = JSON.parse(
+      (await getFile(this.docker.getContainer(proxyId), PROXY_CONFIG_PATH, MiB)).data.toString(
+        'utf8',
+      ),
+    ) as { injections?: unknown[] };
+    return (cfg.injections?.length ?? 0) > 0;
+  }
+
+  /** Put `config.json` into the proxy's config volume (owned by the proxy user, mode 0600). */
+  private async writeProxyConfig(proxyId: string, json: Buffer): Promise<void> {
+    await this.docker.getContainer(proxyId).putArchive(
       await tarFromEntries([
         {
           name: 'config.json',
-          data: Buffer.from(proxyConfigJson(spec.network)),
+          data: json,
           mode: 0o600,
           uid: PROXY_USER_UID,
           gid: PROXY_USER_UID,
@@ -1127,8 +1475,85 @@ export class DockerProvider implements SandboxProvider {
       ]),
       { path: PROXY_CONFIG_DIR },
     );
-    await this.startProxy(created.id);
-    return { network: intName, proxyId: created.id };
+  }
+
+  private async stopContainer(containerId: string, t: number): Promise<void> {
+    try {
+      await this.docker.getContainer(containerId).stop({ t });
+    } catch (e) {
+      if (statusOf(e) !== 304) throw e;
+    }
+  }
+
+  /**
+   * Replace the egress rules (allowlist, private exceptions, header injections) of an allowlist
+   * sandbox. The proxy reads its config at startup, so the new `config.json` is written into the
+   * sidecar and the sidecar is restarted; the sandbox container and its networks stay as they are
+   * (open connections through the proxy are cut). When the proxy comes up with a new CA
+   * (injections), the CA and the CA bundle of a running sandbox are replaced; a stopped sandbox gets
+   * them on its next `start`. If the new config does not start, the old one is restored.
+   * Other modes have no rules: `none`/`open` sandboxes answer `unsupported`.
+   */
+  async updateNetwork(id: SandboxId, network: NetworkSpec): Promise<void> {
+    return this.guard(async () => {
+      const c = await this.load(id);
+      const labels = c.Config.Labels ?? {};
+      const current = labels[LABEL.networkMode] ?? 'none';
+      if (current !== 'allowlist') {
+        throw new AboxError(
+          'unsupported',
+          `Sandbox ${id} has network mode "${current}": only the rules of an allowlist sandbox can be changed`,
+          { hint: 'Create a new sandbox with the network mode you need.' },
+        );
+      }
+      if (network.mode !== 'allowlist') {
+        throw new AboxError(
+          'invalid_input',
+          `The network mode of a sandbox cannot change (allowlist -> ${network.mode})`,
+        );
+      }
+      const hadInjections = labels['abox.injections'] === '1';
+      if (network.injections.length > 0 && !hadInjections) {
+        throw new AboxError(
+          'unsupported',
+          'Header injections cannot be added to a sandbox that was created without them',
+          {
+            hint: 'The CA environment of the sandbox is fixed at creation. Create a new sandbox with the injection.',
+          },
+        );
+      }
+      const { short } = this.parseId(id);
+      const pid = await this.proxyContainerId(short);
+      if (!pid) {
+        throw new AboxError('backend_error', `Egress proxy of ${id} is missing`, {
+          hint: 'Remove and recreate the sandbox.',
+        });
+      }
+      const pc = this.docker.getContainer(pid);
+      const old = (await getFile(pc, PROXY_CONFIG_PATH, MiB)).data;
+      const next = Buffer.from(proxyConfigJson(network));
+      await this.writeProxyConfig(pid, next);
+      if (!(await pc.inspect()).State.Running) return; // `start` brings it up with the new config
+      try {
+        await this.stopContainer(pid, 2);
+        await this.startProxy(pid);
+      } catch (e) {
+        // The new config did not start (invalid rules): put the old one back and bring the proxy up again.
+        await this.stopContainer(pid, 1).catch(() => undefined);
+        await this.writeProxyConfig(pid, old).catch(() => undefined);
+        await this.startProxy(pid).catch(() => undefined);
+        if (e instanceof AboxError && e.code === 'backend_error') {
+          throw new AboxError(
+            'invalid_input',
+            'The egress proxy rejected the new network rules; the previous rules are active again',
+            { ...(e.details ? { details: e.details } : {}), cause: e },
+          );
+        }
+        throw e;
+      }
+      // A restarted proxy generated a new CA.
+      if (network.injections.length > 0 && c.State.Running) await this.installCa(pid, c.Id);
+    });
   }
 
   /** Start the proxy container (if needed) and wait for its ready line. */
@@ -1234,7 +1659,8 @@ export class DockerProvider implements SandboxProvider {
   private async proxyContainerId(short: string): Promise<string | undefined> {
     try {
       const p = await this.docker.getContainer(proxyName(short)).inspect();
-      return p.Config.Labels?.[LABEL.managed] === '1' ? p.Id : undefined;
+      const l = p.Config.Labels ?? {};
+      return l[LABEL.managed] === '1' && this.ownsInstance(l) ? p.Id : undefined;
     } catch (e) {
       if (statusOf(e) === 404) return undefined;
       throw e;
@@ -1245,8 +1671,12 @@ export class DockerProvider implements SandboxProvider {
     return this.guard(async () => {
       const c = await this.load(id);
       const labels = c.Config.Labels ?? {};
-      const expires = Number(labels[LABEL.expires] ?? 0);
+      // The deadline may have been moved after creation (`extendExpiry`): labels cannot say.
+      const expires = await effectiveExpiresAt(this.docker.getContainer(c.Id), labels);
       if (expires > 0 && expires <= Date.now()) {
+        // (no sidecar and secrets for a sandbox that will never run again)
+        if (labels[LABEL.networkMode] === 'allowlist')
+          await this.removeProxyInfrastructure(id, this.parseId(id).short).catch(() => undefined);
         throw new AboxError('conflict', `Sandbox ${id} has expired and cannot be started`, {
           hint: 'Remove it (`abox gc` / `abox rm`) and create a new one.',
         });
@@ -1260,7 +1690,9 @@ export class DockerProvider implements SandboxProvider {
           });
         const restarted = await this.startProxy(pid);
         // A restarted proxy generates a new CA.
-        if (restarted && labels['abox.injections'] === '1') await this.installCa(pid, c.Id);
+        // (`updateNetwork` may have removed the injections: then there is no CA to install.)
+        if (restarted && labels['abox.injections'] === '1' && (await this.proxyInjects(pid)))
+          await this.installCa(pid, c.Id);
       }
       if (c.State.Running) return;
       try {
@@ -1272,13 +1704,96 @@ export class DockerProvider implements SandboxProvider {
     });
   }
 
+  /**
+   * Move the deadline of the container: the entrypoint re-reads `EXPIRY_FILE` when its sleep ends,
+   * and `start` / `inspect` / `list` take the later of that and `abox.expires`. The file is
+   * written as root (the sandbox user can not touch it) and works on running and stopped
+   * containers. The egress proxy sidecar has no deadline of its own: it is started and stopped
+   * together with the sandbox, so there is nothing to move there.
+   */
+  async extendExpiry(id: SandboxId, expiresAt: number): Promise<void> {
+    return this.guard(async () => {
+      if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
+        throw new AboxError('invalid_input', `Invalid expiry ${expiresAt}`);
+      }
+      const c = await this.load(id);
+      const labels = c.Config.Labels ?? {};
+      if (!hasMovableExpiry(labels)) {
+        throw new AboxError(
+          'unsupported',
+          `Sandbox ${id} was created by an older version of abox: its lifetime is fixed in the container and cannot be extended`,
+          { hint: 'Create a new sandbox with a longer ttl (overrides.ttl).' },
+        );
+      }
+      const container = this.docker.getContainer(c.Id);
+      const current = await effectiveExpiresAt(container, labels);
+      if (current <= Date.now()) {
+        throw new AboxError('conflict', `Sandbox ${id} has expired and cannot be extended`);
+      }
+      if (toEpochSeconds(expiresAt) < toEpochSeconds(current)) {
+        throw new AboxError(
+          'invalid_input',
+          `The new expiry must not be earlier than the current one (${new Date(current).toISOString()})`,
+        );
+      }
+      if (toEpochSeconds(expiresAt) === toEpochSeconds(current)) return;
+      await writeExpiryFile(container, expiresAt);
+    });
+  }
+
+  /**
+   * Change the cpu and/or memory limit of the container with the engine's live update, running or
+   * stopped. The limits stay across restarts, and `inspect` reports them. Memory and swap move
+   * together (the sandbox has no swap, `MemorySwap` equals `Memory`), because the engine refuses a
+   * memory limit above the swap limit that is still set. The engine rejects a new memory limit
+   * below what the container uses right now; that error is passed on and the old limits stay.
+   * Only the sandbox container is touched: the egress proxy sidecar keeps its own limits.
+   */
+  async updateResources(
+    id: SandboxId,
+    limits: { cpus?: number; memoryBytes?: number },
+  ): Promise<void> {
+    return this.guard(async () => {
+      const { cpus, memoryBytes } = limits;
+      if (cpus === undefined && memoryBytes === undefined)
+        throw new AboxError('invalid_input', 'Nothing to change: name cpus and/or memory');
+      if (cpus !== undefined && !(Number.isFinite(cpus) && cpus > 0))
+        throw new AboxError('invalid_input', `Invalid cpus ${String(cpus)}`);
+      if (memoryBytes !== undefined && !(Number.isSafeInteger(memoryBytes) && memoryBytes > 0))
+        throw new AboxError('invalid_input', `Invalid memory ${String(memoryBytes)}`);
+      const c = await this.load(id);
+      const update: Record<string, number> = {};
+      if (cpus !== undefined) update['NanoCpus'] = Math.round(cpus * 1e9);
+      if (memoryBytes !== undefined) {
+        update['Memory'] = memoryBytes;
+        update['MemorySwap'] = memoryBytes;
+      }
+      try {
+        await this.docker.getContainer(c.Id).update(update);
+      } catch (e) {
+        // An engine without the update endpoint (older Podman) answers 404 / 405 / 501 for a container that exists.
+        if ([404, 405, 501].includes(statusOf(e) ?? 0)) {
+          throw new AboxError(
+            'unsupported',
+            'The container engine cannot change the limits of an existing sandbox',
+            { hint: 'Create a new sandbox with overrides.cpus / overrides.memory.', cause: e },
+          );
+        }
+        throw e;
+      }
+    });
+  }
+
   /** Copy the spec files destined for the /tmp tmpfs into it (it is empty after every start). */
   private async restoreTmpFiles(containerId: string): Promise<void> {
+    // Entry by entry: `cp -pR dir/. /tmp/` also tries to set the times of /tmp itself, which GNU cp
+    // (Debian-based images) reports as an error because /tmp is not owned by the sandbox user.
     const res = await simpleExec(this.docker, containerId, [
-      'cp',
-      '-pR',
-      `${TMP_STASH}/.`,
-      '/tmp/',
+      '/bin/sh',
+      '-c',
+      'cd -- "$1" && find . -mindepth 1 -maxdepth 1 -exec cp -pR {} /tmp/ \\;',
+      'abox-restore-tmp',
+      TMP_STASH,
     ]);
     if (res.exitCode !== 0) {
       await this.docker
@@ -1301,6 +1816,13 @@ export class DockerProvider implements SandboxProvider {
         if (statusOf(e) !== 304) throw e;
       }
       if (c.Config.Labels?.[LABEL.networkMode] === 'allowlist') {
+        // An expired sandbox is only kept (stopped) so that its workspace can be exported. Its egress
+        // proxy and internal network have no use any more, and the proxy holds the injected secrets:
+        // they go now, not with `gc`.
+        if (await this.hasExpired(c)) {
+          await this.removeProxyInfrastructure(id, short);
+          return;
+        }
         const pid = await this.proxyContainerId(short);
         if (pid) {
           try {
@@ -1313,6 +1835,46 @@ export class DockerProvider implements SandboxProvider {
     });
   }
 
+  /**
+   * Is the sandbox past its deadline? A moved deadline is stored in whole seconds (rounded up), so
+   * the registry's millisecond deadline can be up to a second earlier than the stored one: that
+   * second counts as expired, otherwise a sweep right at the deadline would miss the cleanup.
+   */
+  private async hasExpired(c: Docker.ContainerInspectInfo): Promise<boolean> {
+    const labels = c.Config.Labels ?? {};
+    const expires = await effectiveExpiresAt(this.docker.getContainer(c.Id), labels);
+    return expires > 0 && expires - EXPIRY_STORAGE_RESOLUTION_MS <= Date.now();
+  }
+
+  /**
+   * Remove the egress proxy sidecar (with its config volume, which holds the injected header values)
+   * and the internal network of a sandbox, only if they are this instance's. Missing or busy
+   * objects are not an error: this is also the cleanup step of `remove`.
+   */
+  private async removeProxyInfrastructure(id: SandboxId, short: string): Promise<void> {
+    const ignore = (e: unknown): void => {
+      const s = statusOf(e);
+      if (s !== 404 && s !== 409) throw e;
+    };
+    try {
+      const p = await this.docker.getContainer(proxyName(short)).inspect();
+      const l = p.Config.Labels ?? {};
+      if (l[LABEL.managed] === '1' && l[LABEL.id] === id && this.ownsInstance(l)) {
+        await this.docker.getContainer(p.Id).remove({ force: true, v: true });
+      }
+    } catch (e) {
+      ignore(e);
+    }
+    try {
+      const n = this.docker.getNetwork(internalNetName(short));
+      const info = await n.inspect();
+      const l = info.Labels ?? {};
+      if (l[LABEL.managed] === '1' && l[LABEL.id] === id && this.ownsInstance(l)) await n.remove();
+    } catch (e) {
+      ignore(e);
+    }
+  }
+
   async remove(id: SandboxId): Promise<void> {
     return this.guard(async () => {
       const { host, short } = parseSandboxId(id);
@@ -1321,38 +1883,29 @@ export class DockerProvider implements SandboxProvider {
         const s = statusOf(e);
         if (s !== 404 && s !== 409) throw e;
       };
-      // Sandbox container (only if it really is one of ours).
+      // Sandbox container (only if it really is one of ours: same instance, same backend kind).
+      // A sandbox of another instance is refused, nothing of it is touched.
       try {
         const c = await this.docker.getContainer(containerName(host, short)).inspect();
-        if (c.Config.Labels?.[LABEL.managed] === '1' && c.Config.Labels[LABEL.id] === id) {
+        const l = c.Config.Labels ?? {};
+        if (l[LABEL.managed] === '1' && l[LABEL.id] === id) {
+          if (!this.ownsSandbox(l)) throw new AboxError('not_found', `Unknown sandbox ${id}`);
           await this.docker.getContainer(c.Id).remove({ force: true, v: true });
         }
       } catch (e) {
+        if (e instanceof AboxError) throw e;
         ignore(e);
       }
-      // Proxy sidecar.
-      try {
-        const p = await this.docker.getContainer(proxyName(short)).inspect();
-        if (p.Config.Labels?.[LABEL.managed] === '1' && p.Config.Labels[LABEL.id] === id) {
-          await this.docker.getContainer(p.Id).remove({ force: true, v: true });
-        }
-      } catch (e) {
-        ignore(e);
-      }
-      // Internal network.
-      try {
-        const n = this.docker.getNetwork(internalNetName(short));
-        const info = await n.inspect();
-        if (info.Labels?.[LABEL.managed] === '1' && info.Labels[LABEL.id] === id) await n.remove();
-      } catch (e) {
-        ignore(e);
-      }
+      // Proxy sidecar and internal network.
+      await this.removeProxyInfrastructure(id, short);
       // Snapshot images.
       try {
         const imgs = await this.docker.listImages({
           filters: { reference: [`${snapshotRepo(short)}:*`] },
         });
         for (const i of imgs) {
+          const l = i.Labels ?? {};
+          if (l[LABEL.snapshotOf] !== id || !this.ownsInstance(l)) continue;
           for (const t of i.RepoTags ?? []) await this.docker.getImage(t).remove().catch(ignore);
         }
       } catch (e) {
@@ -1465,9 +2018,19 @@ export class DockerProvider implements SandboxProvider {
       const c = await this.load(id);
       const dest = sandboxPath(sandboxDest, 'destination');
       if (dest === '/') throw new AboxError('invalid_input', 'Cannot copy onto /');
+      assertWritablePath(dest, 'Destination');
       const { uid, gid } = userIds(c);
       const dir = path.posix.dirname(dest);
+      const tmpfs = tmpfsRootOf(c, dest);
+      // A running sandbox unpacks as its own user: the kernel decides what may be replaced, so root-owned
+      // files (the proxy CA, the deadline) and symlinks planted by the sandbox are safe. The archive API
+      // would write as root.
+      if (c.State.Running || tmpfs !== undefined) {
+        await this.copyInExec(c, tmpfs, hostPath, dest, { uid, gid });
+        return;
+      }
       const ct = this.docker.getContainer(c.Id);
+      await assertStoppedWriteAllowed(ct, dest, uid);
       await mkdirP(ct, dir, uid, gid);
       await putArchiveStream(
         ct,
@@ -1477,16 +2040,128 @@ export class DockerProvider implements SandboxProvider {
     });
   }
 
-  async copyOut(id: SandboxId, sandboxSrc: string, hostPath: string): Promise<void> {
+  async copyOut(
+    id: SandboxId,
+    sandboxSrc: string,
+    hostPath: string,
+    opts?: CopyOutOptions,
+  ): Promise<void> {
     return this.guard(async () => {
       const c = await this.load(id);
       const src = sandboxPath(sandboxSrc, 'source');
       if (src === '/') throw new AboxError('invalid_input', 'Cannot copy out /');
+      const tmpfs = tmpfsRootOf(c, src);
+      if (tmpfs !== undefined) {
+        await this.copyOutTmpfs(c, tmpfs, src, hostPath, opts);
+        return;
+      }
       const stream = (await this.docker
         .getContainer(c.Id)
         .getArchive({ path: src })) as unknown as Readable;
-      await extractArchiveSafe(stream, hostPath);
+      await extractArchiveSafe(stream, hostPath, {
+        symlinks: opts?.symlinks ?? 'refuse',
+        ...(opts?.onSkip ? { onSkip: opts.onSkip } : {}),
+      });
     });
+  }
+
+  /** A tmpfs only exists while the container runs: there is nothing to copy to or from otherwise. */
+  private requireRunningForTmpfs(c: Docker.ContainerInspectInfo, root: string, p: string): void {
+    if (c.State.Running) return;
+    throw new AboxError('conflict', `Sandbox ${c.Config.Labels?.[LABEL.id] ?? ''} is not running`, {
+      hint: `${p} is below the tmpfs ${root}, which only exists while the sandbox runs. Start the sandbox first, or use a path outside ${root} (e.g. the workspace).`,
+    });
+  }
+
+  private tmpfsExecError(what: string, r: { exitCode: number; stderr: Buffer }): AboxError {
+    const stderr = r.stderr.toString('utf8').trim().slice(0, 500);
+    if (r.exitCode === 127)
+      return new AboxError('unsupported', `${what}: tar is not installed in the sandbox image`, {
+        hint: 'Use a path outside /tmp (the workspace), or add tar to the template.',
+      });
+    return new AboxError('backend_error', `${what} failed (exit ${r.exitCode})`, {
+      ...(/no space left/i.test(stderr)
+        ? { hint: 'The /tmp tmpfs is full (its size is limited).' }
+        : {}),
+      details: { stderr },
+    });
+  }
+
+  /** Copies into a running sandbox as its user (`root`: the tmpfs mount point `dest` is below, if any). */
+  private async copyInExec(
+    c: Docker.ContainerInspectInfo,
+    root: string | undefined,
+    hostPath: string,
+    dest: string,
+    ids: { uid: number; gid: number },
+  ): Promise<void> {
+    if (root !== undefined) {
+      this.requireRunningForTmpfs(c, root, dest);
+      if (dest === root)
+        throw new AboxError('invalid_input', `Cannot copy onto the tmpfs mount point ${root}`, {
+          hint: `Copy to a path below it, e.g. ${root}/${path.basename(hostPath) || 'name'}.`,
+        });
+    }
+    const source = path.resolve(hostPath);
+    await fs.lstat(source); // a missing source is not_found, before anything runs in the sandbox
+    // Archived exactly like for the archive API: host symlinks stay symlinks and are never
+    // followed, special files are skipped, setuid/setgid are dropped, one top-level entry.
+    // Consumed from the first moment (as `putArchiveStream` does): a failure of the host side
+    // (a symlink as source, an unreadable directory) must never become an unhandled error.
+    let sourceError: Error | undefined;
+    const archive = new PassThrough();
+    pipeline(packHostPath(source, path.posix.basename(dest), ids), archive, (err) => {
+      if (err) sourceError = err;
+    });
+    let r: { exitCode: number; stderr: Buffer };
+    try {
+      // The archive API cannot see a tmpfs, so the archive is unpacked by tar inside the sandbox
+      // (as the sandbox user: owner and permissions of a normal user, nothing it could not do anyway).
+      const ex = await streamExec(
+        this.docker,
+        c.Id,
+        ['/bin/sh', '-c', UNPACK_SCRIPT, 'abox-copy-in', path.posix.dirname(dest)],
+        { stdin: archive, user: `${ids.uid}:${ids.gid}` },
+      );
+      ex.stdout.resume();
+      r = await ex.result;
+    } finally {
+      archive.destroy();
+    }
+    if (sourceError) throw sourceError; // the host side failed (e.g. a symlink as source): the real reason
+    if (r.exitCode !== 0) throw fileScriptError('Copying into', dest, r);
+  }
+
+  private async copyOutTmpfs(
+    c: Docker.ContainerInspectInfo,
+    root: string,
+    src: string,
+    hostPath: string,
+    opts?: CopyOutOptions,
+  ): Promise<void> {
+    this.requireRunningForTmpfs(c, root, src);
+    const ex = await streamExec(this.docker, c.Id, [
+      '/bin/sh',
+      '-c',
+      TMPFS_PACK_SCRIPT,
+      'abox-copy-out',
+      src,
+    ]);
+    try {
+      // Same host-side rules as for the archive API: nothing is written or linked outside the destination.
+      await extractArchiveSafe(ex.stdout, hostPath, {
+        symlinks: opts?.symlinks ?? 'refuse',
+        ...(opts?.onSkip ? { onSkip: opts.onSkip } : {}),
+      });
+    } catch (e) {
+      ex.stdout.destroy();
+      const r = await ex.result.catch(() => undefined);
+      if (r?.exitCode === 3) throw new AboxError('not_found', `No such file or directory: ${src}`);
+      throw e;
+    }
+    const r = await ex.result;
+    if (r.exitCode === 3) throw new AboxError('not_found', `No such file or directory: ${src}`);
+    if (r.exitCode !== 0) throw this.tmpfsExecError(`Copying out ${src}`, r);
   }
 
   async readFile(
@@ -1497,9 +2172,15 @@ export class DockerProvider implements SandboxProvider {
     return this.guard(async () => {
       const c = await this.load(id);
       const p = sandboxPath(sandboxFile, 'file');
-      // /tmp is a tmpfs: the archive API only sees the (hidden) image directory behind it.
-      if (c.State.Running && underTmp(p)) return this.readTmpFile(c.Id, p, maxBytes);
-      return getFile(this.docker.getContainer(c.Id), p, maxBytes);
+      // A running sandbox reads as its own user (it also sees the /tmp tmpfs, which the archive API
+      // does not): root-only files stay unreadable and special files get an accurate error.
+      if (c.State.Running) return this.readFileAsUser(c, p, maxBytes);
+      // A stopped one has no process to ask, and the archive API reads as root: the sandbox user's
+      // permissions are applied to the path first (symlinks resolved here, never by the engine).
+      const container = this.docker.getContainer(c.Id);
+      const real = await resolveStoppedReadable(container, p, userIds(c), 'file');
+      const { data, truncated, size } = await getFile(container, real, maxBytes);
+      return { data, truncated, size };
     });
   }
 
@@ -1508,82 +2189,104 @@ export class DockerProvider implements SandboxProvider {
       const c = await this.load(id);
       const p = sandboxPath(sandboxFile, 'file');
       if (p === '/') throw new AboxError('invalid_input', 'Invalid file path');
-      if (c.State.Running && underTmp(p)) {
-        await this.writeTmpFile(c.Id, p, data, mode & 0o777);
+      // Abox-internal files (the deadline, the CA) are root's: never through this API, whatever the mode.
+      assertWritablePath(p, 'File');
+      const { uid, gid } = userIds(c);
+      // A running sandbox is written as its own user (see copyIn). The engine's archive API, used for a
+      // stopped one, writes as root, so the path is checked first (no symlinks, a directory the user owns).
+      if (c.State.Running) {
+        await this.writeFileAsUser(c, p, data, mode & 0o777, { uid, gid });
         return;
       }
-      const { uid, gid } = userIds(c);
-      const root = p.startsWith(`${CA_DIR}/`);
-      await putFile(this.docker.getContainer(c.Id), p, data, {
-        mode: mode & 0o777,
-        uid: root ? 0 : uid,
-        gid: root ? 0 : gid,
-      });
+      const ct = this.docker.getContainer(c.Id);
+      await assertStoppedWriteAllowed(ct, p, uid);
+      await putFile(ct, p, data, { mode: mode & 0o777, uid, gid });
     });
   }
 
-  /** Read a file of the /tmp tmpfs of a running sandbox through the container (as its user). */
-  private async readTmpFile(
-    containerId: string,
+  /** Read a regular file of a running sandbox through the container, as its user. */
+  private async readFileAsUser(
+    c: Docker.ContainerInspectInfo,
     file: string,
     maxBytes: number,
   ): Promise<{ data: Buffer; truncated: boolean; size: number }> {
-    const script =
-      '[ -e "$1" ] || exit 3; [ -f "$1" ] || exit 4; stat -c %s -- "$1" || exit 5; head -c "$2" -- "$1"';
-    const r = await simpleExec(this.docker, containerId, [
-      '/bin/sh',
-      '-c',
-      script,
-      'abox-read',
-      file,
-      String(Math.max(0, Math.floor(maxBytes))),
-    ]);
-    if (r.exitCode === 3) throw new AboxError('not_found', `No such file: ${file}`);
-    if (r.exitCode === 4) throw new AboxError('invalid_input', `Not a regular file: ${file}`);
-    if (r.exitCode !== 0)
-      throw new AboxError('backend_error', `Cannot read ${file}`, {
-        details: { stderr: r.stderr.toString('utf8').slice(0, 500) },
-      });
+    const r = await simpleExec(
+      this.docker,
+      c.Id,
+      [
+        '/bin/sh',
+        '-c',
+        READ_FILE_SCRIPT,
+        'abox-read',
+        file,
+        String(Math.max(0, Math.floor(maxBytes))),
+      ],
+      { user: execUser(c) },
+    );
+    if (r.exitCode !== 0) throw fileScriptError('Reading', file, r);
     const nl = r.stdout.indexOf(0x0a);
-    const size = Number(r.stdout.subarray(0, nl).toString('utf8'));
-    const data = r.stdout.subarray(nl + 1);
-    return { data: Buffer.from(data), truncated: size > data.length, size };
+    const stated = Number(r.stdout.subarray(0, nl).toString('utf8'));
+    const body = r.stdout.subarray(nl + 1);
+    if (stated === 0 && body.length > 0) {
+      // A procfs-like file: it says it is empty but has content, so the size is what was returned
+      // (at least that much when more than `maxBytes` came back).
+      const data = Buffer.from(body.subarray(0, Math.max(0, Math.floor(maxBytes))));
+      return { data, truncated: body.length > data.length, size: body.length };
+    }
+    return { data: Buffer.from(body), truncated: stated > body.length, size: stated };
   }
 
-  /** Write a file into the /tmp tmpfs of a running sandbox (content on stdin, never in argv). */
-  private async writeTmpFile(
-    containerId: string,
+  /** Write a file into a running sandbox as its user (content on stdin, never in argv). */
+  private async writeFileAsUser(
+    c: Docker.ContainerInspectInfo,
     file: string,
     data: Buffer,
     mode: number,
+    ids: { uid: number; gid: number },
   ): Promise<void> {
-    const script =
-      'umask 077; mkdir -p -- "$(dirname -- "$1")" && cat > "$1.abox-tmp" && chmod "$2" "$1.abox-tmp" && mv -f -- "$1.abox-tmp" "$1"';
     const r = await simpleExec(
       this.docker,
-      containerId,
-      ['/bin/sh', '-c', script, 'abox-write', file, mode.toString(8)],
-      { stdin: data },
+      c.Id,
+      ['/bin/sh', '-c', WRITE_FILE_SCRIPT, 'abox-write', file, mode.toString(8)],
+      { stdin: data, user: `${ids.uid}:${ids.gid}` },
     );
-    if (r.exitCode !== 0)
-      throw new AboxError('backend_error', `Cannot write ${file}`, {
-        details: { stderr: r.stderr.toString('utf8').slice(0, 500) },
-      });
+    if (r.exitCode !== 0) throw fileScriptError('Writing', file, r);
   }
 
   async listDir(id: SandboxId, dir: string): Promise<DirEntry[]> {
     return this.guard(async () => {
       const c = await this.load(id);
       const p = sandboxPath(dir, 'directory');
-      if (!c.State.Running) return this.listDirArchive(c.Id, p);
-      const script =
-        'cd -- "$1" || exit 3; find . -mindepth 1 -maxdepth 1 -exec stat -c "%Y %a %s %F %n" {} +';
-      const r = await simpleExec(this.docker, c.Id, ['/bin/sh', '-c', script, 'abox-ls', p]);
-      if (r.exitCode !== 0) {
-        const msg = r.stderr.toString('utf8').trim() || `cannot list ${p}`;
+      if (!c.State.Running) {
+        const real = await resolveStoppedReadable(
+          this.docker.getContainer(c.Id),
+          p,
+          userIds(c),
+          'dir',
+        );
+        return this.listDirArchive(c.Id, real);
+      }
+      const script = `[ -e "$1" ] || exit ${FILE_EXIT.missing}; [ -d "$1" ] || exit ${FILE_EXIT.notDir}; cd -- "$1" || exit ${FILE_EXIT.resolve}; find . -mindepth 1 -maxdepth 1 -exec stat -c "%Y %a %s %F %n" {} +`;
+      const r = await simpleExec(this.docker, c.Id, ['/bin/sh', '-c', script, 'abox-ls', p], {
+        user: execUser(c),
+      });
+      if (r.exitCode === FILE_EXIT.missing)
+        throw new AboxError('not_found', `No such directory: ${p}`);
+      if (r.exitCode === FILE_EXIT.notDir)
+        throw new AboxError('invalid_input', `Not a directory: ${p}`);
+      // Entries that vanish between the readdir and the stat (/proc/self/fd, a busy /tmp) are not an
+      // error of the listing: they are simply gone. Any other complaint still is one.
+      const complaints = r.stderr
+        .toString('utf8')
+        .split('\n')
+        .filter((l) => l.trim() !== '' && !/no such file or directory/i.test(l));
+      const onlyVanished = r.exitCode === 1 && r.stderr.length > 0 && complaints.length === 0;
+      if (r.exitCode !== 0 && !onlyVanished) {
+        const msg =
+          complaints.join('\n').trim() || r.stderr.toString('utf8').trim() || `cannot list ${p}`;
         throw new AboxError(
-          /no such|not a dir|can't cd|cannot cd/i.test(msg) || r.exitCode === 3
-            ? 'not_found'
+          /permission denied/i.test(msg) || r.exitCode === FILE_EXIT.resolve
+            ? 'policy_denied'
             : 'backend_error',
           msg,
         );
@@ -1692,10 +2395,16 @@ export class DockerProvider implements SandboxProvider {
         throw new AboxError('not_found', `Snapshot ${snapshotId} does not belong to ${id}`);
       }
       const img = await this.imageInspect(snapshotId);
-      if (!img || img.Config.Labels?.[LABEL.snapshotOf] !== id) {
+      if (
+        !img ||
+        img.Config.Labels?.[LABEL.snapshotOf] !== id ||
+        !this.ownsInstance(img.Config.Labels)
+      ) {
         throw new AboxError('not_found', `Unknown snapshot ${snapshotId}`);
       }
       const wasRunning = c.State.Running;
+      // The snapshot holds the deadline of its time: carry the current one over.
+      const deadline = await effectiveExpiresAt(this.docker.getContainer(c.Id), c.Config.Labels);
       const oldName = c.Name.replace(/^\//, '');
       const old = this.docker.getContainer(c.Id);
       if (wasRunning)
@@ -1732,9 +2441,29 @@ export class DockerProvider implements SandboxProvider {
         await old.rename({ name: oldName }).catch(() => undefined);
         throw e;
       }
+      try {
+        if (hasMovableExpiry(c.Config.Labels)) await writeExpiryFile(created, deadline);
+      } catch (e) {
+        await created.remove({ force: true, v: true }).catch(() => undefined);
+        await old.rename({ name: oldName }).catch(() => undefined);
+        throw e;
+      }
       await old.remove({ force: true, v: true });
-      void created;
       if (wasRunning) await this.start(id);
+    });
+  }
+
+  /**
+   * One live reading of cpu, memory and pids of the sandbox container (not the egress proxy sidecar).
+   * The engine takes two readings about a second apart for the cpu rate, so a call lasts ~1 s.
+   */
+  async stats(id: SandboxId): Promise<ResourceUsage> {
+    return this.guard(async () => {
+      const c = await this.running(id);
+      const raw = (await this.docker
+        .getContainer(c.Id)
+        .stats({ stream: false })) as unknown as EngineStats;
+      return usageFromEngineStats(raw, Date.now());
     });
   }
 

@@ -41,6 +41,14 @@ export interface ResolvedProfile {
     /** Extra allowed destinations; the single entry `*` means "any destination". */
     allow: string[];
   };
+  images: {
+    /**
+     * Registries (and path prefixes) free image names of template bases may come from, e.g.
+     * `docker.io/library` or `ghcr.io/my-org`; `['*']` = any. Base images of the built-in
+     * templates are always accepted.
+     */
+    registries: string[];
+  };
   /** `null` = additional mounts denied. */
   mounts: null | { roots: string[]; access: AccessMode[] };
   secrets: {

@@ -3,16 +3,25 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import Docker from 'dockerode';
-import { AboxError } from '@abox/core';
+import { AboxError, collectBuildContext } from '@abox/core';
 import type { ExecEvent, PreparedImage, ResolvedTemplate, SandboxSpec } from '@abox/core';
 import { defineProviderContract, makeTestTemplate } from '@abox/contract-tests';
 import { createDockerProvider, type DockerProvider } from './index.js';
 import { MiB, makeSpec, makeTemplate } from './__tests__/helpers.js';
-import { dockerEnabled, newProvider, sweepTestObjects, Tracker } from './__tests__/harness.js';
+import {
+  TEST_INSTANCE,
+  TEST_LABEL,
+  TEST_RUN,
+  TEST_SOCKET,
+  dockerEnabled,
+  newProvider,
+  sweepTestObjects,
+  Tracker,
+} from './__tests__/harness.js';
 import { defaultProxyAssets } from './proxy.js';
 import { existsSync } from 'node:fs';
 
-const SOCK = '/var/run/docker.sock';
+const SOCK = TEST_SOCKET;
 const raw = new Docker({ socketPath: SOCK });
 
 describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
@@ -120,6 +129,18 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
         /uid=1000\(dev\) gid=1000\(dev\)[\s\S]*dev:x:1000:1000[\s\S]*\/home\/dev\n\/workspace/,
       );
       expect((await run(s, 'getent passwd ubuntu; echo rc=$?')).stdout).toBe('rc=2\n');
+      // GNU tar (not busybox): copyIn / copyOut under the /tmp tmpfs
+      const dir = path.join(tmp, 'gnu-tar');
+      await fs.mkdir(path.join(dir, 'sub'), { recursive: true });
+      await fs.writeFile(path.join(dir, 'sub', 'f.txt'), 'gnu', { mode: 0o640 });
+      await fs.symlink('sub/f.txt', path.join(dir, 'link'));
+      await provider.copyIn(s.id, dir, '/tmp/gnu');
+      expect(
+        (await run(s, 'cat /tmp/gnu/sub/f.txt; stat -c "%U %a" /tmp/gnu/sub/f.txt')).stdout,
+      ).toBe('gnudev 640\n');
+      await provider.copyOut(s.id, '/tmp/gnu', path.join(tmp, 'gnu-tar-out'));
+      expect(await fs.readFile(path.join(tmp, 'gnu-tar-out', 'sub', 'f.txt'), 'utf8')).toBe('gnu');
+      expect(await fs.readlink(path.join(tmp, 'gnu-tar-out', 'link'))).toBe('sub/f.txt');
     }, 300_000);
 
     it('template.env is baked into the image and applied at runtime; spec.env wins', async () => {
@@ -166,6 +187,35 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       );
     }, 120_000);
 
+    it('refuses to build a context that changed since it was approved', async () => {
+      const dir = await fs.mkdtemp(path.join(tmp, 'approved-'));
+      const dockerfile = path.join(dir, 'Dockerfile');
+      await fs.writeFile(dockerfile, 'FROM alpine:3.22\nCOPY extra.txt /etc/extra.txt\n');
+      await fs.writeFile(path.join(dir, 'extra.txt'), 'reviewed');
+      const approved = await collectBuildContext(dockerfile);
+      const t = makeTemplate({
+        name: 'abox-test-approved-ctx',
+        base: { dockerfile: './Dockerfile', osFamily: 'alpine' },
+        source: { kind: 'project', path: path.join(dir, 'template.yaml') },
+        buildContext: approved,
+      });
+      // a file swapped after the review: nothing is built
+      await fs.writeFile(path.join(dir, 'extra.txt'), 'swapped after review');
+      const err = await provider.prepare(t).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AboxError);
+      expect((err as AboxError).code).toBe('conflict');
+      expect((err as AboxError).message).toContain('changed since it was approved');
+      const images = await raw.listImages({ filters: { label: ['abox.managed=1'] } });
+      expect(images.flatMap((i) => i.RepoTags ?? []).some((x) => x.includes('approved-ctx'))).toBe(
+        false,
+      );
+      // the reviewed content builds
+      await fs.writeFile(path.join(dir, 'extra.txt'), 'reviewed');
+      const img = await provider.prepare(t);
+      const s = await sb({ template: t, image: img }, true);
+      expect((await run(s, 'cat /etc/extra.txt')).stdout).toBe('reviewed');
+    }, 120_000);
+
     it('gcImages removes unreferenced template images only', async () => {
       const t = makeTemplate({ name: 'abox-test-gc' });
       const img = await provider.prepare(t);
@@ -201,7 +251,7 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
         owner: 'human',
         createdAt: s.createdAt,
         expiresAt: s.expiresAt,
-        labels: { 'abox.test': '1', note: 'x' },
+        labels: { [TEST_LABEL]: TEST_RUN, note: 'x' },
       });
       expect(info.backendRef).toMatch(/^[0-9a-f]{64}$/);
       await provider.start(s.id);
@@ -387,7 +437,7 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       await expect(provider.create(iso)).rejects.toMatchObject({ code: 'unsupported' });
       const ssh = createDockerProvider(
         { host: 'local', kind: 'ssh', engineSocket: SOCK },
-        { extraLabels: { 'abox.test': '1' } },
+        { extraLabels: { [TEST_LABEL]: TEST_RUN } },
       );
       expect(ssh.capabilities().workspaceDelivery).toEqual(['none', 'copy']);
       expect(ssh.capabilities().mounts).toBe(false);
@@ -642,6 +692,95 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect(ca2).not.toBe(ca);
     }, 120_000);
 
+    it('at expiry the proxy sidecar, its secret config and the internal network go; the sandbox stays for export', async () => {
+      const now = Date.now();
+      const s = await sb(
+        {
+          createdAt: now,
+          expiresAt: now + 10_000,
+          network: {
+            mode: 'allowlist',
+            allow: ['example.com'],
+            blockPrivate: true,
+            privateExceptions: [],
+            injections: [
+              { host: 'example.com', header: 'Authorization', value: 'Bearer EXPIRY-SECRET' },
+            ],
+          },
+        },
+        true,
+      );
+      const short = s.id.split('/')[1];
+      await run(s, 'echo exported > /workspace/result.txt');
+      // the deadline is moved to a time that is not a whole second (it is stored rounded up)
+      const deadline = now + 11_500;
+      await provider.extendExpiry!(s.id, deadline);
+      await provider.extendExpiry!(s.id, deadline); // idempotent
+      const proxy = await raw.getContainer(`abox-proxy-${short}`).inspect();
+      const volume = proxy.Mounts.find((m) => m.Destination === '/etc/abox-proxy')?.Name ?? '';
+      expect(volume).not.toBe('');
+      // a stop before the deadline is an ordinary stop: everything stays and can be started again
+      await provider.stop(s.id);
+      expect((await raw.getContainer(`abox-proxy-${short}`).inspect()).State.Running).toBe(false);
+      await provider.start(s.id);
+      expect((await run(s, 'cat /workspace/result.txt')).stdout).toBe('exported\n');
+      // ... after it, the stop also removes the sidecar, its volume and the internal network
+      while (Date.now() < deadline + 50) await new Promise((r) => setTimeout(r, 100));
+      await provider.stop(s.id);
+      await expect(raw.getContainer(`abox-proxy-${short}`).inspect()).rejects.toMatchObject({
+        statusCode: 404,
+      });
+      await expect(raw.getVolume(volume).inspect()).rejects.toMatchObject({ statusCode: 404 });
+      await expect(raw.getNetwork(`abox-int-${short}`).inspect()).rejects.toMatchObject({
+        statusCode: 404,
+      });
+      // nothing of the secret is left on the engine
+      const all = JSON.stringify(await raw.listContainers({ all: true }));
+      expect(all).not.toContain('EXPIRY-SECRET');
+      // the sandbox itself is kept, stopped, expired, and its workspace can be read and copied out
+      expect((await inspectRaw(s)).State.Running).toBe(false);
+      await new Promise((r) => setTimeout(r, 1100)); // (the stored deadline is rounded up to a second)
+      expect((await provider.inspect(s.id)).state).toBe('expired');
+      expect((await provider.readFile(s.id, '/workspace/result.txt', 100)).data.toString()).toBe(
+        'exported\n',
+      );
+      const out = path.join(tmp, `expired-out-${short}`);
+      await provider.copyOut(s.id, '/workspace', out);
+      expect(await fs.readFile(path.join(out, 'result.txt'), 'utf8')).toBe('exported\n');
+      expect(await provider.networkEvents!(s.id)).toEqual([]);
+      // stopping again, starting and removing stay fine
+      await provider.stop(s.id);
+      await expect(provider.start(s.id)).rejects.toMatchObject({ code: 'conflict' });
+      await provider.remove(s.id);
+    }, 120_000);
+
+    it('start refuses an expired allowlist sandbox and removes its leftover sidecar', async () => {
+      const now = Date.now();
+      const s = await sb(
+        {
+          createdAt: now,
+          expiresAt: now + 4000,
+          network: {
+            mode: 'allowlist',
+            allow: ['example.com'],
+            blockPrivate: true,
+            privateExceptions: [],
+            injections: [],
+          },
+        },
+        true,
+      );
+      const short = s.id.split('/')[1];
+      await new Promise((r) => setTimeout(r, 5500));
+      // the container ended itself at its deadline; nobody called stop
+      expect((await raw.getContainer(`abox-proxy-${short}`).inspect()).State.Running).toBe(true);
+      await expect(provider.start(s.id)).rejects.toMatchObject({ code: 'conflict' });
+      await expect(raw.getContainer(`abox-proxy-${short}`).inspect()).rejects.toMatchObject({
+        statusCode: 404,
+      });
+      await provider.remove(s.id);
+    }, 60_000);
+
     it('injections without allowlist are rejected', async () => {
       const s = spec({
         network: {
@@ -751,9 +890,9 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
     });
 
     it('timeout works even when the pids limit is exhausted', async () => {
-      // 6 processes are the sandbox's own (init, main sleep, wrapper, watchdog + its sleep, shell): fill the rest
+      // 7 processes are the sandbox's own (init, deadline shell + its sleep, wrapper, watchdog + its sleep, shell): fill the rest
       const s = await sb({ resources: { ...template.resources, pids: 30 } });
-      const r = await run(s, 'i=0; while [ $i -lt 24 ]; do sleep 100 & i=$((i+1)); done; wait', {
+      const r = await run(s, 'i=0; while [ $i -lt 23 ]; do sleep 100 & i=$((i+1)); done; wait', {
         timeoutMs: 2000,
       });
       expect(r.timedOut).toBe(true);
@@ -766,6 +905,62 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect(r.timedOut).toBe(true);
       expect((await run(s, 'ps -o args | grep -c "[s]leep 300"; true')).stdout.trim()).toBe('0');
     });
+
+    it('the PATH an agent sets applies to its command, not to the exec wrapper', async () => {
+      const s = await sb();
+      for (const PATH of ['/nonexistent', '', '/nonexistent:/also/missing']) {
+        const t0 = Date.now();
+        // a PATH without the system directories: the wrapper's own helpers must still work, so the
+        // command runs (by absolute path) and finishes normally instead of being "killed after 0s"
+        const ok = await provider.exec(s.id, {
+          argv: ['/bin/echo', 'still works'],
+          env: { PATH },
+          timeoutMs: 30_000,
+        });
+        expect(ok, PATH).toMatchObject({ stdout: 'still works\n', exitCode: 0, timedOut: false });
+        expect(Date.now() - t0, PATH).toBeLessThan(5000);
+        // the command sees exactly the PATH it was given
+        const seen = await provider.exec(s.id, {
+          argv: ['/bin/sh', '-c', 'echo "[$PATH]"'],
+          env: { PATH },
+          timeoutMs: 30_000,
+        });
+        expect(seen.stdout, PATH).toBe(`[${PATH}]\n`);
+        // and finds nothing it should not: the user's PATH, not the wrapper's, is used for lookup
+        const lookup = await provider.exec(s.id, {
+          command: 'ls /',
+          env: { PATH },
+          timeoutMs: 30_000,
+        });
+        expect(lookup, PATH).toMatchObject({ exitCode: 127, timedOut: false });
+        // the watchdog still kills what runs too long with such a PATH
+        const slow = await provider.exec(s.id, {
+          argv: ['/bin/sleep', '300'],
+          env: { PATH },
+          timeoutMs: 1000,
+        });
+        expect(slow, PATH).toMatchObject({ timedOut: true, exitCode: 137 });
+      }
+      // a PATH that includes the system directories finds commands as usual
+      const found = await provider.exec(s.id, {
+        command: 'ls / > /dev/null && echo found',
+        env: { PATH: '/nonexistent:/bin:/usr/bin' },
+        timeoutMs: 30_000,
+      });
+      expect(found).toMatchObject({ stdout: 'found\n', exitCode: 0 });
+      expect((await run(s, 'ps -o args | grep -c "[s]leep 300"; true')).stdout.trim()).toBe('0');
+      expect((await run(s, 'ls /tmp/.abox-exec-* 2>/dev/null | wc -l')).stdout.trim()).toBe('0');
+      // abort (kill script) also works with such a PATH
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 700);
+      await expect(
+        provider.exec(s.id, {
+          argv: ['/bin/sleep', '300'],
+          env: { PATH: '/nonexistent' },
+          signal: ac.signal,
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+    }, 90_000);
 
     it('abort signal kills the command and rejects', async () => {
       const s = await sb();
@@ -932,6 +1127,129 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
         .resolves.toBeUndefined()
         .catch(() => undefined);
       await expect(fs.access(path.join(tmp, 'escape'))).rejects.toThrow();
+    });
+
+    it('copyIn / copyOut reach the /tmp tmpfs of a running sandbox (the archive API only sees the hidden image dir)', async () => {
+      const s = await sb();
+      const src = path.join(tmp, 'tmpfs-in');
+      await fs.mkdir(path.join(src, 'd', 'empty'), { recursive: true });
+      await fs.writeFile(path.join(src, 'd', 'f.txt'), 'tmp-file');
+      await fs.writeFile(path.join(src, 'secret'), 'x', { mode: 0o600 });
+      await fs.writeFile(path.join(src, 'script.sh'), '#!/bin/sh\n', { mode: 0o755 });
+      await fs.symlink('f.txt', path.join(src, 'd', 'rel'));
+      await fs.symlink('/etc/passwd', path.join(src, 'abs'));
+      await provider.copyIn(s.id, src, '/tmp/in');
+      // visible to the sandbox itself, owned by its user, modes and symlinks preserved
+      const seen = await run(
+        s,
+        'cat /tmp/in/d/f.txt; echo; stat -c "%U %a" /tmp/in /tmp/in/secret /tmp/in/script.sh /tmp/in/d/empty /tmp/in/d/f.txt; for l in /tmp/in/d/rel /tmp/in/abs; do readlink $l; done',
+      );
+      expect(seen.stdout).toBe(
+        'tmp-file\ndev 755\ndev 600\ndev 755\ndev 755\ndev 644\nf.txt\n/etc/passwd\n',
+      );
+      // ... and through the other file APIs
+      expect((await provider.readFile(s.id, '/tmp/in/d/f.txt', 100)).data.toString()).toBe(
+        'tmp-file',
+      );
+      expect((await provider.listDir(s.id, '/tmp/in')).map((e) => e.name)).toEqual([
+        'abs',
+        'd',
+        'script.sh',
+        'secret',
+      ]);
+      // the hidden image directory below the mount was not touched
+      const hidden = await raw
+        .getContainer(`abox-local-${s.id.split('/')[1]}`)
+        .getArchive({ path: '/tmp/in' })
+        .then(
+          () => true,
+          () => false,
+        );
+      expect(hidden).toBe(false);
+
+      // single file, and overwriting an existing file
+      await provider.copyIn(s.id, path.join(src, 'd', 'f.txt'), '/tmp/single.txt');
+      await fs.writeFile(path.join(src, 'd', 'f.txt'), 'v2');
+      await provider.copyIn(s.id, path.join(src, 'd', 'f.txt'), '/tmp/single.txt');
+      expect((await run(s, 'cat /tmp/single.txt')).stdout).toBe('v2');
+      // deeper, not yet existing destination directories are created
+      await provider.copyIn(s.id, path.join(src, 'd', 'f.txt'), '/tmp/new/dir/f.txt');
+      expect((await run(s, 'cat /tmp/new/dir/f.txt')).stdout).toBe('v2');
+
+      // out: what the sandbox wrote itself (the absolute symlink is refused by the safety rules)
+      await run(
+        s,
+        'rm /tmp/in/abs; mkdir /tmp/made && echo made > /tmp/made/m.txt && head -c 300000 /dev/urandom > /tmp/made/big.bin',
+      );
+      const out = path.join(tmp, 'tmpfs-out');
+      await provider.copyOut(s.id, '/tmp/in', out);
+      expect(await fs.readFile(path.join(out, 'd', 'f.txt'), 'utf8')).toBe('tmp-file');
+      expect((await fs.lstat(path.join(out, 'd', 'rel'))).isSymbolicLink()).toBe(true);
+      expect((await fs.stat(path.join(out, 'secret'))).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(path.join(out, 'd', 'empty'))).isDirectory()).toBe(true);
+      const made = path.join(tmp, 'tmpfs-made');
+      await provider.copyOut(s.id, '/tmp/made', made);
+      expect(await fs.readFile(path.join(made, 'm.txt'), 'utf8')).toBe('made\n');
+      expect((await fs.stat(path.join(made, 'big.bin'))).size).toBe(300000);
+      const one = path.join(tmp, 'tmpfs-one.txt');
+      await provider.copyOut(s.id, '/tmp/single.txt', one);
+      expect(await fs.readFile(one, 'utf8')).toBe('v2');
+      // a file named like an option does not confuse tar
+      await run(s, 'echo dash > /tmp/-n');
+      await provider.copyOut(s.id, '/tmp/-n', path.join(tmp, 'tmpfs-dash'));
+      expect(await fs.readFile(path.join(tmp, 'tmpfs-dash'), 'utf8')).toBe('dash\n');
+      // a whole round trip of binary content
+      const blob = Buffer.from(Array.from({ length: 70_000 }, (_, i) => (i * 31) % 256));
+      await fs.writeFile(path.join(tmp, 'blob.bin'), blob);
+      await provider.copyIn(s.id, path.join(tmp, 'blob.bin'), '/tmp/blob.bin');
+      await provider.copyOut(s.id, '/tmp/blob.bin', path.join(tmp, 'blob.back'));
+      expect((await fs.readFile(path.join(tmp, 'blob.back'))).equals(blob)).toBe(true);
+    });
+
+    it('copyIn / copyOut under /tmp: errors are clear (missing, stopped, mount point, tmpfs full, escapes)', async () => {
+      const s = await sb();
+      await expect(
+        provider.copyOut(s.id, '/tmp/missing', path.join(tmp, 'tmpfs-missing')),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        provider.copyIn(s.id, path.join(tmp, 'does-not-exist'), '/tmp/x'),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(provider.copyIn(s.id, tmp, '/tmp')).rejects.toMatchObject({
+        code: 'invalid_input',
+      });
+      // a symlink is refused as the source (it is never followed)
+      await fs.symlink('/etc/passwd', path.join(tmp, 'tmpfs-link'));
+      await expect(
+        provider.copyIn(s.id, path.join(tmp, 'tmpfs-link'), '/tmp/l'),
+      ).rejects.toMatchObject({ code: 'invalid_input' });
+      // the sandbox cannot make copyOut write outside the destination
+      await run(
+        s,
+        'mkdir /tmp/evil && ln -s /etc/passwd /tmp/evil/abs && ln -s ../../../escape /tmp/evil/up',
+      );
+      await expect(
+        provider.copyOut(s.id, '/tmp/evil', path.join(tmp, 'tmpfs-evil')),
+      ).rejects.toMatchObject({ code: 'policy_denied' });
+      await expect(fs.access(path.join(tmp, 'escape'))).rejects.toThrow();
+      // the tmpfs size is limited: a copy that does not fit fails loudly instead of truncating
+      await fs.writeFile(path.join(tmp, 'tmpfs-big.txt'), 'small');
+      const big = path.join(tmp, 'tmpfs-big.bin');
+      const mib = (await run(s, 'df -m /tmp | tail -1 | tr -s " " | cut -d" " -f2')).stdout.trim();
+      await fs.writeFile(big, Buffer.alloc((Number(mib) + 8) * 1024 * 1024, 1));
+      await expect(provider.copyIn(s.id, big, '/tmp/big.bin')).rejects.toMatchObject({
+        code: 'backend_error',
+      });
+      await fs.rm(big);
+      // stopped (or never started): the tmpfs does not exist, so nothing can be copied silently into the void
+      await provider.stop(s.id);
+      await expect(provider.copyIn(s.id, tmp, '/tmp/stopped')).rejects.toMatchObject({
+        code: 'conflict',
+      });
+      await expect(
+        provider.copyOut(s.id, '/tmp/in', path.join(tmp, 'tmpfs-stopped')),
+      ).rejects.toMatchObject({ code: 'conflict' });
+      // outside the tmpfs a stopped sandbox keeps working
+      await provider.copyIn(s.id, path.join(tmp, 'tmpfs-big.txt'), '/workspace/stopped.txt');
     });
 
     it('copy delivery: files owned by the user, symlinks stay symlinks, nothing outside is read', async () => {
@@ -1300,6 +1618,187 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       expect((await provider.list({ state: 'expired' })).map((i) => i.id)).toContain(s.id);
       await expect(provider.start(s.id)).rejects.toMatchObject({ code: 'conflict' });
     });
+
+    describe('updateResources', () => {
+      it('updates the live container: cpu, memory and swap together, kept across a restart', async () => {
+        const s = await sb();
+        const before = (await inspectRaw(s)).HostConfig;
+        await provider.updateResources!(s.id, { cpus: 0.5, memoryBytes: 300 * MiB });
+        const hc = (await inspectRaw(s)).HostConfig;
+        expect(hc.NanoCpus).toBe(500_000_000);
+        expect(hc.Memory).toBe(300 * MiB);
+        expect(hc.MemorySwap).toBe(300 * MiB); // still no swap
+        expect(hc.PidsLimit).toBe(before.PidsLimit); // untouched
+        const info = await provider.inspect(s.id);
+        expect(info.effective).toMatchObject({ cpus: 0.5, memoryBytes: 300 * MiB });
+        // the cgroup the sandbox sees moved too
+        const mem = await run(
+          s,
+          'cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes',
+        );
+        expect(Number(mem.stdout.trim())).toBe(300 * MiB);
+        // raising it above the old limit works (swap moves together with memory)
+        await provider.updateResources!(s.id, { memoryBytes: 600 * MiB });
+        expect((await inspectRaw(s)).HostConfig.Memory).toBe(600 * MiB);
+        expect((await inspectRaw(s)).HostConfig.MemorySwap).toBe(600 * MiB);
+        await provider.stop(s.id);
+        await provider.updateResources!(s.id, { cpus: 1.5 }); // a stopped sandbox too
+        await provider.start(s.id);
+        const again = (await inspectRaw(s)).HostConfig;
+        expect(again.NanoCpus).toBe(1_500_000_000);
+        expect(again.Memory).toBe(600 * MiB);
+        expect((await run(s, 'echo ok')).stdout).toBe('ok\n');
+      }, 60_000);
+    });
+
+    describe('extendExpiry', () => {
+      const EXPIRY_PATH = '/usr/local/share/abox/expires';
+      const roTemplate = (): ResolvedTemplate =>
+        makeTemplate({ ...template, labels: { 'abox.readonly-rootfs': 'true' } });
+
+      for (const readonlyRootfs of [false, true]) {
+        it(`moves the in-container deadline (${readonlyRootfs ? 'read-only' : 'writable'} rootfs), survives stop/start and reads back`, async () => {
+          const now = Date.now();
+          const s = await sb(
+            {
+              createdAt: now,
+              expiresAt: now + 5000,
+              ...(readonlyRootfs
+                ? { template: roTemplate(), labels: { 'abox.readonly-rootfs': 'true' } }
+                : {}),
+            },
+            true,
+          );
+          const moved = now + 60_000;
+          await provider.extendExpiry!(s.id, moved);
+          // the label is immutable, the stored deadline is what inspect / list report now
+          expect((await inspectRaw(s)).Config.Labels['abox.expires']).toBe(String(s.expiresAt));
+          const info = await provider.inspect(s.id);
+          expect(info.expiresAt).toBeGreaterThanOrEqual(moved);
+          expect(info.expiresAt).toBeLessThan(moved + 1000);
+          expect((await provider.list()).find((i) => i.id === s.id)?.expiresAt).toBe(
+            info.expiresAt,
+          );
+          // the sandbox user can not move it itself
+          const w = await run(s, `echo 9999999999 > ${EXPIRY_PATH}; echo rc=$?`);
+          expect(w.stdout).toMatch(/rc=[1-9]/);
+          // well past the original deadline
+          await new Promise((r) => setTimeout(r, Math.max(0, s.expiresAt - Date.now()) + 3000));
+          expect((await inspectRaw(s)).State.Running).toBe(true);
+          expect((await provider.inspect(s.id)).state).toBe('running');
+          expect((await run(s, 'echo alive')).stdout).toBe('alive\n');
+          // a restart honours the moved deadline (the label's is over)
+          await provider.stop(s.id);
+          await provider.start(s.id);
+          expect((await run(s, 'echo again')).stdout).toBe('again\n');
+          // never earlier than the current one; an equal one is a no-op
+          await expect(provider.extendExpiry!(s.id, s.expiresAt + 1000)).rejects.toMatchObject({
+            code: 'invalid_input',
+          });
+          await provider.extendExpiry!(s.id, info.expiresAt);
+        }, 60_000);
+      }
+
+      it('the sandbox file APIs never write abox-internal paths', async () => {
+        const now = Date.now();
+        const s = await sb({ createdAt: now, expiresAt: now + 60_000 }, true);
+        const forged = Buffer.from(`${Math.ceil(now / 1000) + 99_999}\n`);
+        const denied = { code: 'policy_denied' };
+        await expect(provider.writeFile(s.id, EXPIRY_PATH, forged)).rejects.toMatchObject(denied);
+        await expect(
+          provider.writeFile(s.id, '/usr/local/share/../share/abox/./expires', forged),
+        ).rejects.toMatchObject(denied);
+        await expect(
+          provider.writeFile(s.id, '/usr/local/share/abox/ca.crt', forged),
+        ).rejects.toMatchObject(denied);
+        await expect(
+          provider.writeFile(s.id, '/usr/local/share/abox/new/dir/x', forged),
+        ).rejects.toMatchObject(denied);
+        const src = path.join(tmp, 'internal-src');
+        await fs.mkdir(path.join(src, 'abox'), { recursive: true });
+        await fs.writeFile(path.join(src, 'abox', 'expires'), forged);
+        await fs.writeFile(path.join(src, 'expires'), forged);
+        for (const dest of [
+          EXPIRY_PATH,
+          '/usr/local/share/abox',
+          '/usr/local/share/abox/sub',
+          '/usr/local/share',
+          '/usr/local',
+        ]) {
+          await expect(provider.copyIn(s.id, src, dest)).rejects.toMatchObject(denied);
+        }
+        // nothing arrived, and nothing else is affected
+        expect((await run(s, `cat ${EXPIRY_PATH} 2>&1; echo rc=$?`)).stdout).toMatch(/rc=1/);
+        expect(await provider.extendExpiry!(s.id, now + 120_000)).toBeUndefined();
+        await provider.writeFile(s.id, '/workspace/ok.txt', Buffer.from('fine'));
+        await provider.copyIn(s.id, path.join(src, 'expires'), '/workspace/copied');
+        expect((await run(s, 'cat /workspace/ok.txt /workspace/copied')).stdout).toContain('fine');
+        expect((await provider.inspect(s.id)).expiresAt).toBeLessThan(now + 121_000);
+      }, 60_000);
+
+      it('a deadline file the sandbox smuggled in through a symlink is ignored', async () => {
+        const now = Date.now();
+        const s = await sb({ createdAt: now, expiresAt: now + 4000 }, true);
+        // The lexical check cannot see this; the file ends up owned by the sandbox user.
+        await run(s, 'ln -s /usr/local/share/abox /workspace/link');
+        const forged = Buffer.from(`${Math.ceil(now / 1000) + 99_999}\n`);
+        await provider.writeFile(s.id, '/workspace/link/expires', forged).catch(() => undefined);
+        const seen = await run(s, `stat -c '%u %a' ${EXPIRY_PATH} 2>&1 || true`);
+        // the engine follows the link (the file is there, owned by the sandbox user): the entrypoint and the backend ignore it
+        expect(seen.exitCode).toBe(0);
+        for (let i = 0; i < 30 && (await inspectRaw(s)).State.Running; i++)
+          await new Promise((r) => setTimeout(r, 500));
+        const after = await inspectRaw(s);
+        expect(after.State.Running).toBe(false);
+        expect(after.State.ExitCode).toBe(0);
+        expect(Date.parse(after.State.FinishedAt)).toBeLessThan(now + 12_000);
+        expect((await provider.inspect(s.id)).state).toBe('expired');
+        expect((await provider.inspect(s.id)).expiresAt).toBe(s.expiresAt);
+      }, 40_000);
+
+      it('exits at the moved deadline and not at the original one', async () => {
+        const now = Date.now();
+        const s = await sb({ createdAt: now, expiresAt: now + 4000 }, true);
+        await provider.extendExpiry!(s.id, now + 9000);
+        await new Promise((r) => setTimeout(r, 6500));
+        expect((await inspectRaw(s)).State.Running).toBe(true);
+        for (let i = 0; i < 20 && (await inspectRaw(s)).State.Running; i++)
+          await new Promise((r) => setTimeout(r, 500));
+        const after = await inspectRaw(s);
+        expect(after.State.Running).toBe(false);
+        expect(after.State.ExitCode).toBe(0);
+        expect(Date.parse(after.State.FinishedAt)).toBeGreaterThanOrEqual(now + 8500);
+        expect((await provider.inspect(s.id)).state).toBe('expired');
+      }, 40_000);
+
+      it('works on a stopped sandbox and survives a snapshot restore', async () => {
+        const now = Date.now();
+        const s = await sb({ createdAt: now, expiresAt: now + 5000 }, true);
+        const snap = await provider.snapshot!(s.id, 'before-extend');
+        await provider.stop(s.id);
+        await provider.extendExpiry!(s.id, now + 60_000);
+        await provider.start(s.id);
+        await provider.restore!(s.id, snap); // the snapshot holds the old deadline
+        await new Promise((r) => setTimeout(r, Math.max(0, s.expiresAt - Date.now()) + 3000));
+        expect((await inspectRaw(s)).State.Running).toBe(true);
+        expect((await run(s, 'echo alive')).stdout).toBe('alive\n');
+      }, 60_000);
+
+      it('rejects an expired sandbox, bad values and unknown ids', async () => {
+        const s = spec({ expiresAt: Date.now() - 1000 });
+        await track.create(s, false);
+        await expect(provider.extendExpiry!(s.id, Date.now() + 60_000)).rejects.toMatchObject({
+          code: 'conflict',
+        });
+        const live = await sb({}, false);
+        await expect(provider.extendExpiry!(live.id, Number.NaN)).rejects.toMatchObject({
+          code: 'invalid_input',
+        });
+        await expect(
+          provider.extendExpiry!('local/doesnotexist', Date.now() + 60_000),
+        ).rejects.toMatchObject({ code: 'not_found' });
+      });
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1352,13 +1851,14 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
 
 // ---------------------------------------------------------------------------
 // The shared provider contract, against real Docker. Declared in this file (not its own) so that
-// it runs after the suite above: both clean up by label and `gcImages` is engine-global.
+// it runs after the suite above: both clean up by label. The provider has an instance id of its own, so the
+// gc tests only ever delete images that this very suite built, however busy the shared engine is.
 defineProviderContract({
   name: 'docker',
   skip: !dockerEnabled,
-  gc: false, // gcImages would remove other templates' images on a shared engine
+  gc: true,
   timeoutMs: 120_000,
-  createProvider: () => newProvider(),
+  createProvider: () => newProvider({ instanceId: `${TEST_INSTANCE}c` }),
   template: () =>
     makeTestTemplate({
       name: 'abox-test-contract',

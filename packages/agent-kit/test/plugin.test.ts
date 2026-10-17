@@ -1,5 +1,18 @@
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -14,6 +27,7 @@ const TOOLS = [
   'sandbox_create',
   'sandbox_list',
   'sandbox_inspect',
+  'sandbox_start',
   'sandbox_exec',
   'sandbox_process_start',
   'sandbox_process_logs',
@@ -239,5 +253,83 @@ describe('agent-kit plugin', () => {
         expect(r.stdout).toBe('');
       }
     });
+  });
+
+  describe('check-abox SessionStart hook', () => {
+    const script = join(root, 'hooks', 'check-abox.sh');
+    const sh = '/bin/sh';
+    /** A PATH directory holding only the tools the script uses (so a real `abox` on this machine cannot be found). */
+    const withDir = <T>(fn: (d: string) => T): T => {
+      const dir = mkdtempSync(join(tmpdir(), 'abox-kit-'));
+      try {
+        for (const tool of ['cat', 'tr', 'sed']) {
+          const found = ['/usr/bin', '/bin'].map((p) => join(p, tool)).find((p) => existsSync(p));
+          if (found) symlinkSync(found, join(dir, tool));
+        }
+        return fn(dir);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    const run = (env: Record<string, string>) =>
+      spawnSync(sh, [script], { input: '{}', env, encoding: 'utf8', timeout: 5000 });
+
+    it('is wired as SessionStart and the script is executable', () => {
+      const hooks = readJson(join(root, 'hooks', 'hooks.json')) as {
+        hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> };
+      };
+      expect(hooks.hooks.SessionStart[0]?.hooks[0]?.command).toContain('hooks/check-abox.sh');
+      expect(() => accessSync(script, constants.X_OK)).not.toThrow();
+    });
+
+    it('is silent when abox is on the PATH, and when ABOX_BIN names an executable file', () =>
+      withDir((d) => {
+        const bin = join(d, 'abox');
+        writeFileSync(bin, '#!/bin/sh\nexit 0\n');
+        chmodSync(bin, 0o755);
+        const onPath = run({ PATH: d });
+        expect(onPath.status).toBe(0);
+        expect(onPath.stdout).toBe('');
+        const viaVar = run({ PATH: '/nonexistent', ABOX_BIN: bin });
+        expect(viaVar.status).toBe(0);
+        expect(viaVar.stdout).toBe('');
+      }));
+
+    it('says clearly that abox was not found, how to fix it, and never fails the session', () =>
+      withDir((d) => {
+        const r = run({ PATH: d });
+        expect(r.status).toBe(0);
+        const out = JSON.parse(r.stdout) as {
+          systemMessage: string;
+          hookSpecificOutput: { hookEventName: string; additionalContext: string };
+        };
+        expect(out.systemMessage).toMatch(/'abox' command was not found on the PATH/);
+        expect(out.systemMessage).toContain('ABOX_BIN=/full/path/to/abox');
+        expect(out.systemMessage).toContain('abox doctor');
+        expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart');
+        expect(out.hookSpecificOutput.additionalContext).toContain('NOT available');
+        expect(out.hookSpecificOutput).not.toHaveProperty('permissionDecision');
+      }));
+
+    it('names the bad ABOX_BIN, with quotes and backslashes kept JSON-safe', () =>
+      withDir((d) => {
+        const r = run({ PATH: d, ABOX_BIN: '/opt/"odd"\\path/abox' });
+        expect(r.status).toBe(0);
+        const out = JSON.parse(r.stdout) as { systemMessage: string };
+        expect(out.systemMessage).toContain('ABOX_BIN is set to \'/opt/"odd"\\path/abox\'');
+        expect(out.systemMessage).toContain('does not exist or is not executable');
+        // a directory is not an executable file either
+        const dirCase = run({ PATH: d, ABOX_BIN: d });
+        expect(JSON.parse(dirCase.stdout).systemMessage).toContain('ABOX_BIN is set to');
+      }));
+  });
+
+  it('the README and the Claude Code guide state the PATH requirement and ABOX_BIN', () => {
+    for (const file of [join(root, 'README.md'), join(repoRoot, 'docs', 'claude-code.md')]) {
+      const text = readFileSync(file, 'utf8');
+      expect(text, file).toMatch(/PATH/);
+      expect(text, file).toContain('ABOX_BIN');
+      expect(text, file).toContain('check-abox');
+    }
   });
 });

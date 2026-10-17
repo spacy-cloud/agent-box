@@ -60,8 +60,9 @@ export function parseSize(str: string): number {
   if (!m) throw new RangeError(`invalid size "${str}" (examples: 512m, 4g, 1.5g)`);
   const unit = (m[2] ?? '').toLowerCase();
   const bytes = Math.floor(Number(m[1]) * (SIZE_UNITS[unit] ?? 1));
-  if (!Number.isSafeInteger(bytes) || bytes <= 0)
-    throw new RangeError(`invalid size "${str}": must be greater than zero`);
+  if (!Number.isFinite(bytes) || bytes > Number.MAX_SAFE_INTEGER)
+    throw new RangeError(`invalid size "${str}": too large`);
+  if (bytes <= 0) throw new RangeError(`invalid size "${str}": must be greater than zero`);
   return bytes;
 }
 
@@ -74,8 +75,9 @@ export function parseDuration(str: string): number {
     throw new RangeError(`invalid duration "${str}" (examples: 30s, 15m, 2h, 1d, 1h30m)`);
   let ms = 0;
   for (const m of s.matchAll(DURATION_PART_RE)) ms += Number(m[1]) * (DURATION_UNITS[m[2]!] ?? 0);
-  if (!Number.isSafeInteger(ms) || ms <= 0)
-    throw new RangeError(`invalid duration "${str}": must be greater than zero`);
+  if (!Number.isFinite(ms) || ms > Number.MAX_SAFE_INTEGER)
+    throw new RangeError(`invalid duration "${str}": too large`);
+  if (ms <= 0) throw new RangeError(`invalid duration "${str}": must be greater than zero`);
   return ms;
 }
 

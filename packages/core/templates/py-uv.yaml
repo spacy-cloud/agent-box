@@ -1,0 +1,29 @@
+apiVersion: 1
+name: py-uv
+description: >-
+  Python 3.13 with uv in a container (python backend), without git and system compilers.
+  Network is limited to PyPI. Use it to run Python code, create environments and install
+  packages with uv, and run tests of pure-Python projects.
+backend: python
+isolation: container
+
+python:
+  version: '3.13'
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 2
+  memory: 2g
+  pids: 256
+  ttl: 2h
+
+network:
+  mode: allowlist
+  presets: [pypi]
+
+labels:
+  use-for: Python code and uv environments (Python 3.13, uv, only PyPI reachable)

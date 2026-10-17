@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { AboxError } from '../errors.js';
+import type { ErrorIssue } from '../errors.js';
 import type { AboxConfig } from '../config/config.js';
 import { loadConfig } from '../config/config.js';
 import { ensureDirs, resolvePaths } from '../config/paths.js';
@@ -8,11 +9,18 @@ import type { AboxPaths } from '../config/paths.js';
 import type { ProviderFactory, SandboxProvider } from '../provider.js';
 import { LibsecretStore } from '../secrets/libsecret.js';
 import type { SecretStore } from '../secrets/store.js';
+import { sha256Hex } from '../state/canonical.js';
 import { StateStore } from '../state/store.js';
-import type { SandboxRecord } from '../state/sandbox-registry.js';
+import type { SandboxRecord, SandboxRegistry } from '../state/sandbox-registry.js';
 import type { AuditAppendInput, AuditEntry } from '../state/audit-log.js';
-import { canonicalizePath, defaultPolicy, parsePolicy, resolveContext } from '../policy/index.js';
-import type { AgentContext, HostInfo, Policy } from '../policy/index.js';
+import {
+  canonicalizePath,
+  defaultPolicy,
+  parsePolicy,
+  resolveContext,
+  restrictivePolicy,
+} from '../policy/index.js';
+import type { AgentContext, HostInfo, HostUsage, Policy } from '../policy/index.js';
 import { DEFAULT_POLICY_YAML } from '../policy/load.js';
 import type { BackendKind, SandboxId, SandboxInfo, SandboxState } from '../types.js';
 import type { WorkspaceRecord } from '../workspace/index.js';
@@ -21,10 +29,12 @@ import type {
   AboxEventType,
   Caller,
   HostResolver,
+  HumanAttachedView,
   ResolvedHost,
   SandboxView,
   SandboxWorkspaceView,
 } from './types.js';
+import { collectNetworkEvents } from './network-audit.js';
 import { errMessage, isPidAlive, SANDBOX_ID_RE } from './util.js';
 
 export interface AboxOptions {
@@ -59,13 +69,30 @@ export interface StoredEffective {
   resources: { cpus: number; memoryBytes: number; ttlMs: number; pids?: number };
   /** Named `keyringRefs` on purpose: a key called `secrets` would be redacted by the state layer. */
   keyringRefs: Array<{ ref: string; inject: string; hosts: string[]; path?: string }>;
+  /** Hash of the create request as sent (`requestId` idempotency, fast path). */
   requestHash?: string;
+  /** Hash of the effective create request (template resolved, overrides merged); equivalent requests share it. */
+  effectiveRequestHash?: string;
   warnings?: string[];
   /** Present while the create is in flight; used to detect creators killed with `kill -9`. */
   creator?: { pid: number; host: string; startedAt: number };
   workspaceWarnings?: string[];
   /** Who/what created it, for `inspect`. */
   imageRef?: string;
+}
+
+/**
+ * Set while policy.yaml on disk is invalid (see `Internals.policyProblem`). `fallback` says which
+ * policy is in the manager meanwhile: `last_valid` = the last valid one (kept in memory, or the
+ * latest revision recorded in the state database when the process started with the file already
+ * broken), `built_in` = the restrictive built-in one (no agent context at all) because no valid
+ * revision exists.
+ */
+export interface PolicyProblem {
+  message: string;
+  detectedAt: number;
+  issues: ErrorIssue[];
+  fallback: 'last_valid' | 'built_in';
 }
 
 const PREPARING_MAX_AGE_MS = 30 * 60_000;
@@ -87,11 +114,30 @@ export class Internals {
   private readonly hostResolverFn: HostResolver | undefined;
   private readonly policyOverride: string | undefined;
   private policyStamp = '';
+  /**
+   * Set while policy.yaml on disk is invalid: the manager is in degraded mode (fail closed). A human
+   * can still look at everything and clean up (list, inspect, stop, remove, logs, doctor, audit,
+   * approvals list/deny, templates list/show/validate, policy show/validate/edit), using the last valid
+   * policy (or the restrictive built-in one) to resolve the human context. Nothing that creates or
+   * grants runs (`requirePolicyValid`), and every agent context is refused (`context`): without a
+   * valid policy there is nothing to say what an agent may do. Cleared by the next valid load.
+   */
+  policyProblem: PolicyProblem | undefined;
   private policyCheckedAt = 0;
   private readonly providerCache = new Map<string, SandboxProvider>();
   private readonly listeners = new Set<(e: AboxEvent) => void>();
+  /** Per sandbox: when this process last asked the backend for proxy egress events (throttling). */
+  readonly netPolledAt = new Map<string, number>();
+  private readonly coalesced = new Map<string, number>();
   private lastTtlSweep = -Infinity;
   private sweeping = false;
+  /** Expired sandboxes whose backend object this process saw stopped (or gone): not asked again. */
+  private readonly expiredQuiet = new Set<SandboxId>();
+  /** Expired sandboxes that could not be stopped; the failure was audited once. */
+  private readonly expiredStopFailed = new Set<SandboxId>();
+  private readonly ttlWatchers = new Set<NodeJS.Timeout>();
+  /** Ends of the human terminals this process holds in agent sandboxes (see takeover.ts); run on close. */
+  readonly takeovers = new Set<() => void>();
   private readonly ttlIntervalMs: number;
   closed = false;
 
@@ -119,7 +165,7 @@ export class Internals {
     this.hostResolverFn = opts.hostResolver;
     this.policyOverride = opts.policyText;
     this.ttlIntervalMs = Math.max(0, (opts.ttlCheckIntervalSec ?? 5) * 1000);
-    const loaded = this.readPolicy();
+    const loaded = this.loadPolicyOrDegrade();
     this.policy = loaded.policy;
     this.policyText = loaded.text;
     this.policyStamp = loaded.stamp;
@@ -142,7 +188,9 @@ export class Internals {
       state.close();
       throw e;
     }
-    self.recordPolicyRevision('system');
+    // A broken policy.yaml must not be recorded as a revision (nor the fallback in force instead of it).
+    if (self.policyProblem) self.reportInvalidPolicy('startup');
+    else self.recordPolicyRevision('system', 'startup');
     return self;
   }
 
@@ -177,14 +225,120 @@ export class Internals {
     }
   }
 
-  recordPolicyRevision(actor: string): number | null {
+  /**
+   * Startup load: an invalid or unreadable policy.yaml does not stop the manager from opening (that
+   * would lock the human out of `ls`, `rm`, `doctor`, `policy edit`, ...). The manager opens in
+   * degraded mode instead, see `policyProblem`. A policy handed in as text (tests) is not a file:
+   * its errors are thrown as before.
+   */
+  private loadPolicyOrDegrade(): { policy: Policy; text: string; stamp: string } {
+    try {
+      return this.readPolicy();
+    } catch (e) {
+      if (this.policyOverride !== undefined || !(e instanceof AboxError)) throw e;
+      const fallback = this.lastValidPolicy();
+      this.policyProblem = {
+        message: e.message,
+        detectedAt: this.now(),
+        issues: e.issues.map((i) => ({ ...i })),
+        fallback: fallback.kind,
+      };
+      return { policy: fallback.policy, text: fallback.text, stamp: this.fileStamp() };
+    }
+  }
+
+  /** The latest policy.yaml revision recorded in the state database, else the restrictive built-in policy. */
+  private lastValidPolicy(): { policy: Policy; text: string; kind: 'last_valid' | 'built_in' } {
+    try {
+      const latest = this.state.policyRevisions.latest();
+      if (latest) {
+        return {
+          policy: parsePolicy(latest.content, { kind: 'file', path: this.paths.policyFile }),
+          text: latest.content,
+          kind: 'last_valid',
+        };
+      }
+    } catch {
+      /* a stored revision that no longer parses (older abox) is as good as none */
+    }
+    return { policy: restrictivePolicy(), text: 'version: 1\n', kind: 'built_in' };
+  }
+
+  private fileStamp(): string {
+    try {
+      const st = statSync(this.paths.policyFile);
+      return `${st.mtimeMs}:${st.size}:${st.ino}`;
+    } catch {
+      return 'none';
+    }
+  }
+
+  /**
+   * Audit (and for a running manager announce) that policy.yaml is invalid. At startup the same broken
+   * file is reported once, not by every command that opens the manager.
+   */
+  private reportInvalidPolicy(detected: 'startup' | 'reload'): void {
+    const p = this.policyProblem;
+    if (!p) return;
+    let fileHash = 'unreadable';
+    try {
+      fileHash = sha256Hex(readFileSync(this.paths.policyFile));
+    } catch {
+      /* keep 'unreadable' */
+    }
+    if (detected === 'startup') {
+      const last = this.state.audit.query({
+        action: 'policy.reload_failed',
+        limit: 1,
+        order: 'desc',
+      })[0];
+      if (last?.details?.['fileHash'] === fileHash) return;
+    }
+    this.audit('system', 'policy.reload_failed', {
+      decision: 'error',
+      details: {
+        message: p.message,
+        detected,
+        fileHash,
+        note:
+          p.fallback === 'last_valid'
+            ? 'degraded mode until policy.yaml is valid again: the last valid policy is used to look at things and clean up; creating, granting and every agent are refused'
+            : 'degraded mode until policy.yaml is valid again: no valid policy was ever recorded, so only the human context exists; creating, granting and every agent are refused',
+        ...(p.issues.length > 0 ? { issues: p.issues.slice(0, 10) } : {}),
+      },
+    });
+  }
+
+  /**
+   * Make sure the policy in force is the latest stored revision. A file that differs from the
+   * latest revision was edited outside abox (while no manager ran, or by another tool): it is stored
+   * as actor `external-edit` and, so that the hash chain shows it too, audited as
+   * `policy.external_edit` with the old and new revision and content hashes (never the content).
+   */
+  recordPolicyRevision(actor: string, detected: 'startup' | 'reload'): number | null {
     const latest = this.state.policyRevisions.latest();
     if (latest && latest.contentHash === this.policy.contentHash) return latest.rev;
-    return this.state.policyRevisions.record({
+    const external = latest !== undefined;
+    const rec = this.state.policyRevisions.record({
       contentHash: this.policy.contentHash,
       content: this.policyText,
-      actor: latest ? 'external-edit' : actor,
-    }).rev;
+      actor: external ? 'external-edit' : actor,
+    });
+    // `changed` is false when another process recorded the same edit first; it audits it.
+    if (external && rec.changed) {
+      this.audit('system', 'policy.external_edit', {
+        decision: 'info',
+        details: {
+          oldRevision: latest.rev,
+          oldHash: latest.contentHash,
+          revision: rec.rev,
+          newHash: this.policy.contentHash,
+          bytes: Buffer.byteLength(this.policyText),
+          detected,
+        },
+      });
+    }
+    return rec.rev;
   }
 
   /** Pick up edits of policy.yaml made by a human in another process (cheap stat, at most every 500 ms). */
@@ -207,21 +361,24 @@ export class Internals {
       this.policy = loaded.policy;
       this.policyText = loaded.text;
       this.policyStamp = loaded.stamp;
+      this.policyProblem = undefined;
       if (changed) {
-        this.recordPolicyRevision('external-edit');
-        this.audit('system', 'policy.reload', {
-          decision: 'info',
-          details: { contentHash: loaded.policy.contentHash },
-        });
+        this.recordPolicyRevision('external-edit', 'reload');
         this.emit('policy.changed', { data: { contentHash: loaded.policy.contentHash } });
       }
     } catch (e) {
-      // Keep the last good policy; a broken edit must not silently widen or drop the rules.
+      // Degraded mode: the last good policy only serves to look at things and clean up (see
+      // `policyProblem`); a broken edit must not silently widen or drop the rules, nor keep granting under them.
       this.policyStamp = stamp;
-      this.audit('system', 'policy.reload_failed', {
-        decision: 'error',
-        details: { message: errMessage(e) },
-      });
+      const message = errMessage(e);
+      this.policyProblem = {
+        message,
+        detectedAt: this.now(),
+        issues: e instanceof AboxError ? e.issues.map((i) => ({ ...i })) : [],
+        fallback: this.policyProblem?.fallback ?? 'last_valid',
+      };
+      this.reportInvalidPolicy('reload');
+      this.emit('policy.reload_failed', { data: { message } });
     }
   }
 
@@ -229,6 +386,7 @@ export class Internals {
   adoptPolicy(policy: Policy, text: string): void {
     this.policy = policy;
     this.policyText = text;
+    this.policyProblem = undefined;
     try {
       const st = statSync(this.paths.policyFile);
       this.policyStamp = `${st.mtimeMs}:${st.size}:${st.ino}`;
@@ -246,6 +404,16 @@ export class Internals {
     const id = (caller as { contextId?: unknown } | undefined)?.contextId;
     if (typeof id !== 'string' || id.length === 0 || id.length > 128) {
       throw new AboxError('policy_denied', 'a caller with a context id is required');
+    }
+    if (this.policyProblem && id !== 'human') {
+      // Degraded mode: without a valid policy there is nothing that says what this agent may do.
+      if (this.firstWithin(`policy-invalid|${id}`, 10_000)) {
+        this.audit('unknown', 'context.resolve', {
+          decision: 'deny',
+          details: { contextId: id.slice(0, 64), reason: 'policy_invalid' },
+        });
+      }
+      throw this.policyInvalidError(undefined);
     }
     let ctx: AgentContext;
     try {
@@ -277,6 +445,36 @@ export class Internals {
     );
   }
 
+  /**
+   * Degraded mode (policy.yaml invalid, see `policyProblem`): refuses an operation that creates or
+   * grants something, for the human as well (fail closed). Audited once per burst.
+   */
+  requirePolicyValid(ctx: AgentContext, action: string, what: string): void {
+    if (!this.policyProblem) return;
+    if (this.firstWithin(`policy-invalid|${ctx.owner}|${action}`, 10_000)) {
+      this.audit(ctx.owner, action, {
+        decision: 'deny',
+        details: { reason: 'policy_invalid', message: this.policyProblem.message.slice(0, 500) },
+      });
+    }
+    throw this.policyInvalidError(what);
+  }
+
+  private policyInvalidError(what: string | undefined): AboxError {
+    const p = this.policyProblem;
+    return new AboxError(
+      'policy_denied',
+      `policy.yaml is invalid, so ${what ?? 'every agent request'} is refused until it is fixed${p ? `: ${p.message}` : ''}`,
+      {
+        hint: what
+          ? 'Fix policy.yaml: `abox policy validate` lists the problems, `abox policy edit` repairs it. Until then you can look at everything and clean up (ls, inspect, stop, rm, logs, doctor, audit, approvals ls/deny, template ls/show/validate, policy show/validate/edit).'
+          : 'Only the human can fix policy.yaml (`abox policy validate`). Your sandboxes keep running until their TTL; try again once it is valid.',
+        ...(p && p.issues.length > 0 ? { issues: p.issues.slice(0, 10) } : {}),
+        details: { reason: 'policy_invalid' },
+      },
+    );
+  }
+
   // -- audit & events ---------------------------------------------------------------------------
 
   audit(
@@ -301,6 +499,19 @@ export class Internals {
         /* listeners must not break the manager */
       }
     }
+  }
+
+  /**
+   * True the first time `key` is seen within `windowMs`. Used for read-only operations that a surface
+   * may poll (`abox logs -f`, a GUI log view): the first read of a burst is audited, the polls after it are not.
+   */
+  firstWithin(key: string, windowMs: number): boolean {
+    const t = Date.now();
+    const last = this.coalesced.get(key);
+    if (last !== undefined && t - last < windowMs) return false;
+    if (this.coalesced.size > 1000) this.coalesced.clear();
+    this.coalesced.set(key, t);
+    return true;
   }
 
   // -- hosts & providers --------------------------------------------------------------------------
@@ -410,10 +621,28 @@ export class Internals {
   }
 
   countActiveOnHost(host: string): number {
+    return this.hostUsage(host).sandboxes;
+  }
+
+  /**
+   * What the sandboxes on `host` reserve together: their count and the cpu / memory limits they were
+   * created (or resized) with. Counted are the sandboxes that can still run, i.e. every one that is
+   * being created, created, running or stopped (a stopped one keeps its reservation, so starting it
+   * again can never exceed the host limits); not counted are expired, removed and failed ones and
+   * those the backend no longer reports. `exclude` leaves one sandbox out (the one being resized).
+   * Pass the `registry` handed to `SandboxRegistry.atomic` / `claim` to count inside that transaction.
+   */
+  hostUsage(host: string, o: { exclude?: SandboxId; registry?: SandboxRegistry } = {}): HostUsage {
     const states: SandboxState[] = ['preparing', 'created', 'running', 'stopped'];
-    return this.state.sandboxes
-      .list({ host, state: states })
-      .filter((r) => !r.stale && !this.isInterrupted(r)).length;
+    const usage: HostUsage = { sandboxes: 0, cpus: 0, memoryBytes: 0 };
+    for (const r of (o.registry ?? this.state.sandboxes).list({ host, state: states })) {
+      if (r.stale || this.isInterrupted(r) || r.id === o.exclude) continue;
+      const res = (r.effective as Partial<StoredEffective> | null)?.resources;
+      usage.sandboxes += 1;
+      usage.cpus += Number.isFinite(res?.cpus) ? res!.cpus : 0;
+      usage.memoryBytes += Number.isFinite(res?.memoryBytes) ? res!.memoryBytes : 0;
+    }
+    return usage;
   }
 
   /** A `preparing` row whose creator process is gone (or that has been preparing for far too long). */
@@ -557,7 +786,22 @@ export class Internals {
         ...(providerEffective ? { provider: providerEffective } : {}),
       },
       requestId: rec.requestId,
+      ...this.humanAttachedOf(rec),
     };
+  }
+
+  /** `{ humanAttached }` while a human terminal is open in this agent-owned sandbox, else nothing. */
+  humanAttachedOf(rec: SandboxRecord): { humanAttached?: HumanAttachedView } {
+    if (rec.state !== 'running' || !rec.owner.startsWith('agent:')) return {};
+    try {
+      const live = this.state.humanSessions.active(rec.id);
+      const first = live[0];
+      return first
+        ? { humanAttached: { sessions: live.length, since: first.startedAt, actor: first.actor } }
+        : {};
+    } catch {
+      return {}; // a busy state file must not break listing
+    }
   }
 
   // -- TTL ---------------------------------------------------------------------------------------------------
@@ -576,11 +820,14 @@ export class Internals {
           continue;
         done.push(rec.id);
         let stopError: string | undefined;
+        await collectNetworkEvents(this, rec);
         try {
           const p = await this.providerForRecord(rec);
           await p.stop(rec.id);
+          this.expiredQuiet.add(rec.id);
         } catch (e) {
-          if (!(e instanceof AboxError && e.code === 'not_found')) stopError = errMessage(e);
+          if (e instanceof AboxError && e.code === 'not_found') this.expiredQuiet.add(rec.id);
+          else stopError = errMessage(e);
         }
         this.audit('system', 'sandbox.expired', {
           sandboxId: rec.id,
@@ -607,9 +854,82 @@ export class Internals {
     return done;
   }
 
+  /**
+   * Make sure every expired sandbox is really stopped. `sweepTtl` marks a sandbox `expired` once and
+   * stops it once; when that stop failed (engine busy, host unreachable, the process died in
+   * between) nothing would ever try again, and a backend deadline that was moved from inside the
+   * sandbox would go unnoticed. This asks again, for the sandboxes this process has not seen
+   * stopped yet; `stop` is idempotent, so concurrent processes can do the same. Removal stays with
+   * `gc`: the results of an expired sandbox can still be exported.
+   */
+  async enforceExpired(): Promise<SandboxId[]> {
+    const stopped: SandboxId[] = [];
+    for (const rec of this.state.sandboxes.list({ state: ['expired'] })) {
+      if (this.closed) break;
+      if (this.expiredQuiet.has(rec.id)) continue;
+      try {
+        await (await this.providerForRecord(rec)).stop(rec.id);
+        this.expiredQuiet.add(rec.id);
+        this.expiredStopFailed.delete(rec.id);
+        stopped.push(rec.id);
+      } catch (e) {
+        if (e instanceof AboxError && e.code === 'not_found') {
+          this.expiredQuiet.add(rec.id);
+          continue;
+        }
+        if (this.expiredStopFailed.has(rec.id)) continue;
+        this.expiredStopFailed.add(rec.id);
+        this.audit('system', 'sandbox.expired_stop', {
+          sandboxId: rec.id,
+          decision: 'error',
+          details: { owner: rec.owner, expiresAt: rec.expiresAt, message: errMessage(e) },
+        });
+      }
+    }
+    return stopped;
+  }
+
+  /**
+   * Enforce deadlines from a long-running process (`abox mcp serve`, the GUI): without it a sandbox
+   * is only stopped when some abox command happens to run. Every `intervalMs` the overdue sandboxes
+   * are marked expired and stopped (`sweepTtl`) and the expired ones are checked to be stopped
+   * (`enforceExpired`). The timer does not keep the process alive. Several processes may do this at
+   * once: the state change is a conditional update in the shared database, so each sandbox is
+   * expired exactly once, and stopping is idempotent. Returns the function that stops the watcher.
+   */
+  startTtlWatcher(intervalMs: number, onError?: (e: unknown) => void): () => void {
+    let running = false;
+    const timer = setInterval(
+      () => {
+        if (running || this.closed) return;
+        running = true;
+        void (async () => {
+          try {
+            await this.sweepTtl(true);
+            await this.enforceExpired();
+          } catch (e) {
+            onError?.(e);
+          } finally {
+            running = false;
+          }
+        })();
+      },
+      Math.max(10, intervalMs),
+    );
+    timer.unref();
+    this.ttlWatchers.add(timer);
+    return () => {
+      clearInterval(timer);
+      this.ttlWatchers.delete(timer);
+    };
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    for (const end of [...this.takeovers]) end();
+    for (const t of this.ttlWatchers) clearInterval(t);
+    this.ttlWatchers.clear();
     this.listeners.clear();
     this.state.close();
   }

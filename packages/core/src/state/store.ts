@@ -6,9 +6,11 @@ import type { AuditLogOptions } from './audit-log.js';
 import { openDatabase } from './db.js';
 import type { Clock, OpenDatabaseOptions } from './db.js';
 import { HostCache } from './host-cache.js';
+import { HumanSessions } from './human-sessions.js';
 import { PolicyRevisions } from './policy-revisions.js';
 import { ProcessRegistry } from './process-registry.js';
 import { SandboxRegistry } from './sandbox-registry.js';
+import { Snapshots } from './snapshots.js';
 import { TemplatePins } from './template-pins.js';
 import { TemplateTrust } from './template-trust.js';
 
@@ -33,6 +35,8 @@ export class StateStore {
   readonly processes: ProcessRegistry;
   readonly hosts: HostCache;
   readonly agentTokens: AgentTokens;
+  readonly snapshots: Snapshots;
+  readonly humanSessions: HumanSessions;
   private closed = false;
 
   private constructor(db: DatabaseSync, opts: StateStoreOptions) {
@@ -47,6 +51,8 @@ export class StateStore {
     this.processes = new ProcessRegistry(ctx);
     this.hosts = new HostCache(ctx);
     this.agentTokens = new AgentTokens(ctx);
+    this.snapshots = new Snapshots(ctx);
+    this.humanSessions = new HumanSessions(ctx);
   }
 
   /** Open (creating and migrating if needed) the database at `path`; `:memory:` is allowed. */

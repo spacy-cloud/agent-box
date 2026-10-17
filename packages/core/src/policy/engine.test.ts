@@ -7,11 +7,14 @@ import {
   evaluateAccessRequest,
   evaluateCreate,
   evaluateExec,
+  hostQuotaViolations,
   type AccessRequestSpec,
   type CreateEvaluation,
   type CreateRequest,
   type SandboxRef,
 } from './engine.js';
+import { resolveContext } from './context.js';
+import { defaultPolicy, parsePolicy } from './load.js';
 import { canonicalizePath } from './paths.js';
 import {
   GIB,
@@ -220,6 +223,81 @@ describe('limits', () => {
       'invalid memory limit',
     );
   });
+  describe('host limits are quotas of the whole host', () => {
+    const host = {
+      id: 'srv',
+      zone: 'lab' as const,
+      limits: { cpus: 4, memory: '8g', sandboxes: 5 },
+    };
+    const ctx = { hosts: ['srv'], approval: 'open' };
+    it('denies a request that fits on its own but not next to the sandboxes already there', () => {
+      const r = run(ctx, {
+        host,
+        hostUsage: { cpus: 3, memoryBytes: 6 * GIB },
+        currentHostSandboxCount: 2,
+        resources: { cpus: 2, memoryBytes: 4 * GIB },
+      });
+      expectDeny(
+        r,
+        'requested cpus 2 exceeds what is left of the host limit on "srv"',
+        'applies to all sandboxes there together and 3 are reserved by the others',
+        'requested memory 4g exceeds what is left of the host limit on "srv"',
+        '6g are reserved by the others',
+      );
+      expect(r.decision === 'deny' ? r.hint : '').toContain('Request at most 1 cpus now');
+      expect(r.effective.resources).toMatchObject({ cpus: 1, memoryBytes: 2 * GIB });
+      expect(r.effective.clamped).toEqual(['cpus', 'memory']);
+    });
+    it('allows exactly what is left', () => {
+      const r = run(ctx, {
+        host,
+        hostUsage: { cpus: 3, memoryBytes: 6 * GIB },
+        resources: { cpus: 1, memoryBytes: 2 * GIB },
+      });
+      expect(r.decision).toBe('allow');
+    });
+    it('a request above the limit on its own keeps the single-sandbox wording (once)', () => {
+      const r = run(ctx, {
+        host,
+        hostUsage: { cpus: 2, memoryBytes: 0 },
+        resources: { cpus: 6, memoryBytes: GIB },
+      });
+      expect(r.decision).toBe('deny');
+      if (r.decision === 'deny') {
+        expect(r.reasons.filter((x) => x.includes('on host "srv"'))).toHaveLength(1);
+        expect(r.reasons.join(' ')).not.toContain('what is left');
+      }
+    });
+    it('without host limits the usage does not matter', () => {
+      const r = run(ctx, {
+        host: { id: 'srv', zone: 'lab' },
+        hostUsage: { cpus: 100, memoryBytes: 100 * GIB },
+        resources: { cpus: 2, memoryBytes: GIB },
+      });
+      expect(r.decision).toBe('allow');
+    });
+    it('hostQuotaViolations is pure: the same numbers, the same answer', () => {
+      const others = { sandboxes: 2, cpus: 3, memoryBytes: 6 * GIB };
+      expect(
+        hostQuotaViolations(host, others, { sandbox: true, cpus: 1, memoryBytes: GIB }),
+      ).toEqual([]);
+      expect(
+        hostQuotaViolations(host, others, { sandbox: true, cpus: 1.5 }).map((v) => [
+          v.field,
+          v.max,
+        ]),
+      ).toEqual([['cpus', 1]]);
+      expect(
+        hostQuotaViolations(host, { ...others, sandboxes: 5 }, { sandbox: true }).map(
+          (v) => v.field,
+        ),
+      ).toEqual(['sandboxes']);
+      // fractions that add up to the limit are fine despite floating point
+      expect(
+        hostQuotaViolations(host, { sandboxes: 0, cpus: 0.1 + 0.2, memoryBytes: 0 }, { cpus: 3.7 }),
+      ).toEqual([]);
+    });
+  });
   it('enforces the sandbox count per owner', () => {
     expectDeny(
       run({}, { currentSandboxCount: 3 }),
@@ -343,6 +421,209 @@ describe('workspace', () => {
     const withPath = run({}, { workspace: { mode: 'empty', hostPath: env.sshDir } });
     expect(withPath.decision).toBe('allow');
     expect(withPath.requestDigest.workspace).toEqual({ mode: 'empty' });
+  });
+});
+
+describe('workspace: built-in default policy (agents)', () => {
+  const agent = (): ReturnType<typeof makeContext> =>
+    resolveContext(defaultPolicy(), 'claude-code', { home: env.home });
+  const create = (hostPath: string, mode: 'copy' | 'worktree' = 'copy'): CreateEvaluation =>
+    evaluateCreate(
+      mkReq(env, agent(), {
+        template: { name: 'node-dev', isolation: 'container', hash: 'h', contentHash: 'c' },
+        workspace: { mode, hostPath },
+      }),
+    );
+
+  it('allows a project below ~/projects and below roots that do not exist yet', () => {
+    expect(create(env.app).decision).toBe('allow');
+    const later = join(env.home, 'Projekte', 'neu');
+    expect(create(later).decision).toBe('allow');
+    expect(create(join(env.home, 'src', 'x')).decision).toBe('allow');
+  });
+  it('does not allow a workspace root itself for agents, but does for humans', () => {
+    const r = create(env.projects);
+    expectDeny(r, 'root itself');
+    if (r.decision === 'deny') expect(r.hint).toContain('inside the root');
+    expectDeny(create(env.projects, 'worktree'), 'root itself');
+    const human = evaluateCreate(
+      mkReq(env, humanContext(env), { workspace: { mode: 'copy', hostPath: env.projects } }),
+    );
+    expect(human.decision).not.toBe('deny');
+  });
+  it('does not allow the home directory as a whole nor ordinary home folders', () => {
+    expectDeny(create(env.home), 'protected path the home directory');
+    expectDeny(create(env.datasets), 'outside the allowed workspace roots');
+    expectDeny(create(join(env.home, 'Documents', 'taxes')), 'outside the allowed workspace roots');
+  });
+  it('denies a workspace outside the roots with a hint naming policy edit and workspace.roots', () => {
+    const r = create(env.datasets);
+    expect(r.decision).toBe('deny');
+    if (r.decision === 'deny') {
+      expect(r.hint).toContain('abox policy edit');
+      expect(r.hint).toContain('workspace.roots');
+    }
+  });
+  it.each(['.claude', '.codex', '.cache', '.config/abox', '.ssh', '.local/share'])(
+    'denies ~/%s',
+    (rel) => {
+      mkdirSync(join(env.home, rel), { recursive: true });
+      expectDeny(create(join(env.home, rel)));
+    },
+  );
+  it('denies hidden home directories even with a profile root of ~', () => {
+    const dir = join(env.home, '.claude', 'projects', 'x');
+    mkdirSync(dir, { recursive: true });
+    const r = run({ workspace: { roots: ['~'] } }, { workspace: { mode: 'copy', hostPath: dir } });
+    expectDeny(r, 'hidden');
+    expect(
+      run(
+        { workspace: { roots: ['~'] } },
+        { workspace: { mode: 'copy', hostPath: join(env.home, 'datasets') } },
+      ).decision,
+    ).toBe('allow');
+  });
+  it('applies to additional mounts of agents too', () => {
+    const dir = join(env.home, '.codex');
+    mkdirSync(dir, { recursive: true });
+    expectDeny(
+      run(
+        { mounts: { roots: ['~'], access: ['ro'] } },
+        { mounts: [{ hostPath: dir, target: '/x', access: 'ro' }] },
+      ),
+      'hidden',
+    );
+  });
+  it('does not change anything for humans', () => {
+    const dir = join(env.home, '.hidden-project');
+    mkdirSync(dir, { recursive: true });
+    const r = evaluateCreate(
+      mkReq(env, humanContext(env), {
+        workspace: { mode: 'copy', hostPath: dir },
+      }),
+    );
+    expect(r.decision).toBe('allow');
+    expect(
+      evaluateCreate(
+        mkReq(env, humanContext(env), { workspace: { mode: 'copy', hostPath: env.datasets } }),
+      ).decision,
+    ).toBe('allow');
+  });
+});
+
+describe('base image registries', () => {
+  const tpl = (os: string | undefined, over: Record<string, unknown> = {}) => ({
+    name: 'node-dev',
+    isolation: 'container' as const,
+    hash: 'h',
+    contentHash: 'c',
+    backend: 'docker' as const,
+    base: { ...(os ? { os } : {}), osFamily: 'debian' as const },
+    ...over,
+  });
+  const withImage = (os: string | undefined, overrides: Record<string, unknown> = {}) =>
+    run(overrides, { template: tpl(os) });
+
+  it('built-in agent profile: official Docker Hub images and the built-in bases pass', () => {
+    expect(withImage('ubuntu:24.04').decision).toBe('allow');
+    expect(withImage('debian:12-slim').decision).toBe('allow');
+    expect(withImage('docker.io/library/fedora:42').decision).toBe('allow');
+  });
+  it('an image outside the allowlist needs approval (like destinations beyond the network allowlist)', () => {
+    const r = withImage('ghcr.io/someone/tools:1');
+    expect(approvalKinds(r)).toEqual(['image_registry']);
+    if (r.decision === 'approval') {
+      expect(r.reasons.join(' ')).toContain('base image "ghcr.io/someone/tools:1"');
+      expect(r.reasons.join(' ')).toContain('images.registries');
+    }
+    for (const approval of MODES)
+      expect(approvalKinds(withImage('myorg/app', { approval })), approval).toContain(
+        'image_registry',
+      );
+  });
+  it('a profile without any registry denies images that are not built in', () => {
+    const r = withImage('debian:12', { images: { registries: [] } });
+    expectDeny(r, 'no image registry allowlist');
+    if (r.decision === 'deny') expect(r.hint).toContain('abox policy edit');
+    expect(withImage('ubuntu:24.04', { images: { registries: [] } }).decision).toBe('allow');
+  });
+  it('registries can be widened to a registry or a path prefix', () => {
+    const o = { images: { registries: ['docker.io/library', 'ghcr.io/my-org'] } };
+    expect(withImage('ghcr.io/my-org/tools:1', o).decision).toBe('allow');
+    expect(approvalKinds(withImage('ghcr.io/other/tools:1', o))).toEqual(['image_registry']);
+    expect(withImage('ghcr.io/other/tools:1', { images: { registries: ['*'] } }).decision).toBe(
+      'allow',
+    );
+  });
+  it('is only for container backends and for templates that say what their base is', () => {
+    expect(run({}, { template: tpl('ubuntu-24.04', { backend: 'vm' }) }).decision).toBe('allow');
+    expect(run({}, { template: tpl('ghcr.io/x/y', { backend: 'process' }) }).decision).toBe(
+      'allow',
+    );
+    expect(run({}, {}).decision).toBe('allow');
+  });
+  it('a Dockerfile base counts as an unchecked image unless any image is allowed', () => {
+    const r = run(
+      {},
+      { template: tpl(undefined, { base: { dockerfile: './Dockerfile', osFamily: 'unknown' } }) },
+    );
+    expect(approvalKinds(r)).toEqual(['image_registry']);
+    expect(
+      run(
+        { images: { registries: ['*'] } },
+        { template: tpl(undefined, { base: { dockerfile: './Dockerfile', osFamily: 'unknown' } }) },
+      ).decision,
+    ).toBe('allow');
+  });
+  it('the request digest records the base and its registry, so an approval is bound to it', () => {
+    const digest = (t: ReturnType<typeof tpl>): Record<string, unknown> =>
+      (
+        run({ images: { registries: ['*'] } }, { template: t }).requestDigest['template'] as {
+          base: unknown;
+        }
+      ).base as Record<string, unknown>;
+    expect(digest(tpl('ghcr.io/acme/tools:1'))).toEqual({
+      os: 'ghcr.io/acme/tools:1',
+      registry: 'ghcr.io',
+    });
+    expect(digest(tpl('ubuntu:24.04'))).toEqual({ os: 'ubuntu:24.04', registry: 'docker.io' });
+    expect(
+      digest(tpl(undefined, { base: { dockerfile: './Dockerfile', osFamily: 'unknown' } })),
+    ).toEqual({ dockerfile: './Dockerfile' });
+    // a distro name of a vm base is not an image: no registry
+    expect(digest(tpl('ubuntu-24.04', { backend: 'vm' }))).toEqual({ os: 'ubuntu-24.04' });
+
+    // same template name, hash and content hash, other base: another digest, so another approval
+    const hash = (t: ReturnType<typeof tpl>): string =>
+      hashRequestDigest(run({ images: { registries: ['*'] } }, { template: t }).requestDigest);
+    expect(hash(tpl('ghcr.io/acme/tools:1'))).toBe(hash(tpl('ghcr.io/acme/tools:1')));
+    expect(hash(tpl('ghcr.io/acme/tools:1'))).not.toBe(hash(tpl('ghcr.io/acme/tools:2')));
+    expect(hash(tpl('ghcr.io/acme/tools:1'))).not.toBe(hash(tpl('docker.io/acme/tools:1')));
+    expect(hash(tpl('ghcr.io/acme/tools:1'))).not.toBe(
+      hash(tpl(undefined, { base: { dockerfile: './Dockerfile', osFamily: 'unknown' } })),
+    );
+  });
+  it('a malformed image name is never allowed by a prefix', () => {
+    expect(approvalKinds(withImage('docker.io/library/../evil'))).toEqual(['image_registry']);
+  });
+  it('humans may use any image by default; a configured human profile restricts them', () => {
+    const human = (os: string): CreateEvaluation =>
+      evaluateCreate(mkReq(env, humanContext(env), { template: tpl(os) }));
+    expect(human('ghcr.io/someone/tools:1').decision).toBe('allow');
+    const policy = parsePolicy(
+      'profiles:\n  human: { images: { registries: [docker.io/library] } }\n',
+      {
+        kind: 'file',
+        path: '/t/policy.yaml',
+      },
+    );
+    const restricted = resolveContext(policy, 'human', { home: env.home });
+    const r = evaluateCreate(mkReq(env, restricted, { template: tpl('ghcr.io/x/y') }));
+    expect(approvalKinds(r)).toEqual(['image_registry']);
+    expect(
+      evaluateCreate(mkReq(env, restricted, { template: tpl('ghcr.io/x/y'), humanConfirmed: true }))
+        .decision,
+    ).toBe('allow');
   });
 });
 
@@ -495,6 +776,23 @@ describe('network', () => {
     expect(approvalKinds(run({}, allowlist('cdn.example.org')))).toContain('network_domains');
     expect(approvalKinds(run({}, allowlist('*.example.org')))).toContain('network_domains');
   });
+  it('destinations with a port: valid, and compared like the proxy does (F5)', () => {
+    // the human profile allows everything ('*'): a port entry is accepted, not "not a valid domain pattern"
+    expect(run({ network: { allow: ['*'] } }, allowlist('example.org:8443')).decision).toBe(
+      'allow',
+    );
+    // plain entry covers 80/443 only
+    expect(run({}, allowlist('internal.example.org:443')).decision).toBe('allow');
+    expect(approvalKinds(run({}, allowlist('internal.example.org:8443')))).toContain(
+      'network_domains',
+    );
+    // profile entry with port covers exactly that port
+    const p = { network: { allow: ['api.example.org:8443'] } };
+    expect(run(p, allowlist('api.example.org:8443')).decision).toBe('allow');
+    expect(approvalKinds(run(p, allowlist('api.example.org:9443')))).toContain('network_domains');
+    expect(approvalKinds(run(p, allowlist('api.example.org')))).toContain('network_domains');
+    expectDeny(run({}, allowlist('x.example.org:99999')), 'is not a valid domain pattern');
+  });
   it('denies destinations when the profile has an empty network list', () => {
     const r = run({ network: { allow_presets: [], allow: [] } }, allowlist('pypi.org'));
     expectDeny(r, 'has no network allowlist');
@@ -540,6 +838,70 @@ describe('network', () => {
         ),
         'below "vm"',
       );
+    });
+  });
+  describe('mode open for the human profile', () => {
+    const humanOpen = (isolation: CreateRequest['providerIsolation']): CreateEvaluation =>
+      evaluateCreate(
+        mkReq(env, humanContext(env), {
+          network: { mode: 'open', allow: [] },
+          providerIsolation: isolation,
+        }),
+      );
+    it.each(['container'] as const)(
+      'needs an explicit confirmation below hardened (%s), never silent',
+      (isolation) => {
+        const r = humanOpen(isolation);
+        expect(r.decision).toBe('approval');
+        const items = r.decision === 'approval' ? r.items : [];
+        const item = items.find((i) => i.kind === 'network_open');
+        expect(item?.invariant).toBe(true);
+        expect(item?.reason).toBe(
+          `network mode "open" needs isolation "hardened" by default; template "node-dev" runs with "${isolation}"`,
+        );
+        expect(item?.risk).toContain('Unrestricted internet access');
+      },
+    );
+    it('is allowed with hardened or vm isolation', () => {
+      expect(humanOpen('hardened').decision).toBe('allow');
+      expect(humanOpen('vm').decision).toBe('allow');
+    });
+    it('is satisfied by humanConfirmed, which agents cannot use', () => {
+      const req = mkReq(env, humanContext(env), {
+        network: { mode: 'open', allow: [] },
+        providerIsolation: 'container',
+        humanConfirmed: true,
+      });
+      expect(evaluateCreate(req).decision).toBe('allow');
+      const agent = mkReq(
+        env,
+        makeContext(env, { network: { modes: ['none', 'allowlist', 'open'] } }),
+        {
+          network: { mode: 'open', allow: [] },
+          providerIsolation: 'container',
+          humanConfirmed: true,
+        },
+      );
+      expect(evaluateCreate(agent).decision).toBe('deny'); // agent rules unchanged
+    });
+    it('also applies when a human switches a running sandbox to open', () => {
+      const sandbox: SandboxRef = {
+        id: 'local/abcd1234',
+        owner: 'human',
+        isolation: 'container',
+        network: { mode: 'none', allow: [] },
+      };
+      const r = evaluateAccessRequest(humanContext(env), sandbox, {
+        kind: 'network',
+        details: { mode: 'open' },
+      });
+      expect(r.decision).toBe('approval');
+      const hardened = evaluateAccessRequest(
+        humanContext(env),
+        { ...sandbox, isolation: 'hardened' },
+        { kind: 'network', details: { mode: 'open' } },
+      );
+      expect(hardened.decision).toBe('allow');
     });
   });
   describe('private address exceptions', () => {
@@ -652,6 +1014,42 @@ describe('isolation and host zones', () => {
     );
     expectDeny(run({}, { host, providerIsolation: 'container' }), 'host zone "restricted"');
     expectInvariant({}, { host, providerIsolation: 'vm' }, 'host_zone');
+  });
+  it('zone minimums and host min_isolation are properties of the host: they bind a human too', () => {
+    const human = humanContext(env);
+    const shared = { id: 'srv', zone: 'shared' as const };
+    // a container sandbox on a shared host is refused for the human as well, not only for agents
+    expectDeny(
+      evaluateCreate(mkReq(env, human, { host: shared, humanConfirmed: true })),
+      'below "hardened" required by host zone "shared"',
+    );
+    expectDeny(
+      evaluateCreate(
+        mkReq(env, human, {
+          host: { id: 'srv', zone: 'restricted' },
+          providerIsolation: 'hardened',
+          humanConfirmed: true,
+        }),
+      ),
+      'below "vm" required by host zone "restricted"',
+    );
+    expectDeny(
+      evaluateCreate(
+        mkReq(env, human, {
+          host: { id: 'srv', zone: 'lab', minIsolation: 'vm' },
+          humanConfirmed: true,
+        }),
+      ),
+      'below "vm" required by host "srv" (min_isolation)',
+    );
+    // ...with enough isolation the human confirms the zone like an invariant approval item
+    const ok = mkReq(env, human, { host: shared, providerIsolation: 'hardened' });
+    expect(approvalKinds(evaluateCreate(ok))).toEqual(['host_zone']);
+    expect(evaluateCreate({ ...ok, humanConfirmed: true }).decision).toBe('allow');
+    // while the profile minimums are an agent rule: the same container sandbox on a workstation is fine
+    expect(
+      evaluateCreate(mkReq(env, human, { host: { id: 'local', zone: 'workstation' } })).decision,
+    ).toBe('allow');
   });
   it('workstation and lab zones need nothing extra', () => {
     expect(run({}, { host: { id: 'local', zone: 'workstation' } }).decision).toBe('allow');
@@ -1182,6 +1580,29 @@ describe('evaluateAccessRequest', () => {
       );
       if (h.decision !== 'deny') throw new Error('expected deny');
       expect(h.reasons.join(' ')).toContain('limit of 2 on host "local"');
+    });
+    it('counts the other sandboxes of the host: the host limit is for all of them together', () => {
+      const host = {
+        id: 'srv',
+        zone: 'lab' as const,
+        limits: { cpus: 4, memory: '8g' },
+      };
+      const grow = (cpus: number, others: { cpus: number; memoryBytes: number }) =>
+        acc(
+          { hosts: ['srv'] },
+          { kind: 'resources', details: { cpus } },
+          sbx({ host, hostUsage: { sandboxes: 2, ...others } }),
+        );
+      expect(grow(2, { cpus: 2, memoryBytes: 0 }).decision).toBe('allow');
+      const r = grow(3, { cpus: 2, memoryBytes: 0 });
+      if (r.decision !== 'deny') throw new Error('expected deny');
+      expect(r.reasons.join(' ')).toContain('exceeds what is left of the host limit on "srv"');
+      const m = acc(
+        { hosts: ['srv'] },
+        { kind: 'resources', details: { memoryBytes: 4 * GIB } },
+        sbx({ host, hostUsage: { sandboxes: 2, cpus: 0, memoryBytes: 5 * GIB } }),
+      );
+      expect(m.decision).toBe('deny');
     });
     it('denies empty and invalid requests', () => {
       expect(acc({}, { kind: 'resources', details: {} }).decision).toBe('deny');

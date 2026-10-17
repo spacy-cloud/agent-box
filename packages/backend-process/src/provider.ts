@@ -1,4 +1,15 @@
-import { chmod, mkdir, open, readdir, realpath, rename, stat, lstat, unlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  open,
+  readdir,
+  realpath,
+  rename,
+  stat,
+  lstat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { access, constants as fsConstants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
@@ -121,10 +132,15 @@ export class ProcessProvider implements SandboxProvider {
   constructor(host: HostConnection, opts: ProcessProviderOptions = {}) {
     const dataDir = opts.dataDir ?? host.dataDir;
     if (!dataDir) {
-      throw new AboxError('invalid_input', 'process backend needs a data directory (HostConnection.dataDir or options.dataDir)');
+      throw new AboxError(
+        'invalid_input',
+        'process backend needs a data directory (HostConnection.dataDir or options.dataDir)',
+      );
     }
     if (host.kind !== 'local') {
-      throw unsupported(`process backend runs on the local host only (host '${host.host}' is ${host.kind})`);
+      throw unsupported(
+        `process backend runs on the local host only (host '${host.host}' is ${host.kind})`,
+      );
     }
     this.host = host;
     this.layout = new Layout(dataDir);
@@ -144,6 +160,7 @@ export class ProcessProvider implements SandboxProvider {
       mounts: false,
       snapshots: true,
       tty: false,
+      extendExpiry: true,
       limits: { cpus: false, memory: false, pids: false, disk: false },
       // Commands run as the host user; there is no way to switch to another (non-root) user.
       nonRootUser: false,
@@ -156,7 +173,10 @@ export class ProcessProvider implements SandboxProvider {
   }
 
   async status(): Promise<BackendStatus> {
-    const details: string[] = [`data directory: ${this.layout.base}`, `node ${process.version} on ${process.platform}`];
+    const details: string[] = [
+      `data directory: ${this.layout.base}`,
+      `node ${process.version} on ${process.platform}`,
+    ];
     const warnings: string[] = [
       'isolation level "none": commands run as the host user with full access to the host (file APIs are confined, commands are not)',
       'network cannot be restricted; resource limits are not enforced',
@@ -172,7 +192,9 @@ export class ProcessProvider implements SandboxProvider {
       ok = false;
       details.push(`data directory is not usable: ${e instanceof Error ? e.message : String(e)}`);
     }
-    const shOk = await new Promise<boolean>((r) => access('/bin/sh', fsConstants.X_OK, (err) => r(!err)));
+    const shOk = await new Promise<boolean>((r) =>
+      access('/bin/sh', fsConstants.X_OK, (err) => r(!err)),
+    );
     if (!shOk) {
       ok = false;
       details.push('/bin/sh is missing or not executable');
@@ -187,10 +209,15 @@ export class ProcessProvider implements SandboxProvider {
       throw new AboxError('invalid_input', `invalid template hash '${template.hash}'`);
     }
     if (template.backend !== 'process') {
-      throw new AboxError('invalid_input', `template '${template.name}' is for backend '${template.backend}', not 'process'`);
+      throw new AboxError(
+        'invalid_input',
+        `template '${template.name}' is for backend '${template.backend}', not 'process'`,
+      );
     }
     if (!isolationAtLeast('none', template.isolation)) {
-      throw unsupported(`template '${template.name}' requires isolation '${template.isolation}', this backend delivers 'none'`);
+      throw unsupported(
+        `template '${template.name}' requires isolation '${template.isolation}', this backend delivers 'none'`,
+      );
     }
     if (template.build.length > 0) {
       throw unsupported(
@@ -199,7 +226,9 @@ export class ProcessProvider implements SandboxProvider {
       );
     }
     if (template.base.dockerfile) {
-      throw unsupported(`template '${template.name}' uses a Dockerfile; the process backend has no environment images`);
+      throw unsupported(
+        `template '${template.name}' uses a Dockerfile; the process backend has no environment images`,
+      );
     }
     if (template.base.osFamily !== 'unknown') {
       throw unsupported(
@@ -208,7 +237,9 @@ export class ProcessProvider implements SandboxProvider {
     }
     await this.layout.ensureBase();
     const marker = join(this.layout.imagesDir, template.hash);
-    const content = JSON.stringify({ hash: template.hash, template: template.name, createdAt: this.now() }) + '\n';
+    const content =
+      JSON.stringify({ hash: template.hash, template: template.name, createdAt: this.now() }) +
+      '\n';
     let cached = false;
     try {
       await writeFile(marker, content, { flag: opts.update ? 'w' : 'wx', mode: 0o600 });
@@ -244,9 +275,13 @@ export class ProcessProvider implements SandboxProvider {
     // 1. Validate everything before touching the disk. Nothing is created on rejection.
     const short = this.layout.shortOf(spec.id, this.host.host);
     if (short === undefined) {
-      throw new AboxError('invalid_input', `invalid sandbox id '${spec.id}' for host '${this.host.host}'`, {
-        hint: `Expected '${this.host.host}/<short>' with <short> matching [A-Za-z0-9][A-Za-z0-9_-]*.`,
-      });
+      throw new AboxError(
+        'invalid_input',
+        `invalid sandbox id '${spec.id}' for host '${this.host.host}'`,
+        {
+          hint: `Expected '${this.host.host}/<short>' with <short> matching [A-Za-z0-9][A-Za-z0-9_-]*.`,
+        },
+      );
     }
     if (spec.network.mode !== 'open') {
       throw unsupported(
@@ -255,13 +290,17 @@ export class ProcessProvider implements SandboxProvider {
       );
     }
     if (spec.network.injections.length > 0) {
-      throw unsupported('proxy header injection is not supported: there is no egress proxy in the process backend');
+      throw unsupported(
+        'proxy header injection is not supported: there is no egress proxy in the process backend',
+      );
     }
     if (spec.mounts.length > 0) {
       throw unsupported('additional mounts are not supported by the process backend');
     }
     if (!isolationAtLeast('none', spec.template.isolation)) {
-      throw unsupported(`template requires isolation '${spec.template.isolation}', this backend delivers 'none'`);
+      throw unsupported(
+        `template requires isolation '${spec.template.isolation}', this backend delivers 'none'`,
+      );
     }
     if (!USER_RE.test(spec.user.name)) {
       throw new AboxError('invalid_input', `invalid sandbox user name '${spec.user.name}'`);
@@ -278,7 +317,10 @@ export class ProcessProvider implements SandboxProvider {
       );
     }
     if (workspace.kind !== 'none' && workspace.kind !== 'copy') {
-      throw new AboxError('invalid_input', `unknown workspace delivery kind '${String((workspace as { kind: unknown }).kind)}'`);
+      throw new AboxError(
+        'invalid_input',
+        `unknown workspace delivery kind '${String((workspace as { kind: unknown }).kind)}'`,
+      );
     }
     const wsPath = normalizeSandboxPath(workspace.sandboxPath);
     for (const f of spec.files) normalizeSandboxPath(f.sandboxPath, wsPath);
@@ -288,7 +330,10 @@ export class ProcessProvider implements SandboxProvider {
       try {
         copySource = await realpath(workspace.hostPath);
         if (!(await stat(copySource)).isDirectory()) {
-          throw new AboxError('invalid_input', `workspace source '${workspace.hostPath}' is not a directory`);
+          throw new AboxError(
+            'invalid_input',
+            `workspace source '${workspace.hostPath}' is not a directory`,
+          );
         }
       } catch (e) {
         throw mapFsError(e, `workspace source '${workspace.hostPath}'`);
@@ -367,6 +412,24 @@ export class ProcessProvider implements SandboxProvider {
     });
   }
 
+  /** The expiry is `meta.expiresAt` (state and every check derive from it): moving it is the whole job. */
+  async extendExpiry(id: SandboxId, expiresAt: number): Promise<void> {
+    const { short } = await this.load(id);
+    await this.mutex.run(short, async () => {
+      const meta = await this.requireMeta(id, short);
+      if (this.isExpired(meta)) {
+        throw new AboxError('conflict', `sandbox '${id}' has expired and cannot be extended`);
+      }
+      if (!Number.isFinite(expiresAt) || expiresAt < meta.expiresAt) {
+        throw new AboxError(
+          'invalid_input',
+          `the new expiry must not be earlier than the current one (${new Date(meta.expiresAt).toISOString()})`,
+        );
+      }
+      if (expiresAt > meta.expiresAt) await this.layout.writeMeta({ ...meta, expiresAt });
+    });
+  }
+
   async stop(id: SandboxId): Promise<void> {
     const { short } = await this.load(id);
     await this.mutex.run(short, async () => {
@@ -381,7 +444,13 @@ export class ProcessProvider implements SandboxProvider {
     if (short === undefined) return; // cannot exist
     const dir = this.layout.sandboxDir(short);
     this.layout.assertWithinSandboxes(dir);
-    if (!(await lstat(dir).then(() => true, () => false))) return;
+    if (
+      !(await lstat(dir).then(
+        () => true,
+        () => false,
+      ))
+    )
+      return;
     await this.mutex.run(short, async () => {
       await killTracked(this.layout.runDir(short), 0);
       try {
@@ -412,7 +481,9 @@ export class ProcessProvider implements SandboxProvider {
       onStderr: (d) => err.push(d),
     });
     if (outcome.aborted) {
-      throw req.signal?.reason instanceof Error ? req.signal.reason : new AboxError('internal', 'exec aborted');
+      throw req.signal?.reason instanceof Error
+        ? req.signal.reason
+        : new AboxError('internal', 'exec aborted');
     }
     return {
       exitCode: outcome.exitCode,
@@ -438,7 +509,9 @@ export class ProcessProvider implements SandboxProvider {
       wake?.();
     };
     const consumerGone = new AbortController();
-    const signal = req.signal ? AbortSignal.any([req.signal, consumerGone.signal]) : consumerGone.signal;
+    const signal = req.signal
+      ? AbortSignal.any([req.signal, consumerGone.signal])
+      : consumerGone.signal;
     let finished = false;
     const running = runProcess({
       argv: plan.argv,
@@ -491,7 +564,12 @@ export class ProcessProvider implements SandboxProvider {
     } catch (e) {
       throw mapFsError(e, `host path '${hostPath}'`);
     }
-    const target = await confine(this.layout.rootDir(short), sandboxPath, meta.workspacePath, 'create');
+    const target = await confine(
+      this.layout.rootDir(short),
+      sandboxPath,
+      meta.workspacePath,
+      'create',
+    );
     try {
       await mkdir(dirname(target.hostPath), { recursive: true });
       await copyTree(src, target.hostPath);
@@ -502,7 +580,12 @@ export class ProcessProvider implements SandboxProvider {
 
   async copyOut(id: SandboxId, sandboxPath: string, hostPath: string): Promise<void> {
     const { short, meta } = await this.load(id);
-    const source = await confine(this.layout.rootDir(short), sandboxPath, meta.workspacePath, 'existing');
+    const source = await confine(
+      this.layout.rootDir(short),
+      sandboxPath,
+      meta.workspacePath,
+      'existing',
+    );
     const dest = resolve(hostPath);
     try {
       await mkdir(dirname(dest), { recursive: true });
@@ -519,10 +602,18 @@ export class ProcessProvider implements SandboxProvider {
     maxBytes: number,
   ): Promise<{ data: Buffer; truncated: boolean; size: number }> {
     if (!Number.isInteger(maxBytes) || maxBytes < 0) {
-      throw new AboxError('invalid_input', `maxBytes must be a non-negative integer, got ${maxBytes}`);
+      throw new AboxError(
+        'invalid_input',
+        `maxBytes must be a non-negative integer, got ${maxBytes}`,
+      );
     }
     const { short, meta } = await this.load(id);
-    const target = await confine(this.layout.rootDir(short), sandboxPath, meta.workspacePath, 'existing');
+    const target = await confine(
+      this.layout.rootDir(short),
+      sandboxPath,
+      meta.workspacePath,
+      'existing',
+    );
     try {
       const st = await stat(target.hostPath);
       if (!st.isFile()) {
@@ -550,8 +641,14 @@ export class ProcessProvider implements SandboxProvider {
 
   async writeFile(id: SandboxId, sandboxPath: string, data: Buffer, mode?: number): Promise<void> {
     const { short, meta } = await this.load(id);
-    const target = await confine(this.layout.rootDir(short), sandboxPath, meta.workspacePath, 'create');
-    if (target.sandboxPath === '/') throw new AboxError('invalid_input', 'cannot write to the sandbox root');
+    const target = await confine(
+      this.layout.rootDir(short),
+      sandboxPath,
+      meta.workspacePath,
+      'create',
+    );
+    if (target.sandboxPath === '/')
+      throw new AboxError('invalid_input', 'cannot write to the sandbox root');
     try {
       await mkdir(dirname(target.hostPath), { recursive: true });
       await writeFile(target.hostPath, data, { mode: mode ?? 0o644 });
@@ -563,7 +660,12 @@ export class ProcessProvider implements SandboxProvider {
 
   async listDir(id: SandboxId, sandboxPath: string): Promise<DirEntry[]> {
     const { short, meta } = await this.load(id);
-    const target = await confine(this.layout.rootDir(short), sandboxPath, meta.workspacePath, 'existing');
+    const target = await confine(
+      this.layout.rootDir(short),
+      sandboxPath,
+      meta.workspacePath,
+      'existing',
+    );
     try {
       const names = (await readdir(target.hostPath)).sort();
       const entries: DirEntry[] = [];
@@ -572,7 +674,13 @@ export class ProcessProvider implements SandboxProvider {
         if (!st) continue; // vanished while listing
         entries.push({
           name,
-          type: st.isFile() ? 'file' : st.isDirectory() ? 'dir' : st.isSymbolicLink() ? 'symlink' : 'other',
+          type: st.isFile()
+            ? 'file'
+            : st.isDirectory()
+              ? 'dir'
+              : st.isSymbolicLink()
+                ? 'symlink'
+                : 'other',
           size: st.size,
           mode: st.mode & 0o7777,
           mtimeMs: st.mtimeMs,
@@ -590,11 +698,19 @@ export class ProcessProvider implements SandboxProvider {
   async snapshot(id: SandboxId, name: string): Promise<string> {
     const { short } = await this.load(id);
     if (!SNAPSHOT_NAME_RE.test(name)) {
-      throw new AboxError('invalid_input', `invalid snapshot name '${name}' (allowed: letters, digits, '.', '_', '-')`);
+      throw new AboxError(
+        'invalid_input',
+        `invalid snapshot name '${name}' (allowed: letters, digits, '.', '_', '-')`,
+      );
     }
     return this.mutex.run(short, async () => {
       const snapDir = join(this.layout.snapshotsDir(short), name);
-      if (await lstat(snapDir).then(() => true, () => false)) {
+      if (
+        await lstat(snapDir).then(
+          () => true,
+          () => false,
+        )
+      ) {
         throw new AboxError('conflict', `snapshot '${name}' already exists for '${id}'`);
       }
       const tmp = join(this.layout.snapshotsDir(short), `.tmp-${randomSuffix()}`);
@@ -618,7 +734,12 @@ export class ProcessProvider implements SandboxProvider {
     }
     await this.mutex.run(short, async () => {
       const snapDir = join(this.layout.snapshotsDir(short), snapshotId);
-      if (!(await lstat(snapDir).then((s) => s.isDirectory(), () => false))) {
+      if (
+        !(await lstat(snapDir).then(
+          (s) => s.isDirectory(),
+          () => false,
+        ))
+      ) {
         throw new AboxError('not_found', `snapshot '${snapshotId}' not found for '${id}'`);
       }
       await killTracked(this.layout.runDir(short), 0);
@@ -719,7 +840,10 @@ export class ProcessProvider implements SandboxProvider {
   private outputCap(req: ExecRequest): number {
     const cap = req.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     if (!Number.isInteger(cap) || cap < 0) {
-      throw new AboxError('invalid_input', `maxOutputBytes must be a non-negative integer, got ${cap}`);
+      throw new AboxError(
+        'invalid_input',
+        `maxOutputBytes must be a non-negative integer, got ${cap}`,
+      );
     }
     return cap;
   }
@@ -729,14 +853,21 @@ export class ProcessProvider implements SandboxProvider {
     const { short, meta } = await this.load(id);
     const state = this.effectiveState(meta);
     if (state !== 'running') {
-      throw new AboxError('conflict', `sandbox '${id}' is ${state}, not running`, { hint: `Start it first: abox start ${id}` });
+      throw new AboxError('conflict', `sandbox '${id}' is ${state}, not running`, {
+        hint: `Start it first: abox start ${id}`,
+      });
     }
     if (req.signal?.aborted) {
-      throw req.signal.reason instanceof Error ? req.signal.reason : new AboxError('internal', 'exec aborted');
+      throw req.signal.reason instanceof Error
+        ? req.signal.reason
+        : new AboxError('internal', 'exec aborted');
     }
     let argv: string[];
     if (req.argv !== undefined && req.command !== undefined) {
-      throw new AboxError('invalid_input', 'exec request must set either argv or command, not both');
+      throw new AboxError(
+        'invalid_input',
+        'exec request must set either argv or command, not both',
+      );
     } else if (req.argv !== undefined) {
       if (req.argv.length === 0 || typeof req.argv[0] !== 'string' || req.argv[0] === '') {
         throw new AboxError('invalid_input', 'exec argv must contain at least the program name');
@@ -748,10 +879,17 @@ export class ProcessProvider implements SandboxProvider {
       throw new AboxError('invalid_input', 'exec request needs argv or command');
     }
     if (req.user !== undefined && req.user !== meta.user.name) {
-      throw unsupported(`running as user '${req.user}' is not supported: commands run as the host user`);
+      throw unsupported(
+        `running as user '${req.user}' is not supported: commands run as the host user`,
+      );
     }
     const rootDir = this.layout.rootDir(short);
-    const cwd = await confine(rootDir, req.cwd ?? meta.workspacePath, meta.workspacePath, 'existing');
+    const cwd = await confine(
+      rootDir,
+      req.cwd ?? meta.workspacePath,
+      meta.workspacePath,
+      'existing',
+    );
     if (!(await stat(cwd.hostPath)).isDirectory()) {
       throw new AboxError('invalid_input', `cwd '${cwd.sandboxPath}' is not a directory`);
     }
@@ -774,7 +912,10 @@ export class ProcessProvider implements SandboxProvider {
   }
 }
 
-export function createProcessProvider(host: HostConnection, opts: ProcessProviderOptions = {}): ProcessProvider {
+export function createProcessProvider(
+  host: HostConnection,
+  opts: ProcessProviderOptions = {},
+): ProcessProvider {
   return new ProcessProvider(host, opts);
 }
 

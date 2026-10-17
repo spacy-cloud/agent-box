@@ -139,4 +139,53 @@ CREATE TABLE template_pins (
 );
 `,
   },
+  {
+    version: 3,
+    name: 'snapshots_and_network_cursor',
+    sql: `
+CREATE TABLE snapshots (
+  sandbox_id  TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (sandbox_id, snapshot_id)
+);
+CREATE INDEX snapshots_sandbox ON snapshots(sandbox_id, created_at);
+ALTER TABLE sandboxes ADD COLUMN net_cursor_ts INTEGER;
+ALTER TABLE sandboxes ADD COLUMN net_cursor_seen INTEGER NOT NULL DEFAULT 0;
+`,
+  },
+  {
+    version: 4,
+    name: 'template_trust_snapshot',
+    sql: `
+ALTER TABLE template_trust ADD COLUMN name TEXT;
+ALTER TABLE template_trust ADD COLUMN snapshot TEXT;
+`,
+  },
+  {
+    version: 5,
+    name: 'approval_items',
+    // The policy items (kind, reason, risk) behind an approval; NULL for rows written before this migration.
+    sql: `
+ALTER TABLE approvals ADD COLUMN items TEXT;
+`,
+  },
+  {
+    version: 6,
+    name: 'human_sessions',
+    // Interactive terminals a human holds in a sandbox (takeover marker). A row is alive while
+    // heartbeat_at is recent; rows of crashed processes expire on their own.
+    sql: `
+CREATE TABLE human_sessions (
+  id           TEXT PRIMARY KEY,
+  sandbox_id   TEXT NOT NULL,
+  actor        TEXT NOT NULL,
+  pid          INTEGER NOT NULL,
+  started_at   INTEGER NOT NULL,
+  heartbeat_at INTEGER NOT NULL
+);
+CREATE INDEX human_sessions_sandbox ON human_sessions(sandbox_id);
+`,
+  },
 ];

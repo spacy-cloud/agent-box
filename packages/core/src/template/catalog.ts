@@ -10,7 +10,9 @@ import type {
   TemplateSourceKind,
   TemplateSpec,
 } from '../types.js';
-import { MAX_TEMPLATE_BYTES, parseTemplateYaml } from './parse.js';
+import { parseDocument } from 'yaml';
+import { MAX_TEMPLATE_BYTES, parseTemplateYaml, templateInvalidError } from './parse.js';
+import { buildContextOf } from './context.js';
 import { resolveTemplate, type ParentTemplate, type TemplateLookup } from './resolve.js';
 
 /**
@@ -51,6 +53,8 @@ export interface TemplateProblem {
   kind: TemplateSourceKind;
   path: string;
   error: AboxError;
+  /** Names this broken file claims: its file name stem and, when readable, its top-level `name:`. */
+  names?: string[];
 }
 
 interface Entry {
@@ -98,14 +102,21 @@ export class TemplateCatalog {
 
   /** Resolves a template by name (project > user > builtin), including `extends`. */
   async get(name: string): Promise<ResolvedTemplate> {
-    const { byName } = await this.load();
+    const { byName, problems } = await this.load();
     const entries = byName.get(name);
+    // A broken file for this name (that outranks the best valid one) is reported as such, never as "not found":
+    // `template_invalid` with the file, line and column of every problem.
+    const winnerRank = entries?.length ? PRECEDENCE.indexOf(entries[0]!.kind) : Infinity;
+    const broken = problems.find(
+      (p) => p.names?.includes(name) && PRECEDENCE.indexOf(p.kind) < winnerRank,
+    );
+    if (broken) throw invalidFromProblem(broken, name);
     if (!entries?.length) {
       const known = [...byName.keys()].sort();
       throw new AboxError('not_found', `Template "${name}" not found`, {
         hint: known.length
           ? `Available templates: ${known.join(', ')}`
-          : 'No templates found; check `abox template list`.',
+          : 'No templates found; check `abox template ls`.',
         details: { name },
       });
     }
@@ -178,7 +189,7 @@ export class TemplateCatalog {
           byName.set(entry.spec.name, list);
         } catch (e) {
           if (!isAboxError(e)) throw e;
-          problems.push({ kind, path, error: e });
+          problems.push({ kind, path, error: e, names: await claimedNames(path) });
         }
       }
     }
@@ -186,26 +197,117 @@ export class TemplateCatalog {
     return { byName, problems };
   }
 
+  /** The entry `from.spec.extends` names: same precedence level or below, never the entry itself. */
+  private async findParent(
+    from: { kind: TemplateSourceKind; path?: string },
+    name: string,
+  ): Promise<Entry | undefined> {
+    const { byName } = await this.load();
+    const candidates = byName.get(name) ?? [];
+    // A template may only extend templates at its own precedence level or below (a user
+    // template never depends on a repository's .sandbox directory), and never itself.
+    const allowed = PRECEDENCE.slice(PRECEDENCE.indexOf(from.kind));
+    return candidates.find(
+      (c) => allowed.includes(c.kind) && !(c.kind === from.kind && c.path === from.path),
+    );
+  }
+
+  /**
+   * The resolved template that `name` extends (the one a review compares against), or undefined
+   * when it extends nothing or the parent cannot be found or resolved.
+   */
+  async getParent(name: string): Promise<ResolvedTemplate | undefined> {
+    const { byName } = await this.load();
+    const entry = byName.get(name)?.[0];
+    if (!entry?.spec.extends) return undefined;
+    const parent = await this.findParent(entry, entry.spec.extends);
+    if (!parent) return undefined;
+    try {
+      return await this.resolveEntry(parent);
+    } catch (e) {
+      if (isAboxError(e)) return undefined;
+      throw e;
+    }
+  }
+
+  /**
+   * Lower-precedence templates of the same name that the winner for `name` hides (a project
+   * template that shadows a user or builtin one), highest precedence first. The first one that
+   * resolves is returned together with its source; empty `hidden` when nothing is shadowed.
+   */
+  async getShadowed(name: string): Promise<{
+    hidden: Array<{ kind: TemplateSourceKind; path: string }>;
+    template?: ResolvedTemplate;
+    source?: { kind: TemplateSourceKind; path: string };
+  }> {
+    const { byName } = await this.load();
+    const rest = (byName.get(name) ?? []).slice(1);
+    const hidden = rest.map((e) => ({ kind: e.kind, path: e.path }));
+    for (const e of rest) {
+      try {
+        return {
+          hidden,
+          template: await this.resolveEntry(e),
+          source: { kind: e.kind, path: e.path },
+        };
+      } catch (err) {
+        if (!isAboxError(err)) throw err;
+      }
+    }
+    return { hidden };
+  }
+
   private async resolveEntry(entry: Entry): Promise<ResolvedTemplate> {
     const lookup: TemplateLookup = async (name, from): Promise<ParentTemplate | undefined> => {
-      const { byName } = await this.load();
-      const candidates = byName.get(name) ?? [];
-      // A template may only extend templates at its own precedence level or below (a user
-      // template never depends on a repository's .sandbox directory), and never itself.
-      const allowed = PRECEDENCE.slice(PRECEDENCE.indexOf(from.kind));
-      const found = candidates.find(
-        (c) => allowed.includes(c.kind) && !(c.kind === from.kind && c.path === from.path),
-      );
+      const found = await this.findParent(from, name);
       return found
-        ? { spec: found.spec, source: { kind: found.kind, path: found.path } }
+        ? {
+            spec: found.spec,
+            source: { kind: found.kind, path: found.path },
+            contentText: found.text,
+          }
         : undefined;
     };
     return resolveTemplate(entry.spec, {
       source: { kind: entry.kind, path: entry.path },
       contentText: entry.text,
       lookup,
+      buildContext: buildContextOf,
     });
   }
+}
+
+/** Turns a catalog problem into the `template_invalid` error a create/show/build of that name gets. */
+function invalidFromProblem(p: TemplateProblem, name: string): AboxError {
+  const e = p.error;
+  if (e.code === 'template_invalid' && e.issues.length > 0) {
+    return templateInvalidError(e.issues, p.path);
+  }
+  return new AboxError('template_invalid', `Invalid template ${p.path}: ${e.message}`, {
+    issues: e.issues.length > 0 ? e.issues : [{ message: e.message }],
+    details: { path: p.path, name },
+    ...(e.hint ? { hint: e.hint } : {}),
+  });
+}
+
+/** File name stem and (best effort) the top-level `name:` of a file that failed to load. */
+async function claimedNames(path: string): Promise<string[]> {
+  const names: string[] = [];
+  const stem = path.split('/').pop()?.replace(YAML_FILE_RE, '');
+  if (stem) names.push(stem);
+  try {
+    const st = await stat(path);
+    if (st.isFile() && st.size <= MAX_TEMPLATE_BYTES) {
+      const declared: unknown = parseDocument(await readFile(path, 'utf8'), {
+        prettyErrors: false,
+      }).get('name');
+      if (typeof declared === 'string' && declared.length <= 64 && !names.includes(declared))
+        names.push(declared);
+    }
+  } catch {
+    /* unreadable or unparseable: the stem is all we know */
+  }
+  return names;
 }
 
 async function readEntry(path: string, kind: TemplateSourceKind): Promise<Entry> {

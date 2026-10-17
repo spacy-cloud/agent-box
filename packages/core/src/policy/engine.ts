@@ -13,6 +13,7 @@ import {
   type WorkspaceMode,
 } from '../types.js';
 import { domainCovered, normalizeDomainPattern } from './domains.js';
+import { imageAllowedByRegistries, imageRegistry, isKnownBaseImage } from './images.js';
 import type { AgentContext, ApprovalMode } from './model.js';
 import {
   checkHostPath,
@@ -49,17 +50,25 @@ export interface HostInfo {
 
 export interface CreateRequest {
   context: AgentContext;
-  template: Pick<ResolvedTemplate, 'name' | 'isolation' | 'hash' | 'contentHash'>;
+  template: Pick<ResolvedTemplate, 'name' | 'isolation' | 'hash' | 'contentHash'> &
+    Partial<Pick<ResolvedTemplate, 'backend' | 'base'>>;
   /** False for project templates whose content hash has not been approved. */
   templateTrusted: boolean;
   templateSource: { kind: TemplateSourceKind; path?: string };
   host: HostInfo;
   /** Isolation the chosen provider actually delivers. */
   providerIsolation: IsolationLevel;
-  /** Absent or mode `empty` = no host path involved. `hostPath` must be canonical. */
-  workspace?: { mode: WorkspaceMode; hostPath?: string };
-  /** Additional mounts (template + overrides); `hostPath` canonical, `target` inside the sandbox. */
-  mounts: Array<{ hostPath: string; target: string; access: AccessMode }>;
+  /**
+   * Absent or mode `empty` = no host path involved. `hostPath` must be canonical. `lexicalPath`
+   * is the path as typed (not symlink-resolved, see `lexicalPath()`); only a human's explicit
+   * roots look at it, never an agent's.
+   */
+  workspace?: { mode: WorkspaceMode; hostPath?: string; lexicalPath?: string };
+  /**
+   * Additional mounts (template + overrides); `hostPath` canonical, `target` inside the sandbox,
+   * `lexicalPath` as for the workspace.
+   */
+  mounts: Array<{ hostPath: string; target: string; access: AccessMode; lexicalPath?: string }>;
   network: { mode: NetworkMode; allow: string[]; privateExceptions?: string[] };
   secrets: Array<{ ref: string; inject: SecretInjection }>;
   /** Final resources (template defaults + overrides). */
@@ -69,6 +78,11 @@ export interface CreateRequest {
   currentSandboxCount: number;
   /** Sandboxes currently on `host`. */
   currentHostSandboxCount: number;
+  /**
+   * What the sandboxes already on `host` reserve together (cpus, memory; see `hostQuotaViolations`).
+   * Default: nothing, which only checks the request on its own against the host limits.
+   */
+  hostUsage?: { cpus: number; memoryBytes: number };
   paths: { home: string; extraForbidden?: string[] };
   /**
    * The human explicitly confirmed the approval items (CLI `--yes`/dialog).
@@ -86,6 +100,7 @@ export type ApprovalKind =
   | 'mount'
   | 'network_open'
   | 'network_domains'
+  | 'image_registry'
   | 'secret_env'
   | 'secret_file'
   | 'private_address'
@@ -142,6 +157,96 @@ export type CreateEvaluation = PolicyDecision & {
 
 export interface EngineDeps {
   checkHostPath?: (canonical: string, opts: CheckHostPathOptions) => PathCheck;
+}
+
+// ---------------------------------------------------------------------------
+// Host quotas
+// ---------------------------------------------------------------------------
+
+/** What the live sandboxes of a host reserve together (their cpu and memory limits, not live usage). */
+export interface HostUsage {
+  sandboxes: number;
+  cpus: number;
+  memoryBytes: number;
+}
+
+export interface HostQuotaViolation {
+  field: 'sandboxes' | 'cpus' | 'memory';
+  reason: string;
+  hint: string;
+  /** Largest value of the field that would still fit (0 when the host is full). */
+  max: number;
+}
+
+const QUOTA_EPSILON = 1e-9;
+
+/**
+ * Host profile limits (`limits.cpus`, `limits.memory`, `limits.sandboxes`) are quotas of the host as a
+ * whole: all live sandboxes on it together may not reserve more. `others` is what the other sandboxes
+ * already reserve (for a resize: without the sandbox being resized); `next` is the sandbox that is
+ * created (`sandbox: true`) or resized (the fields that change). A request that exceeds a limit on
+ * its own is reported as such, otherwise as exceeding the total. Pure: the manager calls it once for
+ * the policy decision and again inside the registry transaction that claims the sandbox, so parallel
+ * creates cannot overshoot.
+ */
+export function hostQuotaViolations(
+  host: HostInfo,
+  others: HostUsage,
+  next: { sandbox?: boolean; cpus?: number; memoryBytes?: number },
+): HostQuotaViolation[] {
+  const limits = host.limits;
+  const out: HostQuotaViolation[] = [];
+  if (!limits) return out;
+  if (next.sandbox && limits.sandboxes !== undefined && others.sandboxes >= limits.sandboxes) {
+    out.push({
+      field: 'sandboxes',
+      reason: `host "${host.id}" already runs ${others.sandboxes} sandbox(es); its limit is ${limits.sandboxes}`,
+      hint: 'Delete a sandbox on that host or use another host.',
+      max: 0,
+    });
+  }
+  if (limits.cpus !== undefined && next.cpus !== undefined && Number.isFinite(next.cpus)) {
+    const room = Math.max(0, limits.cpus - others.cpus);
+    if (next.cpus > limits.cpus + QUOTA_EPSILON) {
+      out.push({
+        field: 'cpus',
+        reason: `requested cpus ${next.cpus} exceeds the limit of ${limits.cpus} on host "${host.id}"`,
+        hint: `Request at most ${limits.cpus} cpus on this host.`,
+        max: limits.cpus,
+      });
+    } else if (next.cpus > room + QUOTA_EPSILON) {
+      out.push({
+        field: 'cpus',
+        reason: `requested cpus ${next.cpus} exceeds what is left of the host limit on "${host.id}": the limit of ${limits.cpus} cpus applies to all sandboxes there together and ${others.cpus} are reserved by the others`,
+        hint: `Request at most ${room} cpus now, or delete a sandbox on that host.`,
+        max: room,
+      });
+    }
+  }
+  const hostMem = limits.memory === undefined ? undefined : tryParseSize(limits.memory);
+  if (
+    hostMem !== undefined &&
+    next.memoryBytes !== undefined &&
+    Number.isFinite(next.memoryBytes)
+  ) {
+    const room = Math.max(0, hostMem - others.memoryBytes);
+    if (next.memoryBytes > hostMem) {
+      out.push({
+        field: 'memory',
+        reason: `requested memory ${formatSize(next.memoryBytes)} exceeds the limit of ${formatSize(hostMem)} on host "${host.id}"`,
+        hint: `Request at most ${formatSize(hostMem)} of memory on this host.`,
+        max: hostMem,
+      });
+    } else if (next.memoryBytes > room) {
+      out.push({
+        field: 'memory',
+        reason: `requested memory ${formatSize(next.memoryBytes)} exceeds what is left of the host limit on "${host.id}": the limit of ${formatSize(hostMem)} applies to all sandboxes there together and ${formatSize(others.memoryBytes)} are reserved by the others`,
+        hint: `Request at most ${formatSize(room)} of memory now, or delete a sandbox on that host.`,
+        max: room,
+      });
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +395,64 @@ function domainApproval(
   });
 }
 
+/** Backends whose `base.os` is an OCI image reference (vm bases are distro names checked by the backend). */
+const IMAGE_BACKENDS: readonly string[] = ['docker', 'podman', 'python'];
+
+/**
+ * Free image names are checked against the registry allowlist of the profile (`images.registries`).
+ * Like network destinations beyond the allowlist: a profile without any registry denies, otherwise
+ * the human decides (approval). Base images of the built-in templates are always accepted; a
+ * Dockerfile base cannot be inspected here, so it counts as an unchecked image.
+ */
+function checkBaseImage(ctx: AgentContext, template: CreateRequest['template'], f: Findings): void {
+  const registries = ctx.profile.images.registries;
+  const base = template.base;
+  if (!base || registries.includes('*')) return;
+  if (template.backend !== undefined && !IMAGE_BACKENDS.includes(template.backend)) return;
+  const p = ctx.profile;
+  let subject: string | undefined;
+  if (base.os !== undefined) {
+    if (isKnownBaseImage(base.os) || imageAllowedByRegistries(base.os, registries)) return;
+    subject = `base image "${base.os}"`;
+  } else if (base.dockerfile !== undefined) {
+    subject = `Dockerfile base "${base.dockerfile}" (the images it builds on cannot be checked)`;
+  }
+  if (subject === undefined) return;
+  if (registries.length === 0) {
+    f.deny(
+      `${subject} of template "${template.name}" is not allowed: profile "${p.name}" has no image registry allowlist (images.registries is empty)`,
+      'Use a built-in base image, or ask the human to add registries to images.registries with `abox policy edit`.',
+    );
+    return;
+  }
+  f.need({
+    kind: 'image_registry',
+    reason: `${subject} of template "${template.name}" is outside the image registries of profile "${p.name}" (images.registries: ${list(registries)})`,
+    risk: 'The sandbox is built from an image you have not allowed: its publisher controls everything that runs in it.',
+    invariant: false,
+  });
+}
+
+/**
+ * The base of the template as recorded in the request digest: the image reference and/or Dockerfile
+ * marker and the registry an image reference points to. An approval is bound to it, so it cannot be
+ * reused for a template with another base, and surfaces can show it without resolving the template again.
+ */
+function digestBase(template: CreateRequest['template']): Record<string, string> | undefined {
+  const base = template.base;
+  if (!base) return undefined;
+  const out: Record<string, string> = {};
+  if (base.os !== undefined) {
+    out['os'] = base.os;
+    if (template.backend === undefined || IMAGE_BACKENDS.includes(template.backend)) {
+      const registry = imageRegistry(base.os);
+      if (registry !== undefined) out['registry'] = registry;
+    }
+  }
+  if (base.dockerfile !== undefined) out['dockerfile'] = base.dockerfile;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function elevated(f: Findings, ctx: AgentContext, item: Omit<ApprovalItem, 'invariant'>): void {
   // Elevated-but-within-rights items are auto-allowed only in approval mode `open`.
   if (ctx.profile.approval !== 'open') f.need({ ...item, invariant: false });
@@ -299,9 +462,32 @@ function invariant(f: Findings, item: Omit<ApprovalItem, 'invariant'>): void {
   f.need({ ...item, invariant: true });
 }
 
+/**
+ * Concept: network mode `open` wants at least isolation `hardened`. Agents are held to that through
+ * `isolation.network_open` (deny). The human profile does not enforce isolation minimums (it may
+ * run anything it confirms), but open network below the minimum is never silent: it is an
+ * invariant approval item, i.e. an explicit human confirmation in every approval mode.
+ */
+export const NETWORK_OPEN_MIN_ISOLATION: IsolationLevel = 'hardened';
+
+function humanOpenNetworkBelowMinimum(
+  f: Findings,
+  ctx: AgentContext,
+  isolation: IsolationLevel | undefined,
+  subject: string,
+): void {
+  if (ctx.kind !== 'human') return;
+  if (isolation !== undefined && isolationAtLeast(isolation, NETWORK_OPEN_MIN_ISOLATION)) return;
+  invariant(f, {
+    kind: 'network_open',
+    reason: `network mode "open" needs isolation "${NETWORK_OPEN_MIN_ISOLATION}" by default; ${subject} runs with "${isolation ?? 'unknown'}"`,
+    risk: 'Unrestricted internet access without a hardened sandbox: code in it can reach any destination, exfiltrate data and attack your local network.',
+  });
+}
+
 function checkMount(
   ctx: AgentContext,
-  m: { hostPath: string; target: string; access: AccessMode },
+  m: { hostPath: string; target: string; access: AccessMode; lexicalPath?: string },
   paths: CreateRequest['paths'],
   check: NonNullable<EngineDeps['checkHostPath']>,
   f: Findings,
@@ -313,8 +499,10 @@ function checkMount(
   const res = check(m.hostPath, {
     home: paths.home,
     roots: ctx.mountRoots,
+    ...(ctx.kind === 'human' && m.lexicalPath ? { lexicalPath: m.lexicalPath } : {}),
     kind: 'mount',
     extraForbidden: paths.extraForbidden ?? [],
+    denyHiddenHomeDirs: ctx.kind === 'agent',
   });
   if (!res.ok) f.deny(`${who}: ${res.reason}`, res.hint);
   if (p.mounts && m.access !== 'ro' && !p.mounts.access.includes(m.access)) {
@@ -349,6 +537,8 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
     );
   }
 
+  checkBaseImage(ctx, req.template, f);
+
   // --- host -------------------------------------------------------------
   if (!ctx.allowedHosts.includes('*') && !ctx.allowedHosts.includes(req.host.id)) {
     f.deny(
@@ -380,41 +570,41 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
     );
   }
 
-  if (cpusOk) {
-    if (reqRes.cpus > p.limits.cpus) {
-      f.deny(
-        `requested cpus ${reqRes.cpus} exceeds the limit of ${p.limits.cpus} set by profile "${p.name}" (limits.cpus)`,
-        `Request at most ${p.limits.cpus} cpus, or ask the human to raise limits.cpus.`,
-      );
-      clamped.push('cpus');
-      effCpus = Math.min(effCpus, p.limits.cpus);
-    }
-    if (hostLimits?.cpus !== undefined && reqRes.cpus > hostLimits.cpus) {
-      f.deny(
-        `requested cpus ${reqRes.cpus} exceeds the limit of ${hostLimits.cpus} on host "${req.host.id}"`,
-        `Request at most ${hostLimits.cpus} cpus on this host.`,
-      );
-      if (!clamped.includes('cpus')) clamped.push('cpus');
-      effCpus = Math.min(effCpus, hostLimits.cpus);
-    }
+  if (cpusOk && reqRes.cpus > p.limits.cpus) {
+    f.deny(
+      `requested cpus ${reqRes.cpus} exceeds the limit of ${p.limits.cpus} set by profile "${p.name}" (limits.cpus)`,
+      `Request at most ${p.limits.cpus} cpus, or ask the human to raise limits.cpus.`,
+    );
+    clamped.push('cpus');
+    effCpus = Math.min(effCpus, p.limits.cpus);
   }
-  if (memOk) {
-    if (reqRes.memoryBytes > p.limits.memoryBytes) {
-      f.deny(
-        `requested memory ${formatSize(reqRes.memoryBytes)} exceeds the limit of ${formatSize(p.limits.memoryBytes)} set by profile "${p.name}" (limits.memory)`,
-        `Request at most ${formatSize(p.limits.memoryBytes)} of memory, or ask the human to raise limits.memory.`,
-      );
-      clamped.push('memory');
-      effMem = Math.min(effMem, p.limits.memoryBytes);
-    }
-    if (hostMemBytes !== undefined && reqRes.memoryBytes > hostMemBytes) {
-      f.deny(
-        `requested memory ${formatSize(reqRes.memoryBytes)} exceeds the limit of ${formatSize(hostMemBytes)} on host "${req.host.id}"`,
-        `Request at most ${formatSize(hostMemBytes)} of memory on this host.`,
-      );
-      if (!clamped.includes('memory')) clamped.push('memory');
-      effMem = Math.min(effMem, hostMemBytes);
-    }
+  if (memOk && reqRes.memoryBytes > p.limits.memoryBytes) {
+    f.deny(
+      `requested memory ${formatSize(reqRes.memoryBytes)} exceeds the limit of ${formatSize(p.limits.memoryBytes)} set by profile "${p.name}" (limits.memory)`,
+      `Request at most ${formatSize(p.limits.memoryBytes)} of memory, or ask the human to raise limits.memory.`,
+    );
+    clamped.push('memory');
+    effMem = Math.min(effMem, p.limits.memoryBytes);
+  }
+  // The host limits are quotas of the whole host: the request plus what the sandboxes already there reserve.
+  const used = req.hostUsage ?? { cpus: 0, memoryBytes: 0 };
+  for (const v of hostQuotaViolations(
+    req.host,
+    {
+      sandboxes: req.currentHostSandboxCount,
+      cpus: used.cpus,
+      memoryBytes: used.memoryBytes,
+    },
+    {
+      ...(cpusOk ? { cpus: reqRes.cpus } : {}),
+      ...(memOk ? { memoryBytes: reqRes.memoryBytes } : {}),
+    },
+  )) {
+    if (v.field === 'sandboxes') continue; // the count is checked below, next to the profile's
+    f.deny(v.reason, v.hint);
+    if (!clamped.includes(v.field)) clamped.push(v.field);
+    if (v.field === 'cpus') effCpus = Math.min(effCpus, v.max);
+    else effMem = Math.min(effMem, v.max);
   }
   if (ttlOk && req.ttlMs > p.limits.ttlMs) {
     f.deny(
@@ -430,12 +620,12 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
       'Delete a sandbox you no longer need (or wait until it expires), then retry.',
     );
   }
-  if (hostLimits?.sandboxes !== undefined && req.currentHostSandboxCount >= hostLimits.sandboxes) {
-    f.deny(
-      `host "${req.host.id}" already runs ${req.currentHostSandboxCount} sandbox(es); its limit is ${hostLimits.sandboxes}`,
-      'Delete a sandbox on that host or use another host.',
-    );
-  }
+  for (const v of hostQuotaViolations(
+    req.host,
+    { sandboxes: req.currentHostSandboxCount, cpus: 0, memoryBytes: 0 },
+    { sandbox: true },
+  ))
+    f.deny(v.reason, v.hint);
 
   // --- workspace --------------------------------------------------------
   const ws = req.workspace;
@@ -459,9 +649,12 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
         const res = check(ws.hostPath, {
           home: req.paths.home,
           roots: ctx.workspaceRoots,
+          ...(ctx.kind === 'human' && ws.lexicalPath ? { lexicalPath: ws.lexicalPath } : {}),
           kind: 'workspace',
           extraForbidden: req.paths.extraForbidden ?? [],
           scanSockets: ws.mode === 'mount',
+          denyHiddenHomeDirs: ctx.kind === 'agent',
+          strictlyBelowRoots: ctx.kind === 'agent',
         });
         if (!res.ok) f.deny(res.reason, res.hint);
       }
@@ -509,6 +702,7 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
       reason: `network mode "open" (unrestricted internet access) for profile "${p.name}"`,
       risk: 'Code in the sandbox can reach any internet destination and exfiltrate data.',
     });
+    humanOpenNetworkBelowMinimum(f, ctx, req.providerIsolation, `template "${req.template.name}"`);
   }
   if ((net.privateExceptions?.length ?? 0) > 0) {
     privateExceptions = checkPrivateExceptions(net.privateExceptions, f);
@@ -660,6 +854,7 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
       contentHash: req.template.contentHash,
       source: { kind: req.templateSource.kind, path: req.templateSource.path },
       trusted: req.templateTrusted,
+      base: digestBase(req.template),
     },
     host: { id: req.host.id, zone: req.host.zone },
     isolation: req.providerIsolation,
@@ -692,6 +887,12 @@ export interface SandboxRef {
   /** Isolation the sandbox actually runs with. */
   isolation?: IsolationLevel;
   network?: { mode: NetworkMode; allow: string[] };
+  /**
+   * What the other live sandboxes on the same host reserve (without this one). With it, a resource
+   * request is checked against the host limits as a whole (see `hostQuotaViolations`); without it,
+   * only the request on its own.
+   */
+  hostUsage?: HostUsage;
 }
 
 /** Humans may act on every sandbox; agent contexts only on their own. */
@@ -817,13 +1018,14 @@ export function evaluateAccessRequest(
           reason: `switching sandbox ${sandbox.id} to network mode "open"`,
           risk: 'Code in the sandbox can reach any internet destination and exfiltrate data.',
         });
+        humanOpenNetworkBelowMinimum(f, ctx, sandbox.isolation, `sandbox ${sandbox.id}`);
       } else if (mode === 'allowlist') {
         const dom = evaluateDomains(ctx, d.domains ?? [], f);
         domainApproval(ctx, dom.beyond, dom.profileHasNone, f);
       } else if (mode === 'none' && (d.domains?.length ?? 0) > 0) {
         f.deny(
           'network destinations require network mode allowlist',
-          'Request mode allowlist together with the destinations.',
+          'Destinations belong to network mode allowlist. A running sandbox keeps the network mode it was created with: create a new sandbox with overrides.network (allow / presets).',
         );
       }
       if ((d.privateExceptions?.length ?? 0) > 0) {
@@ -860,7 +1062,6 @@ export function evaluateAccessRequest(
     }
     case 'resources': {
       const d = request.details;
-      const hostLimits = sandbox.host?.limits;
       if (d.cpus === undefined && d.memoryBytes === undefined)
         f.deny('resources request names neither cpus nor memory');
       if (d.cpus !== undefined) {
@@ -871,10 +1072,6 @@ export function evaluateAccessRequest(
             f.deny(
               `requested cpus ${d.cpus} exceeds the limit of ${p.limits.cpus} set by profile "${p.name}" (limits.cpus)`,
               `Request at most ${p.limits.cpus} cpus, or ask the human to raise limits.cpus.`,
-            );
-          if (hostLimits?.cpus !== undefined && d.cpus > hostLimits.cpus)
-            f.deny(
-              `requested cpus ${d.cpus} exceeds the limit of ${hostLimits.cpus} on host "${sandbox.host?.id}"`,
             );
         }
       }
@@ -887,12 +1084,24 @@ export function evaluateAccessRequest(
               `requested memory ${formatSize(d.memoryBytes)} exceeds the limit of ${formatSize(p.limits.memoryBytes)} set by profile "${p.name}" (limits.memory)`,
               `Request at most ${formatSize(p.limits.memoryBytes)}, or ask the human to raise limits.memory.`,
             );
-          const hm = hostLimits?.memory === undefined ? undefined : tryParseSize(hostLimits.memory);
-          if (hm !== undefined && d.memoryBytes > hm)
-            f.deny(
-              `requested memory ${formatSize(d.memoryBytes)} exceeds the limit of ${formatSize(hm)} on host "${sandbox.host?.id}"`,
-            );
         }
+      }
+      if (sandbox.host) {
+        for (const v of hostQuotaViolations(
+          sandbox.host,
+          sandbox.hostUsage ?? { sandboxes: 0, cpus: 0, memoryBytes: 0 },
+          {
+            ...(d.cpus !== undefined && Number.isFinite(d.cpus) && d.cpus > 0
+              ? { cpus: d.cpus }
+              : {}),
+            ...(d.memoryBytes !== undefined &&
+            Number.isSafeInteger(d.memoryBytes) &&
+            d.memoryBytes > 0
+              ? { memoryBytes: d.memoryBytes }
+              : {}),
+          },
+        ))
+          f.deny(v.reason, v.hint);
       }
       break;
     }

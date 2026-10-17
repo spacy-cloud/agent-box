@@ -9,6 +9,8 @@ export * from './template-trust.js';
 export * from './template-pins.js';
 export * from './policy-revisions.js';
 export * from './process-registry.js';
+export * from './human-sessions.js';
 export * from './host-cache.js';
 export * from './agent-tokens.js';
+export * from './snapshots.js';
 export * from './store.js';

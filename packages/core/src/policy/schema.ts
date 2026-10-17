@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ISOLATION_LEVELS, NETWORK_MODES, WORKSPACE_MODES } from '../types.js';
 import { isNetworkPreset } from '../template/network-presets.js';
 import { normalizeDomainPattern } from './domains.js';
+import { normalizeRegistryPattern } from './images.js';
 import { APPROVAL_MODES } from './model.js';
 import { tryParseDuration, tryParseSize } from './units.js';
 
@@ -51,6 +52,13 @@ const allowEntrySchema = z
     'invalid destination (expected example.org or *.example.org; "*" alone means any destination)',
   );
 
+const registrySchema = z
+  .string()
+  .refine(
+    (s) => normalizeRegistryPattern(s) !== undefined,
+    'invalid registry (expected a registry host with an optional path such as docker.io/library, ghcr.io or ghcr.io/my-org; "*" alone means any image)',
+  );
+
 const isolationSchema = z.enum(ISOLATION_LEVELS);
 
 const isolationObject = z.strictObject({
@@ -85,6 +93,7 @@ export const ProfileSchema = z.strictObject({
       allow: z.array(allowEntrySchema).optional(),
     })
     .optional(),
+  images: z.strictObject({ registries: z.array(registrySchema).optional() }).optional(),
   mounts: z
     .union([
       z.literal('deny'),

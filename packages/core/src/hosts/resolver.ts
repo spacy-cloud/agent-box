@@ -3,10 +3,11 @@ import type { HostCache } from '../state/host-cache.js';
 import type { BackendKind, HostConnection, HostId, IsolationLevel } from '../types.js';
 import { checkHostKey } from './known-hosts.js';
 import type { HostZone } from '../policy/engine.js';
-import type { ResolvedHostLimits } from './model.js';
+import { getEngineInfo, isSystemEngineSocket, type EngineInfo } from './engine-info.js';
+import { ZONE_DEFAULTS, type HostProfile, type ResolvedHostLimits } from './model.js';
 import type { HostRegistry } from './registry.js';
 import type { HostsEnv } from './ssh-args.js';
-import type { TunnelManager } from './tunnel.js';
+import type { EngineTunnel, TunnelManager } from './tunnel.js';
 
 export interface ResolvedHostTarget {
   connection: HostConnection;
@@ -16,6 +17,8 @@ export interface ResolvedHostTarget {
   backends: BackendKind[];
   /** Zones `shared` and `restricted` need an approval for agent use. */
   requiresApproval?: boolean;
+  /** What the engine behind a forwarded socket reported (`/info`); absent for local hosts or when it did not answer. */
+  engine?: EngineInfo;
 }
 
 export type HostTargetResolver = (hostId: HostId) => Promise<ResolvedHostTarget>;
@@ -32,6 +35,9 @@ export interface HostCacheInfo {
   lastErrorAt?: number;
   engineSocket?: string;
   zone?: HostZone;
+  /** Last engine facts seen through the tunnel. */
+  rootless?: boolean;
+  runtimes?: string[];
 }
 
 /**
@@ -68,7 +74,10 @@ export function createHostResolver(
         ...(profile.engineSocket ? { engineSocket: profile.engineSocket } : {}),
         ...(profile.dataDir ? { dataDir: profile.dataDir } : {}),
       };
-      return { connection, ...base };
+      return {
+        connection: withRuntimes(connection, profile),
+        ...base,
+      };
     }
 
     const wantsEngine = profile.backends.some((b) => b === 'docker' || b === 'podman');
@@ -81,19 +90,30 @@ export function createHostResolver(
         });
       }
       let connection: HostConnection;
+      let engine: EngineInfo | undefined;
       if (!wantsEngine) {
         const status = (await checkHostKey(profile, env)).status;
         assertTrusted(hostId, status);
-        connection = {
-          host: profile.id,
-          kind: 'ssh',
-          ...(profile.dataDir ? { dataDir: profile.dataDir } : {}),
-        };
+        connection = withRuntimes(
+          {
+            host: profile.id,
+            kind: 'ssh',
+            ...(profile.dataDir ? { dataDir: profile.dataDir } : {}),
+          },
+          profile,
+        );
       } else {
         if (!profile.engineSocket) {
           throw new AboxError('unsupported', `host "${hostId}" has no engine_socket`, {
             hint: 'Set engine_socket (e.g. /run/user/<uid>/podman/podman.sock) in hosts.yaml; "abox host test" lists candidates.',
           });
+        }
+        const strict = ZONE_DEFAULTS[profile.zone].requiresRootless && !profile.allowRootful;
+        if (strict && isSystemEngineSocket(profile.engineSocket)) {
+          throw rootfulRefused(
+            profile,
+            `${profile.engineSocket} is the socket of a system-wide engine`,
+          );
         }
         // ssh itself enforces the host key (StrictHostKeyChecking=yes); only when it refuses do we
         // scan again to tell "unknown" from "changed". The healthy path costs no extra scan.
@@ -107,18 +127,30 @@ export function createHostResolver(
           }
           throw e;
         }
-        connection = tunnel.connection;
+        connection = withRuntimes(tunnel.connection, profile);
+        engine = await engineInfoOf(tunnel);
+        if (strict && engine?.rootless !== true) {
+          // never leave a connection to a root-equivalent engine open
+          await tunnels.close(hostId).catch(() => undefined);
+          throw rootfulRefused(
+            profile,
+            engine
+              ? `the engine behind ${profile.engineSocket} is not rootless`
+              : `cannot verify that the engine behind ${profile.engineSocket} is rootless (no usable answer to /info)`,
+          );
+        }
       }
       const info: HostCacheInfo = {
         ...prevInfo,
         lastOkAt: now(),
         engineSocket: profile.engineSocket,
         zone: profile.zone,
+        ...(engine ? { rootless: engine.rootless, runtimes: engine.runtimes } : {}),
       };
       delete info.lastError;
       delete info.lastErrorAt;
       opts.cache?.put(hostId, info, true, now());
-      return { connection, ...base };
+      return { connection, ...base, ...(engine ? { engine } : {}) };
     } catch (e) {
       const err = isAboxError(e)
         ? e
@@ -142,6 +174,47 @@ export function createHostResolver(
       throw err;
     }
   };
+}
+
+function withRuntimes(connection: HostConnection, profile: HostProfile): HostConnection {
+  return profile.runtimes && Object.keys(profile.runtimes).length > 0
+    ? { ...connection, runtimes: { ...profile.runtimes } }
+    : connection;
+}
+
+const engineFacts = new WeakMap<EngineTunnel, EngineInfo>();
+
+/** `/info` of the engine behind a tunnel, asked once per tunnel connection (forgotten when it drops). */
+async function engineInfoOf(tunnel: EngineTunnel): Promise<EngineInfo | undefined> {
+  const known = engineFacts.get(tunnel);
+  if (known) return known;
+  const info = await getEngineInfo(tunnel.localSocket);
+  if (info) {
+    engineFacts.set(tunnel, info);
+    const forget = (s: string) => {
+      if (s !== 'open') {
+        engineFacts.delete(tunnel);
+        tunnel.off('state', forget);
+      }
+    };
+    tunnel.on('state', forget);
+  }
+  return info;
+}
+
+/**
+ * Roadmap 4b.8: sandboxes on a host with its own services run on a rootless engine of a dedicated
+ * user, never on the system engine whose socket is root on that machine.
+ */
+function rootfulRefused(profile: HostProfile, why: string): AboxError {
+  return new AboxError(
+    'policy_denied',
+    `host "${profile.id}" (zone ${profile.zone}) must use a rootless engine: ${why}`,
+    {
+      hint: 'Run the sandboxes as a dedicated unprivileged user with rootless podman/docker and point engine_socket at its socket (e.g. /run/user/<uid>/podman/podman.sock). Access to a rootful engine is root-equivalent on the host; if you accept that, set allow_rootful: true for this host.',
+      details: { reason: 'engine_rootful', host: profile.id, zone: profile.zone },
+    },
+  );
 }
 
 function assertTrusted(hostId: string, status: 'trusted' | 'unknown' | 'changed'): void {

@@ -2,10 +2,13 @@ import { rm } from 'node:fs/promises';
 import { AboxError, isAboxError } from '../errors.js';
 import type { SandboxProvider } from '../provider.js';
 import { hashJson } from '../state/canonical.js';
-import type { SandboxRecord } from '../state/sandbox-registry.js';
+import type { SandboxRecord, SandboxRegistry } from '../state/sandbox-registry.js';
 import {
   canonicalizePath,
+  lexicalPath,
   evaluateCreate,
+  hostQuotaViolations,
+  isWithinFolded,
   type AgentContext,
   type CreateEvaluation,
 } from '../policy/index.js';
@@ -18,7 +21,7 @@ import {
   normalizeHost,
 } from '../secrets/inject.js';
 import { expandNetworkPresets } from '../template/network-presets.js';
-import { makeSandboxId } from '../types.js';
+import { isolationAtLeast, makeSandboxId } from '../types.js';
 import type {
   AccessMode,
   NetworkMode,
@@ -33,8 +36,10 @@ import type {
 import { cleanupWorkspace, prepareWorkspace } from '../workspace/index.js';
 import type { WorkspaceRecord } from '../workspace/index.js';
 import { confirmationRequired, consumeApproval, gate } from './approvals.js';
+import { collectNetworkEvents } from './network-audit.js';
 import type { Internals, StoredEffective } from './internals.js';
 import { createRequestSchema } from './schemas.js';
+import { requireNotTakenOver } from './takeover.js';
 import {
   checkTemplateForProvider,
   isTrusted,
@@ -165,18 +170,41 @@ function syncRecord(I: Internals, rec: SandboxRecord, info: SandboxInfo): Sandbo
 // create
 // ---------------------------------------------------------------------------
 
+/**
+ * Fingerprints of a create request. `raw` is the request as sent (cheap, known up front);
+ * `effective` is the request after template resolution and merging of the overrides (known once
+ * the template is loaded), so equivalent requests (`ttl: 30m` equal to the template default vs. no
+ * `ttl`) are the same request - the same view approvals are bound to.
+ */
+interface RequestHashes {
+  raw: string;
+  effective?: string;
+}
+
 async function waitForPeer(
   I: Internals,
   owner: string,
   requestId: string,
-  requestHash: string,
+  hashes: RequestHashes,
 ): Promise<SandboxRecord | undefined> {
   const deadline = Date.now() + WAIT_FOR_PEER_MS;
   for (;;) {
     const rec = I.state.sandboxes.findByRequestId(owner, requestId);
     if (!rec) return undefined;
-    const stored = (rec.effective as StoredEffective | null)?.requestHash;
-    if (stored && stored !== requestHash) {
+    const stored = rec.effective as StoredEffective | null;
+    const differs =
+      stored?.requestHash !== undefined &&
+      stored.requestHash !== hashes.raw &&
+      !(
+        hashes.effective !== undefined &&
+        stored.effectiveRequestHash !== undefined &&
+        stored.effectiveRequestHash === hashes.effective
+      );
+    if (differs && hashes.effective === undefined) {
+      // Not the same text; whether it is the same request needs the resolved request (see createSandbox).
+      return undefined;
+    }
+    if (differs) {
       throw new AboxError(
         'conflict',
         `request id '${requestId}' was already used for a different create request (sandbox ${rec.id})`,
@@ -230,6 +258,7 @@ export async function createSandbox(
   opts: CreateOptions = {},
 ): Promise<CreateResult> {
   const ctx = await I.context(caller);
+  I.requirePolicyValid(ctx, 'sandbox.create', 'creating sandboxes');
   const req = parseInput(createRequestSchema, rawReq, 'create request');
   const owner = ctx.owner;
   const requestHash = hashJson({ ...req, requestId: undefined });
@@ -237,7 +266,7 @@ export async function createSandbox(
 
   // 1. idempotency
   if (req.requestId) {
-    const existing = await waitForPeer(I, owner, req.requestId, requestHash);
+    const existing = await waitForPeer(I, owner, req.requestId, { raw: requestHash });
     if (existing) return existingResult(I, existing);
   }
 
@@ -328,18 +357,21 @@ export async function createSandbox(
   const privateExceptions = ov.network?.privateExceptions ?? [];
 
   const base = I.projectDir ?? process.cwd();
-  const mounts = [
+  const mountSpecs = [
     ...template.mounts.map((m) => ({ source: m.source, target: m.target, access: m.access })),
     ...(ov.mounts ?? []).map((m) => ({
       source: m.source,
       target: m.target,
       access: (m.access ?? 'ro') as AccessMode,
     })),
-  ].map((m) => ({
+  ];
+  const mounts = mountSpecs.map((m) => ({
     hostPath: canonicalizePath(m.source, { home: I.home, cwd: base }),
     target: m.target,
     access: m.access,
   }));
+  // As typed, for the policy check of a human's explicit roots only (see `lexicalPath`).
+  const mountsLexical = mountSpecs.map((m) => lexicalPath(m.source, { home: I.home, cwd: base }));
   if (mounts.length > 0 && !caps.mounts) {
     throw new AboxError(
       'unsupported',
@@ -351,6 +383,7 @@ export async function createSandbox(
   const wsMode: WorkspaceMode = wsRequested?.mode ?? template.workspace.mode;
   const wsAccess: AccessMode = wsRequested?.access ?? template.workspace.access;
   let wsHostPath: string | undefined;
+  let wsLexicalPath: string | undefined;
   if (wsMode !== 'empty') {
     const raw = wsRequested?.path ?? I.projectDir;
     if (!raw) {
@@ -363,39 +396,104 @@ export async function createSandbox(
       );
     }
     wsHostPath = canonicalizePath(raw, { home: I.home, cwd: base });
+    wsLexicalPath = lexicalPath(raw, { home: I.home, cwd: base });
+  }
+  // Idempotency by effective request: the same sandbox however the request spelled its defaults.
+  const effectiveRequestHash = hashJson({
+    template: template.name,
+    templateHash: template.hash,
+    backend: template.backend,
+    host: hostId,
+    name: req.name ?? null,
+    workspace: {
+      mode: wsMode,
+      access: wsAccess,
+      hostPath: wsHostPath ?? null,
+      ref: wsRequested?.ref ?? null,
+      exclude: [...(wsRequested?.exclude ?? [])].sort(),
+    },
+    resources: { cpus, memoryBytes, ttlMs },
+    network: {
+      mode: netMode,
+      allow: [...allow].sort(),
+      privateExceptions: [...privateExceptions].sort(),
+    },
+    mounts: mounts.map((m) => `${m.target}\0${m.hostPath}\0${m.access}`).sort(),
+  });
+  if (req.requestId) {
+    const existing = await waitForPeer(I, owner, req.requestId, {
+      raw: requestHash,
+      effective: effectiveRequestHash,
+    });
+    if (existing) return existingResult(I, existing);
+  }
+  if (wsHostPath) {
+    // Early answer (before any approval is asked for); the authoritative check is the one inside the claim below.
+    // (Another owner's sandbox is not named here: the policy's protected-path denial answers generically.)
+    const used = workspaceInUse(I, I.state.sandboxes, ctx, wsHostPath);
+    if (used?.visible) {
+      const err = workspaceInUseError(wsHostPath, used);
+      I.audit(owner, 'sandbox.create', {
+        decision: 'deny',
+        details: {
+          template: req.template,
+          host: hostId,
+          reasons: [err.message],
+          code: 'workspace_in_use',
+        },
+      });
+      throw err;
+    }
   }
   const deliveryKind = deliveryKindFor(wsMode);
   if (!caps.workspaceDelivery.includes(deliveryKind)) {
+    // On a remote host a bind of a local directory cannot exist: say so, and name what works there.
+    const bindOnRemote = caps.remote && deliveryKind === 'bind';
     throw new AboxError(
       'unsupported',
-      `backend '${template.backend}' cannot deliver workspace mode '${wsMode}' (needs delivery '${deliveryKind}')`,
+      bindOnRemote
+        ? `workspace mode '${wsMode}' is not possible on host '${hostId}': it is a remote host and cannot bind-mount a directory of this machine`
+        : `backend '${template.backend}' cannot deliver workspace mode '${wsMode}' (needs delivery '${deliveryKind}')`,
       {
-        hint: `Use workspace mode ${caps.workspaceDelivery.includes('copy') ? "'copy' or 'clone'" : "'empty'"} with this template.`,
+        hint: bindOnRemote
+          ? "Use workspace mode 'copy' (the directory is uploaded) or 'clone' (a git clone of the repository is uploaded); bring the results back with 'abox export'."
+          : `Use workspace mode ${caps.workspaceDelivery.includes('copy') ? "'copy' or 'clone'" : "'empty'"} with this template.`,
       },
     );
   }
 
   // 5. policy
   const secretDecl = template.secrets.map((s) => ({ ref: s.ref, inject: s.inject }));
-  const evaluate = (confirmed: boolean | undefined): CreateEvaluation =>
-    evaluateCreate({
+  const hostInfo = I.hostInfo(host, caps.remote);
+  const evaluate = (confirmed: boolean | undefined): CreateEvaluation => {
+    const hostUsage = I.hostUsage(hostId);
+    return evaluateCreate({
       context: ctx,
       template,
       templateTrusted: trusted,
       templateSource: template.source,
-      host: I.hostInfo(host, caps.remote),
+      host: hostInfo,
       providerIsolation: caps.isolation,
-      workspace: { mode: wsMode, ...(wsHostPath ? { hostPath: wsHostPath } : {}) },
-      mounts,
+      workspace: {
+        mode: wsMode,
+        ...(wsHostPath ? { hostPath: wsHostPath } : {}),
+        ...(wsLexicalPath ? { lexicalPath: wsLexicalPath } : {}),
+      },
+      mounts: mounts.map((m, i) => {
+        const lexical = mountsLexical[i];
+        return lexical ? { ...m, lexicalPath: lexical } : m;
+      }),
       network: { mode: netMode, allow, privateExceptions },
       secrets: secretDecl,
       resources: { cpus, memoryBytes },
       ttlMs,
       currentSandboxCount: I.countActive(owner),
-      currentHostSandboxCount: I.countActiveOnHost(hostId),
+      currentHostSandboxCount: hostUsage.sandboxes,
+      hostUsage,
       paths: { home: I.home, extraForbidden: I.forbiddenTrees() },
       ...(confirmed !== undefined ? { humanConfirmed: confirmed } : {}),
     });
+  };
   const ev = evaluate(caller.humanConfirmed === true && ctx.kind === 'human' ? true : undefined);
   const auditBase = {
     template: template.name,
@@ -410,8 +508,18 @@ export async function createSandbox(
       decision: 'deny',
       details: { ...auditBase, reasons: ev.reasons, hint: ev.hint },
     });
+    // A hardened runtime that is configured but not in the engine is the usual cause of an
+    // isolation shortfall on a host that requires `hardened`: name it.
+    const wantedRuntime = (provider as { hardenedRuntime?: string }).hardenedRuntime;
+    const runtimeNote =
+      wantedRuntime !== undefined &&
+      !isolationAtLeast(caps.isolation, 'hardened') &&
+      ev.reasons.some((r) => r.startsWith('isolation '))
+        ? `The hardened runtime "${wantedRuntime}" configured for host '${hostId}' is not available in its engine, so the isolation stays "${caps.isolation}" ("abox host test" / "abox doctor" show what the engine offers).`
+        : undefined;
+    const denyHint = [ev.hint, runtimeNote].filter(Boolean).join(' ');
     throw new AboxError('policy_denied', ev.reasons.join('; '), {
-      ...(ev.hint ? { hint: ev.hint } : {}),
+      ...(denyHint ? { hint: denyHint } : {}),
       details: { reasons: ev.reasons },
     });
   }
@@ -451,6 +559,7 @@ export async function createSandbox(
       request,
       reasons: ev.reasons,
       risks: ev.risks,
+      items: ev.items,
       waitMs,
       signal: opts.signal,
       action: 'sandbox.create',
@@ -476,42 +585,84 @@ export async function createSandbox(
       ...(s.path ? { path: s.path } : {}),
     })),
     requestHash,
+    effectiveRequestHash,
     creator: I.creatorStamp(),
   };
-  const claim = I.state.sandboxes.claim(
-    {
-      id,
-      host: hostId,
-      name,
-      owner,
-      template: template.name,
-      templateHash: template.hash,
-      backend: template.backend,
-      isolation: caps.isolation,
-      state: 'preparing',
-      createdAt: now,
-      expiresAt: now + ttlMs,
-      requestId: req.requestId ?? null,
-      effective: preEffective as unknown as Record<string, unknown>,
-    },
-    (registry) => {
-      const active = registry
-        .list({ owner, state: ['preparing', 'created', 'running', 'stopped'] })
-        .filter((r) => !r.stale && !I.isInterrupted(r)).length;
-      if (active >= ctx.profile.limits.sandboxes) {
-        throw new AboxError(
-          'policy_denied',
-          `${owner} already has ${active} sandbox(es); profile "${ctx.profile.name}" allows at most ${ctx.profile.limits.sandboxes} (limits.sandboxes)`,
-          {
-            hint: 'Delete a sandbox you no longer need (or wait until it expires), then retry.',
-          },
-        );
-      }
-    },
-  );
+  // The claim is the one place where every quota is decided for good: the check runs in the same
+  // write transaction as the insert, so parallel creates (also from other processes) cannot all pass
+  // a check that only one of them satisfies. What the policy evaluation above saw is advisory.
+  let claim: ReturnType<SandboxRegistry['claim']>;
+  try {
+    claim = I.state.sandboxes.claim(
+      {
+        id,
+        host: hostId,
+        name,
+        owner,
+        template: template.name,
+        templateHash: template.hash,
+        backend: template.backend,
+        isolation: caps.isolation,
+        state: 'preparing',
+        createdAt: now,
+        expiresAt: now + ttlMs,
+        requestId: req.requestId ?? null,
+        effective: preEffective as unknown as Record<string, unknown>,
+        // A mount-mode workspace is held from here on, before it is prepared (see `workspaceInUse`).
+        ...(wsMode === 'mount' && wsHostPath
+          ? { workspace: { mode: 'mount', claim: wsHostPath } }
+          : {}),
+      },
+      (registry) => {
+        const active = registry
+          .list({ owner, state: ['preparing', 'created', 'running', 'stopped'] })
+          .filter((r) => !r.stale && !I.isInterrupted(r)).length;
+        if (active >= ctx.profile.limits.sandboxes) {
+          throw new AboxError(
+            'policy_denied',
+            `${owner} already has ${active} sandbox(es); profile "${ctx.profile.name}" allows at most ${ctx.profile.limits.sandboxes} (limits.sandboxes)`,
+            {
+              hint: 'Delete a sandbox you no longer need (or wait until it expires), then retry.',
+              details: { claim: 'owner_quota' },
+            },
+          );
+        }
+        const violations = hostQuotaViolations(hostInfo, I.hostUsage(hostId, { registry }), {
+          sandbox: true,
+          cpus,
+          memoryBytes,
+        });
+        if (violations.length > 0) {
+          throw new AboxError('policy_denied', violations.map((v) => v.reason).join('; '), {
+            hint: [...new Set(violations.map((v) => v.hint))].join(' '),
+            details: { reasons: violations.map((v) => v.reason), claim: 'host_quota' },
+          });
+        }
+        if (wsHostPath) {
+          const used = workspaceInUse(I, registry, ctx, wsHostPath);
+          if (used) throw workspaceInUseError(wsHostPath, used);
+        }
+      },
+    );
+  } catch (e) {
+    if (isAboxError(e) && typeof e.details?.['claim'] === 'string') {
+      I.audit(owner, 'sandbox.create', {
+        decision: 'deny',
+        details: {
+          ...auditBase,
+          reasons: Array.isArray(e.details['reasons']) ? e.details['reasons'] : [e.message],
+          code: e.details['claim'],
+        },
+      });
+    }
+    throw e;
+  }
   if (!claim.created) {
     // lost the race against a concurrent create with the same requestId
-    const winner = await waitForPeer(I, owner, req.requestId!, requestHash);
+    const winner = await waitForPeer(I, owner, req.requestId!, {
+      raw: requestHash,
+      effective: effectiveRequestHash,
+    });
     if (winner) return existingResult(I, winner);
     return createSandbox(I, caller, rawReq, opts);
   }
@@ -800,6 +951,56 @@ async function cleanupFailedCreate(
   });
 }
 
+/**
+ * A project directory that another live sandbox works on directly (workspace mode `mount`) cannot
+ * be used as a workspace again. Callers see the sandbox id only for their own sandboxes (humans:
+ * all); for other owners the generic policy denial applies, so agents learn nothing about them.
+ *
+ * A mount-mode sandbox holds its directory from the moment its registry row is claimed (`claim`
+ * in the workspace column) until it is removed or failed; once the workspace is prepared the
+ * record's `liveTree` takes over. Called inside the claim transaction, so of several parallel
+ * creates for one directory exactly one gets it.
+ */
+function workspaceInUse(
+  I: Internals,
+  registry: SandboxRegistry,
+  ctx: { kind: 'human' | 'agent'; owner: string },
+  path: string,
+): { id: SandboxId; visible: boolean } | undefined {
+  for (const r of registry.list({ includeRemoved: false })) {
+    // (a create whose process died holds nothing: `reconcile --apply` cleans its row up)
+    if (r.state === 'failed' || r.state === 'removed' || I.isInterrupted(r)) continue;
+    const ws = r.workspace as (Partial<WorkspaceRecord> & { claim?: string }) | null;
+    if (ws?.mode !== 'mount') continue;
+    const tree = ws.liveTree ?? ws.claim;
+    if (!tree) continue;
+    if (isWithinFolded(path, tree) || isWithinFolded(tree, path)) {
+      if (ctx.kind === 'human' || r.owner === ctx.owner) return { id: r.id, visible: true };
+      return { id: r.id, visible: false };
+    }
+  }
+  return undefined;
+}
+
+function workspaceInUseError(path: string, used: { id: SandboxId; visible: boolean }): AboxError {
+  if (!used.visible) {
+    // Lost the race against another owner's create: say nothing about who holds the directory.
+    return new AboxError('policy_denied', `workspace ${path} is not available`, {
+      hint: 'Choose another path.',
+      details: { reasons: [`workspace ${path} is not available`], claim: 'workspace_in_use' },
+    });
+  }
+  const by = `sandbox ${used.id}`;
+  return new AboxError(
+    'conflict',
+    `workspace ${path} is already used by ${by}; remove it or choose another path/mode`,
+    {
+      hint: `A sandbox in workspace mode "mount" works on the directory itself; "abox rm ${used.id}" frees it.`,
+      details: { path, claim: 'workspace_in_use', sandboxId: used.id },
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // list / inspect
 // ---------------------------------------------------------------------------
@@ -834,8 +1035,35 @@ export async function listSandboxes(
       /* no local host */
     }
   }
+  // An explicit host filter must name a configured host (unknown -> not_found); a configured host
+  // that cannot be resolved, or has no usable backend, is reported instead of an empty list.
+  const hostProblems: Record<string, string> = {};
+  if (filter.host) {
+    try {
+      const h = await I.resolveHost(filter.host);
+      const usable = h.backends.filter((b) => I.providerFactories[b]);
+      if (usable.length === 0) {
+        hostProblems[filter.host] = `host '${filter.host}' has no usable backend`;
+      } else if (ctx.kind === 'human' && !filter.owner) {
+        for (const b of usable)
+          groups.set(`${filter.host}|${b}`, { host: filter.host, backend: b });
+      }
+    } catch (e) {
+      if (isAboxError(e) && e.code === 'not_found') {
+        throw new AboxError('not_found', `unknown host '${filter.host}'`, {
+          hint: 'List the configured hosts with "abox host ls".',
+          cause: e,
+        });
+      }
+      hostProblems[filter.host] = errMessage(e);
+    }
+  }
   const listed = new Map<string, Map<SandboxId, SandboxInfo> | { error: string }>();
   for (const [key, g] of groups) {
+    if (hostProblems[g.host] !== undefined) {
+      listed.set(key, { error: hostProblems[g.host]! });
+      continue;
+    }
     try {
       const host = await I.resolveHost(g.host);
       const provider = I.providerFor(host, g.backend);
@@ -846,7 +1074,16 @@ export async function listSandboxes(
     }
   }
 
-  const unreachable = new Set<string>();
+  const unreachable = new Set<string>(Object.keys(hostProblems));
+  if (filter.host && hostProblems[filter.host] === undefined) {
+    // all backends of the filtered host failed to list: say so instead of showing an empty list
+    const own = [...listed].filter(([k]) => groups.get(k)?.host === filter.host);
+    const failed = own.flatMap(([, l]) => ('error' in l ? [l.error] : []));
+    if (own.length > 0 && failed.length === own.length) {
+      unreachable.add(filter.host);
+      hostProblems[filter.host] = failed[0]!;
+    }
+  }
   const knownIds = new Set(recs.map((r) => r.id));
   const sandboxes: SandboxView[] = [];
   for (const r of recs) {
@@ -856,6 +1093,7 @@ export async function listSandboxes(
       sandboxes.push(I.toView(r));
     } else if ('error' in l) {
       unreachable.add(r.host);
+      hostProblems[r.host] ??= l.error;
       sandboxes.push(I.toView({ ...r, stale: true }, { hostReachable: false }));
     } else {
       const info = l.get(r.id);
@@ -899,7 +1137,12 @@ export async function listSandboxes(
         states?.includes('removed') ||
         (v.state !== 'removed' && (v.state !== 'failed' || states?.includes('failed')))),
   );
-  return { sandboxes: out, orphans, unreachableHosts: [...unreachable] };
+  return {
+    sandboxes: out,
+    orphans,
+    unreachableHosts: [...unreachable],
+    ...(Object.keys(hostProblems).length > 0 ? { hostProblems } : {}),
+  };
 }
 
 export async function inspectSandbox(
@@ -909,6 +1152,7 @@ export async function inspectSandbox(
 ): Promise<InspectResult> {
   const ctx = await I.context(caller);
   const rec = I.lookup(ctx, id, { allowRemoved: true });
+  await collectNetworkEvents(I, rec);
   const view = await viewFor(I, rec);
   const processes: ProcessView[] = I.state.processes.list(rec.id).map((p) => ({
     id: p.id,
@@ -930,6 +1174,7 @@ export async function inspectSandbox(
 export async function startSandbox(I: Internals, caller: Caller, id: string): Promise<SandboxView> {
   const ctx = await I.context(caller);
   const rec = I.lookup(ctx, id);
+  requireNotTakenOver(I, ctx, rec, 'sandbox.start');
   if (rec.state === 'failed' || rec.state === 'preparing') {
     throw new AboxError('conflict', `sandbox ${id} is ${rec.state} and cannot be started`);
   }
@@ -954,7 +1199,10 @@ export async function startSandbox(I: Internals, caller: Caller, id: string): Pr
 export async function stopSandbox(I: Internals, caller: Caller, id: string): Promise<SandboxView> {
   const ctx = await I.context(caller);
   const rec = I.lookup(ctx, id);
+  // Stopping would kill the terminal the human is working in.
+  requireNotTakenOver(I, ctx, rec, 'sandbox.stop');
   const provider = await I.providerForRecord(rec);
+  await collectNetworkEvents(I, rec);
   await provider.stop(id);
   I.state.sandboxes.transition(id, ['created', 'running', 'stopped'], 'stopped');
   for (const p of I.state.processes.list(id))
@@ -973,12 +1221,15 @@ export async function destroySandbox(
   opts: { markRemoved?: boolean } = {},
 ): Promise<void> {
   const provider = await I.providerForRecord(rec);
+  await collectNetworkEvents(I, rec); // the proxy and its log disappear with the sandbox
   try {
     await provider.stop(rec.id);
   } catch {
     /* not running, already gone or unsupported */
   }
   await provider.remove(rec.id);
+  I.state.snapshots.deleteAll(rec.id);
+  I.state.humanSessions.deleteAll(rec.id);
   const ws = rec.workspace as WorkspaceRecord | null;
   const problems: string[] = [];
   if (ws && ws.version === 1) {
@@ -1017,6 +1268,7 @@ export async function removeSandbox(
   const ctx = await I.context(caller);
   const rec = I.lookup(ctx, id, { allowRemoved: true });
   if (rec.state === 'removed') return { id, removed: false };
+  requireNotTakenOver(I, ctx, rec, 'sandbox.remove');
   if (rec.state === 'preparing' && !I.isInterrupted(rec)) {
     throw new AboxError('conflict', `sandbox ${id} is still being created`, {
       hint: 'Wait until the create call returns.',

@@ -16,7 +16,7 @@ import { AboxError } from '../errors.js';
 import { getEffectiveSshConfig } from './effective.js';
 import { run } from './exec.js';
 import type { HostProfile } from './model.js';
-import { isHostname, isProxyJump, parseJumpHop } from './schema.js';
+import { isHostname, isProxyJump, isSshUser, parseJumpHop } from './schema.js';
 import { optValue, renderHardenedConfig, sshBinary, type HostsEnv } from './ssh-args.js';
 
 export type HostKeyStatus = 'trusted' | 'unknown' | 'changed';
@@ -80,21 +80,33 @@ function parseKeyLine(line: string): { type: string; key: string; revoked: boole
   return { type, key, revoked };
 }
 
+/** Where ssh will connect and over which path, as `ssh -G` computes it. */
+export interface ScanTarget {
+  hostname: string;
+  port: number;
+  user?: string;
+  /** Jump hosts of the effective config. */
+  proxyJump?: string;
+  /** `ProxyCommand` of the effective config (unexpanded). */
+  proxyCommand?: string;
+}
+
 /** Resolves hostname/port the way ssh will connect (config alias, HostName, Port). */
-export async function resolveTarget(
-  profile: HostProfile,
-  env: HostsEnv,
-): Promise<{ hostname: string; port: number; proxyJump?: string }> {
+export async function resolveTarget(profile: HostProfile, env: HostsEnv): Promise<ScanTarget> {
   try {
     const eff = await getEffectiveSshConfig(profile, env);
     if (eff.hostname)
       return {
         hostname: eff.hostname,
         port: eff.port,
+        ...(eff.user ? { user: eff.user } : {}),
         ...(eff.proxyJump ? { proxyJump: eff.proxyJump } : {}),
+        ...(eff.proxyCommand ? { proxyCommand: eff.proxyCommand } : {}),
       };
   } catch (e) {
-    if (profile.hostname === undefined) throw e;
+    // Without an ssh config of the user there is nothing `ssh -G` could add. With one, guessing
+    // would scan directly while the connection may go through its ProxyJump/ProxyCommand.
+    if (profile.hostname === undefined || env.sshConfigFile !== null) throw e;
   }
   return {
     hostname: profile.hostname!,
@@ -105,8 +117,10 @@ export async function resolveTarget(
 
 /**
  * Fetches the host keys a server presents (nothing is trusted or stored). Direct hosts use
- * `ssh-keyscan`; hosts behind a `ProxyJump` are scanned with a throwaway ssh handshake that
- * stops before authentication - this requires the jump hosts to be trusted already.
+ * `ssh-keyscan`; hosts behind a `ProxyJump` or a `ProxyCommand` are scanned with a throwaway
+ * ssh handshake that stops before authentication and goes the same way the real connection
+ * goes. (`ssh-keyscan` would connect directly and could show the key of another machine than
+ * the one abox later logs in to.) A ProxyJump requires the jump hosts to be trusted already.
  */
 export async function scanHostKey(profile: HostProfile, env: HostsEnv): Promise<HostKeyScan> {
   const target = await resolveTarget(profile, env);
@@ -116,7 +130,7 @@ export async function scanHostKey(profile: HostProfile, env: HostsEnv): Promise<
       `unsafe host name from ssh configuration: ${JSON.stringify(target.hostname)}`,
     );
   }
-  if (target.proxyJump) return scanViaSsh(profile, env, target);
+  if (target.proxyJump || target.proxyCommand) return scanViaSsh(profile, env, target);
   const keyscan = env.sshKeyscanBinary ?? 'ssh-keyscan';
   const timeoutS = env.connectTimeoutSec ?? 10;
   const scanWith = async (family: string[]) => {
@@ -200,17 +214,61 @@ function jumpProfile(hop: string): HostProfile {
   };
 }
 
+/** Config text of the scan: one throwaway `Host` block (before the hardened `Host *`) for the target. */
+export function renderScanPrelude(
+  alias: string,
+  target: ScanTarget,
+  scanKnownHostsFile: string,
+): string {
+  const route: string[] = [];
+  if (target.proxyJump) {
+    if (!isProxyJump(target.proxyJump)) {
+      throw new AboxError('invalid_input', 'unsupported ProxyJump value');
+    }
+    route.push(`  ProxyJump ${target.proxyJump}`);
+  } else if (target.proxyCommand) {
+    // eslint-disable-next-line no-control-regex
+    if (target.proxyCommand.length > 4096 || /[\u0000-\u001f\u007f]/.test(target.proxyCommand)) {
+      throw new AboxError('invalid_input', 'unsupported ProxyCommand value');
+    }
+    route.push(`  ProxyCommand ${target.proxyCommand}`);
+  }
+  if (target.user !== undefined) {
+    if (!isSshUser(target.user)) {
+      throw new AboxError('invalid_input', 'unsafe ssh user from the ssh configuration');
+    }
+    route.push(`  User ${target.user}`);
+  }
+  return [
+    `Host ${alias}`,
+    `  HostName ${target.hostname}`,
+    `  Port ${target.port}`,
+    ...route,
+    '  PreferredAuthentications none',
+    '  StrictHostKeyChecking accept-new',
+    `  UserKnownHostsFile ${optValue(scanKnownHostsFile)}`,
+    '  GlobalKnownHostsFile /dev/null',
+    '  CheckHostIP no',
+    '  UpdateHostKeys no',
+    '  VerifyHostKeyDNS no',
+    '  HashKnownHosts no',
+    '  BatchMode yes',
+    '  LogLevel ERROR',
+    '',
+  ].join('\n');
+}
+
 async function scanViaSsh(
   profile: HostProfile,
   env: HostsEnv,
-  target: { hostname: string; port: number; proxyJump?: string },
+  target: ScanTarget,
 ): Promise<HostKeyScan> {
   const jump = target.proxyJump ?? '';
-  if (!isProxyJump(jump)) {
+  // Friendly pre-check; ssh enforces the same strictness for the hops itself (generated config).
+  if (jump && !isProxyJump(jump)) {
     throw new AboxError('invalid_input', 'unsupported ProxyJump value');
   }
-  // Friendly pre-check; ssh enforces the same strictness for the hops itself (generated config).
-  for (const hop of jump.split(',')) {
+  for (const hop of jump ? jump.split(',') : []) {
     const st = await checkHostKey(jumpProfile(hop), env);
     if (st.status !== 'trusted') {
       throw hostUnreachable(
@@ -230,23 +288,7 @@ async function scanViaSsh(
     const scanKnown = join(dir, 'known_hosts');
     writeFileSync(scanKnown, '', { mode: 0o600 });
     const alias = 'abox-scan-target';
-    const prelude = [
-      `Host ${alias}`,
-      `  HostName ${target.hostname}`,
-      `  Port ${target.port}`,
-      `  ProxyJump ${jump}`,
-      '  PreferredAuthentications none',
-      '  StrictHostKeyChecking accept-new',
-      `  UserKnownHostsFile ${optValue(scanKnown)}`,
-      '  GlobalKnownHostsFile /dev/null',
-      '  CheckHostIP no',
-      '  UpdateHostKeys no',
-      '  VerifyHostKeyDNS no',
-      '  HashKnownHosts no',
-      '  BatchMode yes',
-      '  LogLevel ERROR',
-      '',
-    ].join('\n');
+    const prelude = renderScanPrelude(alias, target, scanKnown);
     const conf = join(dir, 'ssh_config');
     writeFileSync(conf, renderHardenedConfig(env, 'batch', { prelude }), { mode: 0o600 });
     await run(

@@ -142,7 +142,9 @@ export class Layout {
     try {
       const parsed: unknown = JSON.parse(await readFile(this.envFile(short), 'utf8'));
       if (typeof parsed !== 'object' || parsed === null) return {};
-      return Object.fromEntries(Object.entries(parsed).filter((e): e is [string, string] => typeof e[1] === 'string'));
+      return Object.fromEntries(
+        Object.entries(parsed).filter((e): e is [string, string] => typeof e[1] === 'string'),
+      );
     } catch {
       return {};
     }

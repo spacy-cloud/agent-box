@@ -8,6 +8,10 @@ export interface TrustedTemplate {
   path: string;
   trustedBy: string;
   trustedAt: number;
+  /** Template name; absent for entries from before reviews existed. */
+  name?: string;
+  /** Canonical text of the resolved template at the time it was trusted (see `renderTemplateSnapshot`), if recorded. */
+  snapshot?: string;
 }
 
 function toTrusted(r: Row): TrustedTemplate {
@@ -16,6 +20,8 @@ function toTrusted(r: Row): TrustedTemplate {
     path: r['path'] as string,
     trustedBy: r['trusted_by'] as string,
     trustedAt: num(r['trusted_at']),
+    ...(typeof r['name'] === 'string' ? { name: r['name'] } : {}),
+    ...(typeof r['snapshot'] === 'string' ? { snapshot: r['snapshot'] } : {}),
   };
 }
 
@@ -41,16 +47,51 @@ export class TemplateTrust {
     return row ? toTrusted(row) : undefined;
   }
 
-  /** Trust exactly this content hash. Re-trusting refreshes path, actor and time. */
-  trust(contentHash: string, info: { path: string; by: string }): TrustedTemplate {
+  /**
+   * Trust exactly this content hash. Re-trusting refreshes path, actor and time (and the name and
+   * snapshot when given).
+   */
+  trust(
+    contentHash: string,
+    info: { path: string; by: string; name?: string; snapshot?: string },
+  ): TrustedTemplate {
     this.ctx.db
       .prepare(
-        `INSERT INTO template_trust (content_hash, path, trusted_by, trusted_at) VALUES (?, ?, ?, ?)
+        `INSERT INTO template_trust (content_hash, path, trusted_by, trusted_at, name, snapshot)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(content_hash) DO UPDATE SET path = excluded.path, trusted_by = excluded.trusted_by,
-                                                 trusted_at = excluded.trusted_at`,
+                                                 trusted_at = excluded.trusted_at,
+                                                 name = COALESCE(excluded.name, name),
+                                                 snapshot = COALESCE(excluded.snapshot, snapshot)`,
       )
-      .run(contentHash, info.path, info.by, this.ctx.now());
+      .run(
+        contentHash,
+        info.path,
+        info.by,
+        this.ctx.now(),
+        info.name ?? null,
+        info.snapshot ?? null,
+      );
     return this.get(contentHash)!;
+  }
+
+  /**
+   * The most recently trusted version of a template that has a recorded snapshot and a different
+   * content hash: same name and path first, then the same name anywhere.
+   */
+  previousVersion(info: {
+    name: string;
+    path?: string;
+    exceptHash: string;
+  }): (TrustedTemplate & { snapshot: string }) | undefined {
+    const find = (sql: string, ...args: string[]): Row | undefined =>
+      this.ctx.db
+        .prepare(
+          `SELECT * FROM template_trust WHERE snapshot IS NOT NULL AND content_hash != ? AND name = ? ${sql} ORDER BY trusted_at DESC, content_hash LIMIT 1`,
+        )
+        .get(info.exceptHash, info.name, ...args);
+    const row = (info.path ? find('AND path = ?', info.path) : undefined) ?? find('');
+    return row ? (toTrusted(row) as TrustedTemplate & { snapshot: string }) : undefined;
   }
 
   list(): TrustedTemplate[] {

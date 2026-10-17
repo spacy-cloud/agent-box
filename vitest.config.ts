@@ -1,7 +1,8 @@
 import { defineConfig } from 'vitest/config';
 import { fileURLToPath } from 'node:url';
 
-const pkg = (name: string) => fileURLToPath(new URL(`./packages/${name}/src/index.ts`, import.meta.url));
+const pkg = (name: string) =>
+  fileURLToPath(new URL(`./packages/${name}/src/index.ts`, import.meta.url));
 
 // Tests run against TypeScript sources directly; `pnpm build` is not required for tests.
 export const alias = {
@@ -14,6 +15,8 @@ export const alias = {
   '@abox/proxy': pkg('proxy'),
   '@abox/mcp': pkg('mcp'),
   '@abox/cli': pkg('cli'),
+  '@abox/runtime': pkg('runtime'),
+  '@abox/e2e': pkg('e2e'),
 };
 
 export default defineConfig({

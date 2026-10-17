@@ -41,6 +41,7 @@ describe('builtin templates', () => {
       'node-dev',
       'py-dev',
       'py-offline',
+      'py-uv',
       'rust-dev',
     ]);
   });
@@ -104,6 +105,20 @@ describe('precedence and shadowing', () => {
     expect((await catalog.get('only-builtin')).source.kind).toBe('builtin');
   });
 
+  it('getShadowed: the hidden templates, and the next valid one resolved (a broken one is skipped)', async () => {
+    await writeFile(join(builtin, 'a.yaml'), tpl('shared', 'labels: { use-for: builtin }\n'));
+    await writeFile(join(userDir, 'u.yaml'), 'apiVersion: 1\nname: shared\nbackend: nope\n');
+    await writeFile(join(project, '.sandbox', 'p.yaml'), tpl('shared'));
+    await writeFile(join(project, '.sandbox', 'solo.yaml'), tpl('solo'));
+    const catalog = new TemplateCatalog({ projectDir: project, userDir, builtinDir: builtin });
+    const r = await catalog.getShadowed('shared');
+    expect(r.hidden.map((h) => h.kind)).toEqual(['builtin']); // the broken user file is a problem, not an entry
+    expect(r.source?.kind).toBe('builtin');
+    expect(r.template?.labels['use-for']).toBe('builtin');
+    expect(await catalog.getShadowed('solo')).toEqual({ hidden: [] });
+    expect(await catalog.getShadowed('missing')).toEqual({ hidden: [] });
+  });
+
   it('unknown names are not_found and list the available ones', async () => {
     await writeFile(join(builtin, 'a.yaml'), tpl('a'));
     const catalog = new TemplateCatalog({ builtinDir: builtin });
@@ -133,6 +148,42 @@ describe('precedence and shadowing', () => {
       path: 'backend',
       line: 3,
     });
+  });
+
+  it('get() on a template that exists but is invalid throws template_invalid with file, line, column (F2)', async () => {
+    await writeFile(
+      join(project, '.sandbox', 'broken.yaml'),
+      'apiVersion: 1\nname: broken\nbackend: nope\n',
+    );
+    // the file name differs from the declared name: found via either
+    await writeFile(
+      join(project, '.sandbox', 'other-file.yaml'),
+      'apiVersion: 1\nname: declared\nbackend: nope\n',
+    );
+    const catalog = new TemplateCatalog({ projectDir: project, builtinDir: builtin });
+    for (const name of ['broken', 'declared']) {
+      const err = (await catalog.get(name).catch((e: unknown) => e)) as AboxError;
+      expect(err).toBeInstanceOf(AboxError);
+      expect(err.code).toBe('template_invalid');
+      expect(err.issues[0]).toMatchObject({ path: 'backend', line: 3, column: expect.any(Number) });
+      expect(err.details?.path).toContain('.sandbox');
+      expect(err.message).toContain('line 3');
+    }
+    await expect(catalog.get('unrelated')).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('an invalid higher-precedence template is not silently replaced by a valid one of the same name', async () => {
+    await writeFile(join(builtin, 'dup.yaml'), tpl('dup'));
+    await writeFile(
+      join(project, '.sandbox', 'dup.yaml'),
+      'apiVersion: 1\nname: dup\nbackend: nope\n',
+    );
+    const catalog = new TemplateCatalog({ projectDir: project, builtinDir: builtin });
+    await expect(catalog.get('dup')).rejects.toMatchObject({ code: 'template_invalid' });
+    // the other way round the valid project template wins and the broken builtin one is ignored
+    await writeFile(join(project, '.sandbox', 'dup.yaml'), tpl('dup'));
+    await writeFile(join(builtin, 'dup.yaml'), 'apiVersion: 1\nname: dup\nbackend: nope\n');
+    expect((await catalog.get('dup')).source.kind).toBe('project');
   });
 
   it('ignores symlinks', async () => {

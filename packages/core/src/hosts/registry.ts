@@ -306,7 +306,7 @@ export class HostRegistry {
           const v = pair.value as { flow?: boolean } | null;
           if (
             (isSeq(v) || isMap(v)) &&
-            ['backends', 'tags', 'limits'].includes(String(pair.key.value))
+            ['backends', 'tags', 'limits', 'runtimes'].includes(String(pair.key.value))
           ) {
             (v as { flow: boolean }).flow = true;
           }
