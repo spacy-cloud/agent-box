@@ -44,6 +44,7 @@ import type {
   HostProfile,
   HostKeyStatus,
   PortForward,
+  SandboxPortForward,
 } from '@abox/core';
 import type { EventChannel, EventPayloads, IpcChannel, IpcInput, IpcResult, Locale } from './ipc';
 
@@ -86,6 +87,7 @@ export type {
   HostProfile,
   HostKeyStatus,
   PortForward,
+  SandboxPortForward,
   PolicyRevisionDetail,
   PolicyRevisionSummary,
 };
@@ -361,6 +363,11 @@ export interface Outputs {
   'snapshots:list': SnapshotView[];
   'snapshots:create': { snapshotId: string };
   'snapshots:restore': { restored: string };
+  'ports:list': SandboxPortForward[];
+  'ports:add': AccessResult;
+  'ports:remove': { removed: boolean; port?: SandboxPortForward };
+  /** The URL that was opened (always `http://127.0.0.1:<host port>/`). */
+  'ports:openPreview': { url: string };
   'approvals:list': ApprovalView[];
   'approvals:approve': ApprovalDecision;
   'approvals:deny': ApprovalDecision;

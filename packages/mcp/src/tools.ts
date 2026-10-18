@@ -7,6 +7,7 @@ import type {
   NetworkLogEntry,
   PendingApproval,
   ProcessView,
+  SandboxPortForward,
   SandboxView,
 } from '@abox/core';
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
@@ -157,6 +158,20 @@ function sandboxLine(s: SandboxView): string {
   return `${s.id} "${s.name}" [${s.state}${s.stale ? ',stale' : ''}] template=${s.template} isolation=${s.isolation} ttl_left=${fmtMs(s.ttlRemainingMs)}${net}${ws}${paused}`;
 }
 
+function briefPort(p: SandboxPortForward): Record<string, unknown> {
+  return {
+    sandboxPort: p.sandboxPort,
+    hostAddress: p.hostAddress,
+    hostPort: p.hostPort,
+    url: p.url,
+    target: p.target,
+  };
+}
+
+function portLine(p: SandboxPortForward): string {
+  return `sandbox port ${p.sandboxPort} -> ${p.url} (${p.target === 'down' ? 'nothing answers in the sandbox yet' : p.target === 'up' ? 'answering' : 'not checked'})`;
+}
+
 function processLine(p: ProcessView): string {
   return `${p.id} [${p.status}${p.exitCode !== null ? ` exit=${p.exitCode}` : ''}] ${p.command}`;
 }
@@ -171,7 +186,9 @@ export function pendingOutcome(p: PendingApproval, tool: string, requestId?: str
   const retry =
     tool === 'access_request'
       ? 'then check with sandbox_inspect; do not repeat the request'
-      : `then call ${tool} again ${again}`;
+      : tool === 'sandbox_port_forward'
+        ? 'then read the URL with action=list (or repeat the identical call: it returns the URL); do not queue it again'
+        : `then call ${tool} again ${again}`;
   const message = `ask the human to approve with: abox approvals approve ${p.approvalId} — ${retry}`;
   const lines = [
     ...(p.reasons.length ? ['Why approval is needed:', ...p.reasons.map((r) => `- ${r}`)] : []),
@@ -556,20 +573,21 @@ export function registerTools(register: Register): void {
     name: 'sandbox_inspect',
     title: 'Inspect sandbox',
     description:
-      'Show state, effective limits (what policy granted vs. what the backend reports), network, mounts, TTL, processes and pending approvals of one of your sandboxes.',
+      'Show state, effective limits (what policy granted vs. what the backend reports), network, mounts, TTL, processes, port forwards and pending approvals of one of your sandboxes.',
     input: { id: sandboxId },
     annotations: READ,
     async handler(args, rt) {
       const r = await rt.abox.inspectSandbox(rt.caller, args.id);
-      const { processes, pendingApprovals, ...view } = r;
+      const { processes, pendingApprovals, ports, ...view } = r;
       return ok(
         `${r.id} is ${r.state}`,
-        { sandbox: view, processes, pendingApprovals },
+        { sandbox: view, processes, pendingApprovals, ports: ports.map(briefPort) },
         [
           sandboxLine(r),
           ...(processes.length
             ? ['Processes:', ...processes.map((p) => `- ${processLine(p)}`)]
             : []),
+          ...(ports.length ? ['Port forwards:', ...ports.map((p) => `- ${portLine(p)}`)] : []),
           ...(pendingApprovals ? [`Pending approvals: ${pendingApprovals}`] : []),
         ].join('\n'),
       );
@@ -1193,6 +1211,92 @@ export function registerTools(register: Register): void {
         kind: res.kind,
         sandbox: briefSandbox(res.sandbox),
       });
+    },
+  });
+
+  register({
+    name: 'sandbox_port_forward',
+    title: 'Forward a sandbox port to the human',
+    description:
+      'Show the human a dev server running in your sandbox (Vite, Flutter web, php -S): action=add publishes TCP port `port` on 127.0.0.1 of their machine and returns the URL. A human approves by default (pending_approval). Loopback only, no new way out; the server must listen on 0.0.0.0, not just 127.0.0.1. Needs a running sandbox with network allowlist or open (not none); ends when it stops. action=list/remove.',
+    input: {
+      id: sandboxId,
+      action: z
+        .enum(['add', 'list', 'remove'])
+        .optional()
+        .describe(
+          'add (default): open a forward; list: show the open forwards; remove: close one.',
+        ),
+      port: z
+        .number()
+        .int()
+        .min(1)
+        .max(65535)
+        .optional()
+        .describe(
+          'TCP port the server listens on inside the sandbox. Required for add and remove.',
+        ),
+      reason: z
+        .string()
+        .min(1)
+        .max(4000)
+        .optional()
+        .describe('add: why the human should see this port. Shown to the human as untrusted text.'),
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    async handler(args, rt) {
+      const action = args.action ?? 'add';
+      if (action === 'list') {
+        const ports = await rt.abox.listPortForwards(rt.caller, args.id);
+        return ok(
+          ports.length ? `${ports.length} port forward(s)` : 'No port forwards',
+          { ports: ports.map(briefPort) },
+          ports.map(portLine).join('\n') || 'Nothing is forwarded.',
+        );
+      }
+      if (args.port === undefined) {
+        throw invalidInput(
+          `port is required for action ${action}`,
+          'e.g. {"id":"local/1a2b3c4d","port":5173}',
+        );
+      }
+      if (action === 'remove') {
+        const r = await rt.abox.removePortForward(rt.caller, args.id, args.port);
+        return ok(
+          r.removed
+            ? `Port ${args.port} is no longer forwarded`
+            : `Port ${args.port} was not forwarded`,
+          { removed: r.removed },
+        );
+      }
+      if (args.reason === undefined) {
+        throw invalidInput(
+          'reason is required for action add',
+          'Say what the human will see on that port, e.g. "preview of the vite dev server".',
+        );
+      }
+      const res = await rt.abox.accessRequest(
+        rt.caller,
+        args.id,
+        { kind: 'port', details: { port: args.port }, reason: args.reason },
+        { waitForApprovalMs: rt.limits.approvalWaitMs ?? 0, signal: rt.signal },
+      );
+      if (res.status === 'pending_approval') return pendingOutcome(res, 'sandbox_port_forward');
+      if (res.status !== 'applied' || !res.port) return unexpectedStatus(res.status);
+      return ok(
+        res.message,
+        { status: 'applied', port: briefPort(res.port) },
+        `Open ${res.port.url} in a browser on the human's machine (sandbox port ${res.port.sandboxPort}).${
+          res.port.target === 'down'
+            ? '\nNothing answers on that port in the sandbox yet: start the server and let it listen on 0.0.0.0.'
+            : ''
+        }`,
+      );
     },
   });
 

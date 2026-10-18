@@ -43,6 +43,11 @@ export const HOST_BACKENDS = ['docker', 'podman', 'process', 'vm'] as const;
 export const FORWARD_KINDS = ['local', 'remote', 'dynamic'] as const;
 export const TEMPLATE_BACKENDS = ['docker', 'podman', 'process', 'python', 'vm'] as const;
 export const TEMPLATE_SOURCES = ['builtin', 'user', 'project'] as const;
+/** Port forwards of a sandbox (keep in sync with @abox/core: a unit test compares them). */
+export const PORT_FORWARD_MIN_HOST_PORT = 1024;
+export const PORT_FORWARD_MAX_PORT = 65_535;
+/** The only address a forward is bound to; the preview is only ever opened there. */
+export const PORT_FORWARD_HOST_ADDRESS = '127.0.0.1';
 export const TTY_MAX_COLS = 500;
 export const TTY_MAX_ROWS = 300;
 export const TTY_MAX_INPUT = 65_536;

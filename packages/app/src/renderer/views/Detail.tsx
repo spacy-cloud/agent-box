@@ -8,6 +8,7 @@ import { FileTree } from '../components/FileTree';
 import type { TreeSelection } from '../components/FileTree';
 import { UsageLines } from '../components/usage';
 import { NetworkTab } from '../components/NetworkLog';
+import { PortsPanel } from '../components/PortsPanel';
 import { UnifiedDiff } from '../components/review';
 import {
   Badge,
@@ -287,6 +288,7 @@ function OverviewTab(props: {
           </tr>
         </tbody>
       </table>
+      <PortsPanel sandbox={s} />
     </>
   );
 }

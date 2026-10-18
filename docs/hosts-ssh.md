@@ -303,6 +303,11 @@ remote host and cannot bind-mount a directory of this machine") and suggests `co
 image cache and the proxy sidecar live on the host. The agent-side guarantees are the same as
 locally: nothing is merged back automatically, export brings results to you.
 
+**Port forwards are not available** on remote hosts (`abox port add` and `sandbox_port_forward` answer
+`unsupported`): a forward would need a second ssh tunnel per port for a sidecar that would have to be
+reachable from this machine. Run the sandbox locally if you need a preview (see
+[Backends](backends.md#port-forwards)).
+
 **Expiry** is enforced on two levels. The container ends itself at its deadline (the entrypoint of
 the sandbox), also when no abox is running. Every abox process that is open (a CLI command, the MCP
 server, the app's watcher) additionally marks overdue sandboxes of **all** hosts as expired and

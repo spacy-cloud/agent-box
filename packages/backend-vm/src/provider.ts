@@ -16,6 +16,7 @@ import {
   type HostConnection,
   type NetworkEvent,
   type NetworkSpec,
+  type PortForwardRequest,
   type PreparedImage,
   type PrepareOptions,
   type ProviderCapabilities,
@@ -24,6 +25,7 @@ import {
   type SandboxFilter,
   type SandboxId,
   type SandboxInfo,
+  type SandboxPortForward,
   type SandboxProvider,
   type SandboxSpec,
   type SandboxState,
@@ -57,6 +59,13 @@ import {
   guestReadFile,
   guestWriteFile,
 } from './guestio.js';
+import {
+  freeLoopbackPort,
+  hostfwdAddLine,
+  hostfwdFailed,
+  hostfwdRemoveLine,
+  parseUsernet,
+} from './hostfwd.js';
 import { ensureBaseImage, selectImage } from './images.js';
 import { buildPreparedImage } from './prepare.js';
 import { buildQcow2Overlay, readQcow2Header } from './qcow2.js';
@@ -311,6 +320,8 @@ export class VmProvider implements SandboxProvider {
       snapshots: true,
       tty: true,
       extendExpiry: true,
+      // `none` has no network card; the other modes forward with QEMU's `hostfwd` on 127.0.0.1
+      portForward: ['allowlist', 'open'],
       limits: { cpus: true, memory: true, pids: true, disk: true },
       nonRootUser: true,
       secretInjection: ['proxy', 'env', 'file'],
@@ -1824,6 +1835,94 @@ export class VmProvider implements SandboxProvider {
       out.push(this.toInfo(meta, state));
     }
     return out.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  // -- port forwards ---------------------------------------------------------------------------
+
+  private async monitor(short: string, line: string): Promise<string> {
+    try {
+      return await qmpCall<string>(this.layout.qmpSocket(short), 'human-monitor-command', {
+        'command-line': line,
+      });
+    } catch (e) {
+      throw new AboxError(
+        'backend_error',
+        `QEMU monitor: ${e instanceof Error ? e.message : String(e)}`,
+        { cause: e },
+      );
+    }
+  }
+
+  private forwardOf(hostPort: number, sandboxPort: number): SandboxPortForward {
+    return {
+      sandboxPort,
+      hostAddress: '127.0.0.1',
+      hostPort,
+      url: `http://127.0.0.1:${hostPort}/`,
+      // QEMU does not record when a rule was added, nor count connections
+      createdAt: 0,
+      target: 'unknown',
+    };
+  }
+
+  async addPortForward(id: SandboxId, req: PortForwardRequest): Promise<SandboxPortForward> {
+    const { sandboxPort, hostPort } = req;
+    if (!Number.isInteger(sandboxPort) || sandboxPort < 1 || sandboxPort > 65535)
+      throw new AboxError('invalid_input', `Invalid sandbox port ${String(sandboxPort)}`);
+    if (
+      hostPort !== undefined &&
+      (!Number.isInteger(hostPort) || hostPort < 1024 || hostPort > 65535)
+    )
+      throw new AboxError(
+        'invalid_input',
+        `Invalid host port ${String(hostPort)} (use 1024..65535; privileged ports are never bound)`,
+      );
+    const { short, meta } = await this.runningSandbox(id);
+    if (meta.network.mode === 'none') {
+      throw new AboxError(
+        'unsupported',
+        `Sandbox ${id} has network mode "none": the VM has no network card that a forward could reach`,
+        {
+          hint: 'Create the sandbox with network mode allowlist (with at least one destination) or open to preview servers.',
+        },
+      );
+    }
+    const open = parseUsernet(await this.monitor(short, 'info usernet'));
+    if (open.some((r) => r.guestPort === sandboxPort))
+      throw new AboxError('conflict', `Port ${sandboxPort} of ${id} is already forwarded`);
+    // QEMU cannot pick a port on its own: take a free one, and try again when it was taken meanwhile.
+    for (let attempt = 0; attempt < (hostPort === undefined ? 5 : 1); attempt++) {
+      const port = hostPort ?? (await freeLoopbackPort());
+      const out = await this.monitor(short, hostfwdAddLine(port, sandboxPort));
+      if (!hostfwdFailed(out)) return this.forwardOf(port, sandboxPort);
+      if (hostPort !== undefined)
+        throw new AboxError('conflict', `Host port ${hostPort} on 127.0.0.1 is already in use`, {
+          hint: 'Pick another --host-port, or leave it out to get a free one.',
+        });
+    }
+    throw new AboxError('backend_error', 'QEMU could not set up the port forward');
+  }
+
+  async listPortForwards(id: SandboxId): Promise<SandboxPortForward[]> {
+    const { short } = await this.load(id);
+    if (!(await this.qemuPid(short))) return [];
+    return parseUsernet(await this.monitor(short, 'info usernet')).map((r) =>
+      this.forwardOf(r.hostPort, r.guestPort),
+    );
+  }
+
+  async removePortForward(
+    id: SandboxId,
+    sandboxPort: number,
+  ): Promise<SandboxPortForward | undefined> {
+    const { short } = await this.load(id);
+    if (!(await this.qemuPid(short))) return undefined;
+    const rule = parseUsernet(await this.monitor(short, 'info usernet')).find(
+      (r) => r.guestPort === sandboxPort,
+    );
+    if (!rule) return undefined;
+    await this.monitor(short, hostfwdRemoveLine(rule.hostPort));
+    return this.forwardOf(rule.hostPort, rule.guestPort);
   }
 
   async updateNetwork(id: SandboxId, network: NetworkSpec): Promise<void> {

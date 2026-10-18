@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { _electron as electron } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { openAbox } from '@abox/runtime';
@@ -15,6 +16,8 @@ export interface TestHome {
   /** A tiny project the sandboxes copy from. */
   project: string;
   env: NodeJS.ProcessEnv;
+  /** The app to start (default: this package); `useFakeEngine` points it at a launcher. */
+  appDir?: string;
   cleanup(): void;
 }
 
@@ -78,12 +81,49 @@ export function makeHome(opts: HomeOptions = {}): TestHome {
   return { home, project, env, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
+/**
+ * Swaps the docker backend of the GUI process for the in-memory engine of `fake-engine.mjs` (it can forward
+ * ports; no docker needed). Electron does not pass `NODE_OPTIONS` to the main process under Playwright, so the
+ * app is started through a tiny launcher app: its `main.mjs` loads the engine, then the real main module. The
+ * `out` folder is linked in, which is where the app looks for the renderer files. Call before `launchGui`.
+ */
+export function useFakeEngine(h: TestHome): void {
+  const dir = join(h.home, '..', 'launcher');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ name: 'abox-gui-e2e', version: '0.0.0', type: 'module', main: 'main.mjs' }),
+  );
+  const engine = pathToFileURL(join(APP_DIR, 'e2e', 'fake-engine.mjs')).href;
+  const main = pathToFileURL(join(APP_DIR, 'out', 'main', 'index.js')).href;
+  writeFileSync(
+    join(dir, 'main.mjs'),
+    `import ${JSON.stringify(engine)};\nawait import(${JSON.stringify(main)});\n`,
+  );
+  symlinkSync(join(APP_DIR, 'out'), join(dir, 'out'));
+  h.appDir = dir;
+}
+
+/** A user template with network mode allowlist (one destination): the sandbox has a path from the host. */
+export function writeFakeEngineTemplates(h: TestHome): void {
+  const dir = join(h.home, 'config', 'templates');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'ports-net.yaml'),
+    'apiVersion: 1\nname: ports-net\ndescription: Container with network mode allowlist (port forward e2e).\nbackend: docker\nbase: { os: ubuntu:24.04 }\nnetwork: { mode: allowlist, allow: [example.org] }\nresources: { cpus: 1, memory: 512m, ttl: 1h }\n',
+  );
+  writeFileSync(
+    join(dir, 'ports-none.yaml'),
+    'apiVersion: 1\nname: ports-none\ndescription: Container without network (port forward e2e).\nbackend: docker\nbase: { os: ubuntu:24.04 }\nresources: { cpus: 1, memory: 512m, ttl: 1h }\n',
+  );
+}
+
 export async function launchGui(
   h: TestHome,
   navLabel = 'Hauptnavigation',
 ): Promise<{ app: ElectronApplication; page: Page; errors: string[] }> {
   const app = await electron.launch({
-    args: ['--ozone-platform=x11', APP_DIR],
+    args: ['--ozone-platform=x11', h.appDir ?? APP_DIR],
     env: h.env as Record<string, string>,
   });
   const page = await app.firstWindow();

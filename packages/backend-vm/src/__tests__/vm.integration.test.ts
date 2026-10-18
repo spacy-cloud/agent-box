@@ -160,6 +160,65 @@ describe.skipIf(!VM_TESTS)('vm backend (real VMs)', () => {
     );
 
     it(
+      'port forward: a guest server answers on 127.0.0.1 of the host only, and the guest gains no way out',
+      async (ctx) => {
+        const s = await boot({ network: allow([]) });
+        if ((await sh(s.id, 'command -v python3')).exitCode !== 0) return ctx.skip();
+        await sh(
+          s.id,
+          'mkdir -p /tmp/www && echo hello-vm > /tmp/www/index.html && cd /tmp/www && (nohup python3 -m http.server 8000 --bind 0.0.0.0 >/dev/null 2>&1 &)',
+        );
+        const fwd = await p.addPortForward!(s.id, { sandboxPort: 8000, expiresAt: s.expiresAt });
+        expect(fwd).toMatchObject({ sandboxPort: 8000, hostAddress: '127.0.0.1' });
+        let body = '';
+        for (let i = 0; i < 30 && body !== 'hello-vm\n'; i++) {
+          body = await fetch(`http://127.0.0.1:${fwd.hostPort}/index.html`, {
+            signal: AbortSignal.timeout(3000),
+          })
+            .then((r) => r.text())
+            .catch(() => '');
+          if (body !== 'hello-vm\n') await sleep(500);
+        }
+        expect(body).toBe('hello-vm\n');
+        // listening on the loopback only
+        const tcp = await readFile('/proc/net/tcp', 'utf8');
+        const hex = fwd.hostPort.toString(16).toUpperCase().padStart(4, '0');
+        const listening = tcp
+          .split('\n')
+          .map((l) => l.trim().split(/\s+/))
+          .filter((c) => c[3] === '0A' && c[1]?.endsWith(`:${hex}`));
+        expect(listening.length).toBeGreaterThan(0);
+        expect(listening.every((c) => c[1] === `0100007F:${hex}`)).toBe(true);
+        // the guest still has no default route and no direct connection
+        const out = await sh(
+          s.id,
+          'ip -4 route | grep -c default; curl --noproxy "*" -sS -m 5 -o /dev/null https://93.184.216.34/; echo direct=$?',
+        );
+        expect(out.stdout).toMatch(/^0\n/);
+        expect(out.stdout).toMatch(/direct=(7|28)/);
+        expect((await p.listPortForwards!(s.id)).map((f) => f.sandboxPort)).toEqual([8000]);
+        await expect(
+          p.addPortForward!(s.id, { sandboxPort: 8000, expiresAt: s.expiresAt }),
+        ).rejects.toMatchObject({ code: 'conflict' });
+        expect(await p.removePortForward!(s.id, 8000)).toMatchObject({ hostPort: fwd.hostPort });
+        expect(await p.listPortForwards!(s.id)).toEqual([]);
+        await expect(fetch(`http://127.0.0.1:${fwd.hostPort}/`)).rejects.toThrow();
+      },
+      T,
+    );
+
+    it(
+      'port forward: mode none has no network card, so it is unsupported',
+      async () => {
+        const s = await boot();
+        await expect(
+          p.addPortForward!(s.id, { sandboxPort: 8000, expiresAt: s.expiresAt }),
+        ).rejects.toMatchObject({ code: 'unsupported' });
+      },
+      T,
+    );
+
+    it(
       'mode allowlist: allowed host works through the proxy, others and direct access are denied',
       async (ctx) => {
         if (!(await hostOnline())) return ctx.skip();

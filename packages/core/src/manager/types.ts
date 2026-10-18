@@ -15,6 +15,7 @@ import type {
   ResolvedTemplate,
   ResourceUsage,
   SandboxId,
+  SandboxPortForward,
   SandboxState,
   TemplateSourceKind,
   WorkspaceMode,
@@ -57,6 +58,8 @@ export type AboxEventType =
   | 'sandbox.state'
   | 'sandbox.expired'
   | 'sandbox.removed'
+  /** A port forward of the sandbox was opened or closed (`data.action`: `add` | `remove`). */
+  | 'sandbox.ports'
   | 'approval.created'
   | 'approval.decided'
   | 'approval.expired'
@@ -410,6 +413,8 @@ export interface SandboxList {
 
 export interface InspectResult extends SandboxView {
   processes: ProcessView[];
+  /** Open port forwards (`127.0.0.1` on this machine to a port in the sandbox); empty when none or unknown. */
+  ports: SandboxPortForward[];
   pendingApprovals: number;
 }
 
@@ -554,7 +559,7 @@ export interface ExportSandboxResult extends ExportResult {
 
 // -- access requests / approvals -------------------------------------------------
 
-export type AccessKind = 'network' | 'mount' | 'resources' | 'ttl';
+export type AccessKind = 'network' | 'mount' | 'resources' | 'ttl' | 'port';
 
 export type AccessDetails =
   | {
@@ -569,7 +574,12 @@ export type AccessDetails =
   | { kind: 'mount'; details: { source: string; target: string; access?: AccessMode } }
   | { kind: 'resources'; details: { cpus?: number; memory?: string | number } }
   /** `ttl` = how much longer the sandbox should live, counted from its current expiry. */
-  | { kind: 'ttl'; details: { ttl: string | number } };
+  | { kind: 'ttl'; details: { ttl: string | number } }
+  /**
+   * Publish TCP port `port` of the sandbox on `127.0.0.1` of this machine. `hostPort` fixes the
+   * host side (1024..65535, humans only); without it a free one is picked.
+   */
+  | { kind: 'port'; details: { port: number; hostPort?: number } };
 
 export type AccessRequestInput = AccessDetails & { reason?: string };
 
@@ -578,6 +588,8 @@ export interface AccessApplied {
   kind: AccessKind;
   sandbox: SandboxView;
   message: string;
+  /** `kind` port: the forward that is open now. */
+  port?: SandboxPortForward;
 }
 export type AccessResult = AccessApplied | PendingApproval | ConfirmationRequired;
 

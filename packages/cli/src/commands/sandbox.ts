@@ -328,6 +328,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
             ],
             ['secrets', s.secretRefs.map((r) => `${r.ref} (${r.inject})`).join(', ') || undefined],
             ['processes', s.processes.length ? `${s.processes.length}` : undefined],
+            ['ports', s.ports.map((p) => `${p.sandboxPort} -> ${p.url}`).join('; ') || undefined],
             ['approvals', s.pendingApprovals ? `${s.pendingApprovals} pending` : undefined],
             ['error', s.error ?? undefined],
             ['request id', s.requestId ?? undefined],

@@ -62,6 +62,9 @@ export type ManagerChannel =
   | 'snapshots:list'
   | 'snapshots:create'
   | 'snapshots:restore'
+  | 'ports:list'
+  | 'ports:add'
+  | 'ports:remove'
   | 'approvals:list'
   | 'approvals:approve'
   | 'approvals:deny'
@@ -216,6 +219,13 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     'snapshots:list': (i) => abox.listSnapshots(HUMAN, i.id),
     'snapshots:create': (i) => abox.snapshot(HUMAN, i.id, i.name),
     'snapshots:restore': (i) => abox.restore(HUMAN, i.id, i.snapshotId),
+    'ports:list': (i) => abox.listPortForwards(HUMAN, i.id),
+    'ports:add': (i) =>
+      abox.accessRequest(confirmedHuman(i.confirmed), i.id, {
+        kind: 'port',
+        details: { port: i.port, ...(i.hostPort !== undefined ? { hostPort: i.hostPort } : {}) },
+      }),
+    'ports:remove': (i) => abox.removePortForward(HUMAN, i.id, i.port),
     'approvals:list': (i) => abox.listApprovals(HUMAN, clean({ ...(i ?? {}) })),
     'approvals:approve': (i) => abox.approve(HUMAN, i.id, i.note),
     'approvals:deny': (i) => abox.deny(HUMAN, i.id, i.note),

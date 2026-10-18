@@ -20,6 +20,8 @@ import {
   ISOLATION_LEVELS,
   LOCALES,
   NETWORK_MODES,
+  PORT_FORWARD_MAX_PORT,
+  PORT_FORWARD_MIN_HOST_PORT,
   SANDBOX_STATES,
   TTY_MAX_COLS,
   TTY_MAX_INPUT,
@@ -41,6 +43,10 @@ const absPath = z.string().min(1).max(4096);
  */
 const projectDir = absPath.refine((p) => p.startsWith('/') && !p.includes('\0'), 'absolute path');
 const none = z.undefined();
+/** A TCP port inside a sandbox. */
+const sandboxPort = z.number().int().min(1).max(PORT_FORWARD_MAX_PORT);
+/** The port on 127.0.0.1 of this machine; privileged ports are refused here and again by the manager. */
+const forwardHostPort = z.number().int().min(PORT_FORWARD_MIN_HOST_PORT).max(PORT_FORWARD_MAX_PORT);
 
 const auditFilter = z
   .object({
@@ -334,6 +340,23 @@ export const IPC = {
     .object({ id, name: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, 'letters, digits . _ -') })
     .strict(),
   'snapshots:restore': z.object({ id, snapshotId: z.string().min(1).max(200) }).strict(),
+
+  // -- port forwards (preview of a dev server). The preview URL is never passed by the renderer: the main
+  // process looks the forward up and builds it itself, see `main/preview.ts`. ----------------------------------
+  /** Open forwards of the sandbox (also what `sandboxes:inspect` reports as `ports`). */
+  'ports:list': z.object({ id }).strict(),
+  /** Forward `port` of the sandbox to 127.0.0.1 (`hostPort`: a fixed port, otherwise a free one is picked). */
+  'ports:add': z
+    .object({
+      id,
+      port: sandboxPort,
+      hostPort: forwardHostPort.optional(),
+      confirmed: z.boolean().optional(),
+    })
+    .strict(),
+  'ports:remove': z.object({ id, port: sandboxPort }).strict(),
+  /** Opens the forward of that sandbox port in the default browser (loopback only, see `main/preview.ts`). */
+  'ports:openPreview': z.object({ id, port: sandboxPort }).strict(),
 
   'approvals:list': z
     .object({
