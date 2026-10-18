@@ -16,37 +16,52 @@ import type { PolicyValidation } from '../../shared/types';
  * policy edit (validated, revisioned, audited). The request itself stays pending: it is decided separately
  * (allow once or deny), so changing the policy is never a side effect of a decision, and a decision is
  * never a side effect of a policy change.
+ *
+ * Two sources: an approval request (`approval`: the changes are derived from what the engine found), or a
+ * destination of a sandbox's network log (`network`: the manager proposes the edit, see `network:propose`; the
+ * caller allows the sandbox itself after `onDone`, with `null` when the profile covers the destination already).
  */
 export function PolicyChangeDialog(props: {
-  approval: ApprovalView;
+  approval?: ApprovalView;
+  network?: { id: string; destinations: string[] };
   onClose(): void;
-  onDone(revision: number): void;
+  onDone(revision: number | null): void;
 }) {
   const { t, navigate, notify } = useApp();
   const a = props.approval;
-  const doc = useQuery('policy:get', undefined, { live: false });
+  const doc = useQuery('policy:get', undefined, { live: false, enabled: a !== undefined });
+  const np = useQuery(
+    'network:propose',
+    props.network ?? { id: 'none/00000000', destinations: ['none.invalid'] },
+    { live: false, enabled: props.network !== undefined },
+  );
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
   const [validation, setValidation] = useState<PolicyValidation | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
 
   const view = doc.data?.view;
-  const context = a.requester.replace(/^agent:/, '');
-  const requestProfile = (a.request as { profile?: unknown } | null)?.profile;
-  const profileName =
-    typeof requestProfile === 'string' ? requestProfile : view?.contexts?.[context]?.profile;
+  const context = a ? a.requester.replace(/^agent:/, '') : '';
+  const requestProfile = (a?.request as { profile?: unknown } | null | undefined)?.profile;
+  const profileName = a
+    ? typeof requestProfile === 'string'
+      ? requestProfile
+      : view?.contexts?.[context]?.profile
+    : np.data?.profile;
   const profile = profileName ? view?.profiles?.[profileName] : undefined;
   const usedBy = useMemo(
     () =>
-      Object.entries(view?.contexts ?? {})
-        .filter(([, c]) => c.profile === profileName)
-        .map(([id]) => id),
-    [view, profileName],
+      a
+        ? Object.entries(view?.contexts ?? {})
+            .filter(([, c]) => c.profile === profileName)
+            .map(([id]) => id)
+        : (np.data?.usedBy ?? []),
+    [a, view, profileName, np.data],
   );
 
   const proposal = useMemo(
     () =>
-      profile && profileName
+      a && profile && profileName
         ? proposePolicyChange({
             profile,
             profileName,
@@ -71,10 +86,15 @@ export function PolicyChangeDialog(props: {
         : null,
     [doc.data, profile, profileName, chosen.map((i) => i.id).join('\n')],
   );
-  const proposedText = result?.ok ? result.text : null;
+  const currentText = a ? doc.data?.text : np.data?.current;
+  const baseHash = a ? doc.data?.view.policy.contentHash : np.data?.baseHash;
+  const proposedText = a ? (result?.ok ? result.text : null) : (np.data?.proposed ?? null);
   const lines = useMemo(
-    () => (doc.data && proposedText !== null ? diffLines(doc.data.text, proposedText) : []),
-    [doc.data, proposedText],
+    () =>
+      currentText !== undefined && proposedText !== null
+        ? diffLines(currentText, proposedText)
+        : [],
+    [currentText, proposedText],
   );
   const changed = hasChanges(lines);
 
@@ -93,15 +113,13 @@ export function PolicyChangeDialog(props: {
   }, [proposedText]);
 
   async function apply() {
-    if (!doc.data || proposedText === null) return;
+    if (baseHash === undefined || proposedText === null) return;
     setBusy(true);
     setError(undefined);
     try {
-      const r = await call('policy:set', {
-        text: proposedText,
-        baseHash: doc.data.view.policy.contentHash,
-      });
-      notify('ok', t('perm.done', { rev: r.revision }));
+      const r = await call('policy:set', { text: proposedText, baseHash });
+      // from the network log the caller says the rest (the destination is allowed for the sandbox right after)
+      if (a) notify('ok', t('perm.done', { rev: r.revision }));
       props.onDone(r.revision);
     } catch (e) {
       setError(e);
@@ -111,7 +129,8 @@ export function PolicyChangeDialog(props: {
   }
 
   const canApply = !busy && changed && validation?.ok === true;
-  const hasItems = (proposal?.items.length ?? 0) > 0;
+  const covered = props.network !== undefined && np.data !== undefined && np.data.proposed === null;
+  const hasItems = a ? (proposal?.items.length ?? 0) > 0 : (np.data?.added.length ?? 0) > 0;
 
   return (
     <Dialog
@@ -143,14 +162,22 @@ export function PolicyChangeDialog(props: {
               {t('perm.apply')}
             </button>
           ) : null}
+          {covered ? (
+            <button type="button" className="primary" onClick={() => props.onDone(null)}>
+              {t('perm.network.onlyThis')}
+            </button>
+          ) : null}
         </>
       }
     >
       {doc.error ? <ErrorBox error={doc.error} /> : null}
-      {!doc.data && doc.loading ? <Loading /> : null}
-      <Banner tone="warn">{t('perm.warning')}</Banner>
-      {doc.data && !profile ? <Banner tone="warn">{t('perm.noProfile')}</Banner> : null}
-      {profileName && profile ? (
+      {np.error ? <ErrorBox error={np.error} /> : null}
+      {(a && !doc.data && doc.loading) || (props.network && !np.data && np.loading) ? (
+        <Loading />
+      ) : null}
+      <Banner tone="warn">{t(a ? 'perm.warning' : 'perm.warning.network')}</Banner>
+      {a && doc.data && !profile ? <Banner tone="warn">{t('perm.noProfile')}</Banner> : null}
+      {profileName && (profile || np.data) ? (
         <p>
           {t('perm.scope', { profile: safeInline(profileName, 60) })}
           {usedBy.length > 0 ? (
@@ -159,6 +186,27 @@ export function PolicyChangeDialog(props: {
               {t('perm.usedBy')} <Safe text={usedBy.join(', ')} max={200} />.
             </>
           ) : null}
+        </p>
+      ) : null}
+
+      {np.data && np.data.added.length > 0 ? (
+        <fieldset>
+          <legend>{t('perm.changes')}</legend>
+          <ul className="plain-list">
+            {np.data.added.map((d) => (
+              <li key={d}>
+                <span className="plain">
+                  {t('perm.change.domain', { domain: safeInline(d, 120) })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </fieldset>
+      ) : null}
+
+      {covered ? (
+        <p className="muted">
+          {t('perm.network.covered', { profile: safeInline(np.data!.profile, 60) })}
         </p>
       ) : null}
 
@@ -208,7 +256,7 @@ export function PolicyChangeDialog(props: {
         </>
       ) : null}
 
-      {proposal && proposal.items.length === 0 ? (
+      {a && proposal && proposal.items.length === 0 ? (
         <p className="muted">{t('perm.nothing')}</p>
       ) : null}
 

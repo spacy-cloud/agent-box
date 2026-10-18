@@ -122,7 +122,7 @@ describe('serveStdio', () => {
     const a = await spawnClient('agent-a');
     const info = a.client.getServerVersion();
     expect(info?.name).toBe('abox');
-    expect((await a.client.listTools()).tools).toHaveLength(20);
+    expect((await a.client.listTools()).tools).toHaveLength(21);
 
     const tpl = await a.call('template_list');
     expect((tpl.s['templates'] as Array<{ name: string }>).map((t) => t.name)).toContain(

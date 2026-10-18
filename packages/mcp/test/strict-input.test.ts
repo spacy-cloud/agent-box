@@ -24,7 +24,7 @@ const HUMAN = { contextId: 'human' };
 
 describe('strict tool input: unknown parameters are errors, not dropped', () => {
   it('every tool rejects an unknown top-level parameter and names it', async () => {
-    expect(TOOL_NAMES.length).toBe(20);
+    expect(TOOL_NAMES.length).toBe(21);
     for (const tool of TOOL_NAMES) {
       const r = await a.call(tool, { bogus_param: true });
       expect(r.isError, tool).toBe(true);

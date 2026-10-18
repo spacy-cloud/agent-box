@@ -49,6 +49,9 @@ describe('IPC contract', () => {
     expect(ok('sandboxes:list', { state: ['running'], owner: 'agent:x' })).toBe(true);
     expect(ok('sandboxes:extend', { id: 'local/x', ttl: '90m' })).toBe(true);
     expect(ok('approvals:approve', { id: 'abc' })).toBe(true);
+    expect(ok('network:log', { id: 'local/x', denied: true, limit: 500, since: 0 })).toBe(true);
+    expect(ok('network:allow', { id: 'local/x', destinations: ['a.example.org'] })).toBe(true);
+    expect(ok('network:propose', { id: 'local/x', destinations: ['*.example.org'] })).toBe(true);
     expect(ok('export:run', { id: 'local/x', format: 'branch', branchName: 'abox/result' })).toBe(
       true,
     );
@@ -78,6 +81,18 @@ describe('IPC contract', () => {
       ok('sandboxes:stats', { ids: Array.from({ length: 201 }, (_, i) => `local/${i}`) }),
     ).toBe(false);
     expect(ok('sandboxes:stats', { ids: [], all: true })).toBe(false);
+    expect(ok('network:log', { id: 'x', limit: 0 })).toBe(false);
+    expect(ok('network:log', { id: 'x', limit: 5000 })).toBe(false);
+    expect(ok('network:log', { id: 'x', since: -1 })).toBe(false);
+    expect(ok('network:log', { id: 'x', all: true })).toBe(false);
+    expect(ok('network:allow', { id: 'x', destinations: [] })).toBe(false);
+    expect(ok('network:allow', { id: 'x', destinations: ['a.example.org'], policy: true })).toBe(
+      false,
+    );
+    expect(ok('network:allow', { id: 'x', destinations: Array(33).fill('a.example.org') })).toBe(
+      false,
+    );
+    expect(ok('network:propose', { id: 'x' })).toBe(false);
     expect(ok('sandboxes:extend', { id: 'x', ttl: 'forever' })).toBe(false);
     expect(ok('sandboxes:extend', { id: 'x', ttl: '1h; rm -rf /' })).toBe(false);
     expect(ok('export:run', { id: 'x', format: 'branch', branchName: 'main' })).toBe(false);
