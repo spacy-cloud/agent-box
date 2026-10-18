@@ -15,6 +15,7 @@ import {
   Loading,
   Safe,
 } from '../components/ui';
+import { CachesSection } from '../components/CachesSection';
 import { LOCALES } from '../../shared/constants';
 import type { Locale } from '../../shared/ipc';
 import type {
@@ -90,6 +91,7 @@ export function SettingsView() {
         ) : null}
       </dl>
       <DiagnosticsSection />
+      <CachesSection />
       <McpStatusSection />
       <McpSection />
       <TokensSection />

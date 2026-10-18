@@ -23,7 +23,7 @@ export const LABEL = {
    * `abox.expires` wins): the only way to move the deadline, because labels are immutable.
    */
   expiryFile: 'abox.expiry-file',
-  /** `sandbox` | `proxy` | `network` | `image`. */
+  /** `sandbox` | `proxy` | `network` | `image` | `cache`. */
   role: 'abox.role',
   baseDigest: 'abox.base-digest',
   readonlyRootfs: 'abox.readonly-rootfs',
@@ -35,6 +35,8 @@ export const LABEL = {
   snapshotName: 'abox.snapshot-name',
   /** `1` when spec files for the /tmp tmpfs are stashed and copied there on every start. */
   tmpFiles: 'abox.tmp-files',
+  /** Key of a package cache volume (`abox.role=cache`); see `caches.ts` for the other cache labels. */
+  cache: 'abox.cache',
 } as const;
 
 /** Keys that belong to the backend and are not reported as user labels. */

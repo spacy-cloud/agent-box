@@ -76,6 +76,8 @@ function mount(report: DoctorReport = REPORT) {
         };
       case 'mcp:config':
         return { agent: 'claude-code', claudeCommand: 'c', json: '{}', contexts: ['claude-code'] };
+      case 'caches:list':
+        return { caches: [], totalBytes: 0, unreachable: [] };
       case 'tokens:list':
         return [];
       default:

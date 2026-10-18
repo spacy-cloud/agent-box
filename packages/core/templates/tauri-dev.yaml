@@ -48,5 +48,18 @@ network:
   mode: allowlist
   presets: [crates, npm, github]
 
+# Package caches: one volume per project, kept between sandboxes of that project (see docs/templates.md).
+caches:
+  - name: pnpm-store
+    path: ~/.local/share/pnpm/store
+    env:
+      npm_config_store_dir: '${path}'
+  - name: npm-cache
+    path: ~/.npm
+  - name: cargo-registry
+    path: ~/.cargo/registry
+  - name: cargo-git
+    path: ~/.cargo/git
+
 labels:
   use-for: Tauri 2 apps (Rust backend plus Vite frontend; cargo check/build/test, pnpm; no GUI)

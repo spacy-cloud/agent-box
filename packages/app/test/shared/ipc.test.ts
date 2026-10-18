@@ -141,6 +141,43 @@ describe('IPC contract', () => {
     });
   });
 
+  describe('package caches', () => {
+    const KEY = '0123456789abcdef';
+    it('listing takes no input', () => {
+      expect(ok('caches:list', undefined)).toBe(true);
+      expect(ok('caches:list', { size: true })).toBe(false);
+      expect(ok('caches:list', {})).toBe(false);
+    });
+    it('removal names full cache keys (with an optional host) or all, nothing else', () => {
+      expect(ok('caches:remove', { keys: [KEY] })).toBe(true);
+      expect(ok('caches:remove', { keys: [KEY, 'fedcba9876543210'], host: 'my-server' })).toBe(
+        true,
+      );
+      expect(ok('caches:remove', { all: true })).toBe(true);
+      expect(ok('caches:remove', { all: true, host: 'local' })).toBe(true);
+    });
+    it('refuses paths, volume names, prefixes, other selectors and mixed forms', () => {
+      expect(ok('caches:remove', undefined)).toBe(false);
+      expect(ok('caches:remove', {})).toBe(false);
+      expect(ok('caches:remove', { keys: [] })).toBe(false);
+      expect(ok('caches:remove', { keys: ['../../etc'] })).toBe(false);
+      expect(ok('caches:remove', { keys: ['abox-cache-0123456789abcdef'] })).toBe(false);
+      expect(ok('caches:remove', { keys: [KEY.toUpperCase()] })).toBe(false);
+      expect(ok('caches:remove', { keys: ['0123'] })).toBe(false); // a prefix: the GUI sends full keys
+      expect(ok('caches:remove', { keys: Array.from({ length: 201 }, () => KEY) })).toBe(false);
+      expect(ok('caches:remove', { all: false })).toBe(false);
+      expect(ok('caches:remove', { all: true, keys: [KEY] })).toBe(false);
+      expect(ok('caches:remove', { project: '/home/u/p' })).toBe(false);
+      expect(ok('caches:remove', { keys: [KEY], host: 'Not A Host' })).toBe(false);
+      expect(ok('caches:remove', { keys: [KEY], extra: 1 })).toBe(false);
+    });
+    it('create takes the cache switch as a boolean', () => {
+      expect(ok('sandboxes:create', { template: 'a', cache: false })).toBe(true);
+      expect(ok('sandboxes:create', { template: 'a', cache: true })).toBe(true);
+      expect(ok('sandboxes:create', { template: 'a', cache: 'no' })).toBe(false);
+    });
+  });
+
   describe('terminals', () => {
     const SID = '3f2b8a52-6c0e-4d7b-9a43-0d9f1d3c7a11';
     it('open takes a target and a size, nothing that could name a command or a path', () => {

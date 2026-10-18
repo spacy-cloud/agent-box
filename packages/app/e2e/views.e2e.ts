@@ -284,6 +284,11 @@ test('settings: backend status, doctor, MCP configuration and status, token crea
     await expect(backendRow('process').locator('details')).not.toHaveAttribute('open', '');
     await expect(page.getByText('Prüfungen')).toBeVisible();
 
+    // package caches: the section explains them and lists none on a fresh installation
+    await expect(page.getByRole('heading', { name: 'Paket-Caches', level: 2 })).toBeVisible();
+    await expect(page.getByText('Keine Paket-Caches vorhanden')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Alle entfernen' })).toBeDisabled();
+
     // MCP: the command to copy, for the agent contexts of the policy
     await expect(page.locator('pre.code').first()).toContainText(
       'claude mcp add abox -- abox mcp serve --agent sim',

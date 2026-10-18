@@ -58,6 +58,12 @@ test('New sandbox, Options step: two titled sections, aligned rows, template val
     const nameTop = await top(wizard.getByLabel('Name (optional)'));
     expect(Math.abs(nameTop - (await top(wizard.getByLabel('Host'))))).toBeLessThanOrEqual(2);
 
+    // the package cache switch sits with the workspace options; host-shell declares no caches, so it says so
+    const cache = workspace.getByLabel('Paket-Cache verwenden');
+    await expect(cache).toBeVisible();
+    await expect(cache).toBeDisabled();
+    await expect(workspace).toContainText('Das Template sieht keine Paket-Caches vor.');
+
     // the size note is an info banner inside the section, not wider than it
     await folder.fill(h.project);
     const note = workspace.getByTestId('estimate-ok');

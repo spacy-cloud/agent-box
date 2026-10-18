@@ -97,6 +97,8 @@ export const createRequestSchema = z
       })
       .strict()
       .optional(),
+    /** `false`: do not mount the template's package caches (clean install). Absent: use them where allowed. */
+    cache: z.boolean().optional(),
     /** The human saw the `confirmation_required` summary and confirmed it. */
     confirmed: z.boolean().optional(),
     /** Correlates `evt:progress` lines with this call. */
@@ -113,6 +115,8 @@ const sessionId = z.string().uuid();
 const hostId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'host id like my-server');
 const progressKey = z.string().min(1).max(64);
 const yamlText = z.string().max(300_000);
+/** Key of a package cache (16 hex digits, the manager accepts shorter unique prefixes: the GUI sends full keys). */
+const cacheKey = z.string().regex(/^[0-9a-f]{16}$/, '16 hex digits');
 
 const portForward = z
   .object({
@@ -359,6 +363,16 @@ export const IPC = {
   'policy:revision': z.object({ rev: z.number().int().nonnegative() }).strict(),
 
   'doctor:run': none,
+  /** Package caches of all hosts with their sizes (human only; the sizes can take a moment). */
+  'caches:list': none,
+  /**
+   * Removes package caches: the ones named by `keys` (the manager refuses a cache a sandbox uses), or all of
+   * them (those in use are skipped). `host` limits the removal to one host. The renderer names no path or volume.
+   */
+  'caches:remove': z.union([
+    z.object({ keys: z.array(cacheKey).min(1).max(200), host: hostId.optional() }).strict(),
+    z.object({ all: z.literal(true), host: hostId.optional() }).strict(),
+  ]),
   'reconcile:run': z
     .object({ apply: z.boolean().optional(), removeOrphans: z.boolean().optional() })
     .strict()

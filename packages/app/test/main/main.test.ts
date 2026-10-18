@@ -94,6 +94,8 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       createSandbox: rec('createSandbox', { status: 'created' }),
       extendTtl: rec('extendTtl'),
       sandboxStats: rec('sandboxStats', { usage: {} }),
+      listCaches: rec('listCaches', { caches: [], totalBytes: 0, unreachable: [] }),
+      removeCaches: rec('removeCaches', { removed: [], skipped: [], errors: [] }),
       approve: rec('approve'),
       deny: rec('deny'),
       queryAudit: rec('queryAudit', []),
@@ -151,6 +153,40 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       overrides: { network: { mode: 'none' } },
     });
     expect(calls[1]!.args[1]).toEqual({ template: 'node-dev' });
+  });
+
+  it('create forwards the package cache opt-out only, as an absent member otherwise', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await h['sandboxes:create']({ template: 'node-dev', cache: false }, {});
+    await h['sandboxes:create']({ template: 'node-dev', cache: true }, {});
+    await h['sandboxes:create']({ template: 'node-dev' }, {});
+    expect(calls[0]!.args[1]).toEqual({ template: 'node-dev', cache: false });
+    expect(calls[1]!.args[1]).toEqual({ template: 'node-dev' });
+    expect(calls[2]!.args[1]).toEqual({ template: 'node-dev' });
+  });
+
+  it('package caches are listed with sizes and removed as the human, by key or all', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await h['caches:list'](undefined, {});
+    await h['caches:remove']({ keys: ['0123456789abcdef'], host: 'local' }, {});
+    await h['caches:remove']({ keys: ['0123456789abcdef'] }, {});
+    await h['caches:remove']({ all: true }, {});
+    expect(calls.map((c) => c.fn)).toEqual([
+      'listCaches',
+      'removeCaches',
+      'removeCaches',
+      'removeCaches',
+    ]);
+    expect(calls[0]!.args).toEqual([{ contextId: 'human' }, { size: true }]);
+    expect(calls[1]!.args).toEqual([
+      { contextId: 'human' },
+      { keys: ['0123456789abcdef'], host: 'local' },
+    ]);
+    // undefined members are dropped: the manager schemas are strict
+    expect(calls[2]!.args[1]).toEqual({ keys: ['0123456789abcdef'] });
+    expect(calls[3]!.args[1]).toEqual({ all: true });
   });
 
   it('progress lines are forwarded with the correlation key', async () => {

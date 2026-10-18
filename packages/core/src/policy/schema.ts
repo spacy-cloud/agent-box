@@ -117,6 +117,10 @@ export const ProfileSchema = z.strictObject({
   min_isolation: isolationObject.optional(),
   hosts: z.array(z.string().regex(HOST_PATTERN, 'invalid host id')).optional(),
   exec: z.strictObject({ approval: z.boolean().optional() }).optional(),
+  /** Per-project package caches (pnpm store, cargo registry, ...) for this profile's sandboxes. Default true. */
+  caches: z.boolean().optional(),
+  /** Most a project's caches may hold (per owner and host); `abox gc` and the next create trim the least recently used. Default 10g. */
+  cache_max_bytes: sizeSchema.optional(),
 });
 export type RawProfile = z.infer<typeof ProfileSchema>;
 
