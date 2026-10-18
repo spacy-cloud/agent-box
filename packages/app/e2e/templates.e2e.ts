@@ -35,7 +35,7 @@ test('template editor: list + search, builtin is read-only, duplicate, form and 
     await expect(page.locator('.tpl-item')).toHaveCount(await page.locator('.tpl-item').count());
     await expect(page.locator('.tpl-item', { hasText: 'alpine-min' })).toBeVisible();
     await expect(page.locator('.tpl-item', { hasText: 'node-dev' })).toBeVisible();
-    await page.getByRole('searchbox', { name: 'Templates suchen' }).fill('rust');
+    await page.getByRole('searchbox', { name: 'Templates suchen' }).fill('rust-dev');
     await expect(page.locator('.tpl-item')).toHaveCount(1);
     await expect(page.locator('.tpl-item')).toContainText('rust-dev');
     await page.getByRole('searchbox', { name: 'Templates suchen' }).fill('');

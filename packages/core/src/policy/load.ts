@@ -90,12 +90,12 @@ version: 1
 profiles:
   default:
     approval: medium
-    templates: [node-dev, py-dev, py-offline, alpine-min]
+    templates: [node-dev, py-dev, py-uv, py-offline, rust-dev, tauri-dev, flutter-dev, php-dev, shell-dev, alpine-min]
     limits: { sandboxes: 3, cpus: 4, memory: 8g, ttl: 4h }
     # Agents: projects below these folders only (the home directory itself is never a root).
     # Add your own with \`abox policy edit\`.
     workspace: { roots: [${DEFAULT_WORKSPACE_ROOTS.join(', ')}], modes: [worktree, clone, copy, empty] }
-    network: { modes: [none, allowlist], allow_presets: [npm, pypi, github], allow: [] }
+    network: { modes: [none, allowlist], allow_presets: [npm, pypi, crates, pub, packagist, github], allow: [] }
     # Registries free image names of a template base may come from (the base images of the built-in templates are always fine).
     images: { registries: [${DEFAULT_IMAGE_REGISTRIES.join(', ')}] }
     mounts: deny

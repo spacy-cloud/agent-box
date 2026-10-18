@@ -54,14 +54,15 @@ Rules:
 These environment variables turn on tests that are skipped by default. CI sets only
 `ABOX_TEST_DOCKER` (through `pnpm test:docker`).
 
-| Variable                  | Effect                                                                                                                                                                             |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ABOX_TEST_DOCKER=1`      | Tests that need a Docker/Podman engine (also the Docker-guarded GUI specs: terminal, template build, ssh against a throwaway sshd)                                                 |
-| `ABOX_TEST_DOCKER_FULL=1` | With `ABOX_TEST_DOCKER`: the full preset matrix of `packages/core/src/template/build.docker.test.ts` (long, downloads toolchains)                                                  |
-| `ABOX_TEST_ENGINE_SOCKET` | With `ABOX_TEST_DOCKER`: the engine socket of the backend-docker suite, `packages/e2e` and the docker contract suite (default: `/var/run/docker.sock`); see "Against Podman" below |
-| `ABOX_TEST_ENGINE=podman` | With `ABOX_TEST_DOCKER`: the backend-docker suite creates its providers with `createPodmanProvider` (default socket: Podman's user socket)                                         |
-| `ABOX_TEST_KEYRING=1`     | The `LibsecretStore (real keyring)` test in `packages/core/src/secrets/__tests__/secrets.test.ts` (see the warning below)                                                          |
-| `ABOX_TEST_VM=1`          | Tests that boot real QEMU/KVM VMs (needs `/dev/kvm`; `ABOX_TEST_VM_IMAGES=ubuntu-24.04,debian-12` adds distributions, 300-700 MB each)                                             |
+| Variable                      | Effect                                                                                                                                                                             |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ABOX_TEST_DOCKER=1`          | Tests that need a Docker/Podman engine (also the Docker-guarded GUI specs: terminal, template build, ssh against a throwaway sshd)                                                 |
+| `ABOX_TEST_DOCKER_FULL=1`     | With `ABOX_TEST_DOCKER`: the full preset matrix of `packages/core/src/template/build.docker.test.ts` (long, downloads toolchains)                                                  |
+| `ABOX_TEST_HEAVY_TEMPLATES=1` | With `ABOX_TEST_DOCKER`: built-in templates too large for CI (`flutter-dev`: about 5 minutes, 3-4 GB), same test file                                                              |
+| `ABOX_TEST_ENGINE_SOCKET`     | With `ABOX_TEST_DOCKER`: the engine socket of the backend-docker suite, `packages/e2e` and the docker contract suite (default: `/var/run/docker.sock`); see "Against Podman" below |
+| `ABOX_TEST_ENGINE=podman`     | With `ABOX_TEST_DOCKER`: the backend-docker suite creates its providers with `createPodmanProvider` (default socket: Podman's user socket)                                         |
+| `ABOX_TEST_KEYRING=1`         | The `LibsecretStore (real keyring)` test in `packages/core/src/secrets/__tests__/secrets.test.ts` (see the warning below)                                                          |
+| `ABOX_TEST_VM=1`              | Tests that boot real QEMU/KVM VMs (needs `/dev/kvm`; `ABOX_TEST_VM_IMAGES=ubuntu-24.04,debian-12` adds distributions, 300-700 MB each)                                             |
 
 **Against Podman.** The Podman provider has never been run against a real Podman. Start its API
 socket and point the engine tests at it; the feature table in

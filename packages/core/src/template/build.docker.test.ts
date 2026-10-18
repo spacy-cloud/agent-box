@@ -13,11 +13,13 @@ import { resolveTemplate } from './resolve.js';
 /**
  * Builds real images from rendered build steps. The Dockerfile renderer below is a
  * tiny test helper, NOT the docker backend. Run with ABOX_TEST_DOCKER=1; the heavier
- * preset matrix additionally needs ABOX_TEST_DOCKER_FULL=1.
+ * preset matrix additionally needs ABOX_TEST_DOCKER_FULL=1, and the built-in templates that
+ * are too slow or large for CI (flutter-dev: about 5 minutes and 3-4 GB) ABOX_TEST_HEAVY_TEMPLATES=1.
  */
 const run = promisify(execFile);
 const DOCKER = process.env.ABOX_TEST_DOCKER === '1';
 const FULL = DOCKER && process.env.ABOX_TEST_DOCKER_FULL === '1';
+const HEAVY = DOCKER && process.env.ABOX_TEST_HEAVY_TEMPLATES === '1';
 const LABEL = 'abox-test=template-build';
 /** Marks everything this run creates so the cleanup never touches a concurrent run's objects. */
 const RUN_LABEL = `abox-test-run=${randomUUID()}`;
@@ -31,7 +33,11 @@ async function docker(
 }
 
 function renderDockerfile(t: ResolvedTemplate): string {
-  const lines = [`FROM ${t.base.os}`, `LABEL ${LABEL} ${RUN_LABEL}`, 'COPY steps/ /abox-steps/'];
+  const lines = [`FROM ${t.base.os}`, `LABEL ${LABEL} ${RUN_LABEL}`];
+  // Like the docker backend: the template environment is also set while the build steps run
+  // (a `setup:` step such as `rustup component add` needs the preset's RUSTUP_HOME).
+  for (const [k, v] of Object.entries(t.env)) lines.push(`ENV ${k}=${JSON.stringify(v)}`);
+  lines.push('COPY steps/ /abox-steps/');
   t.build.forEach((s, i) => {
     lines.push(
       `# ${s.name.replace(/\n/g, ' ')}`,
@@ -45,7 +51,6 @@ function renderDockerfile(t: ResolvedTemplate): string {
       ? `RUN adduser -D -u ${user.uid} ${user.name}`
       : `RUN (userdel -r $(getent passwd ${user.uid} | cut -d: -f1) 2>/dev/null || true) && useradd -m -u ${user.uid} -s /bin/sh ${user.name}`,
   );
-  for (const [k, v] of Object.entries(t.env)) lines.push(`ENV ${k}=${JSON.stringify(v)}`);
   lines.push(`USER ${user.uid}`, 'WORKDIR /tmp');
   return `${lines.join('\n')}\n`;
 }
@@ -78,12 +83,31 @@ async function build(t: ResolvedTemplate): Promise<string> {
   }
 }
 
-async function inSandbox(tag: string, cmd: string, user = '1000'): Promise<string> {
+async function inSandbox(
+  tag: string,
+  cmd: string,
+  user = '1000',
+  timeout = 120_000,
+): Promise<string> {
   const { stdout, stderr } = await docker(
     ['run', '--rm', '--user', user, '--network', 'none', tag, 'sh', '-c', cmd],
-    { timeout: 120_000 },
+    { timeout },
   );
   return `${stdout}${stderr}`;
+}
+
+/** Runs a command that is expected to fail and returns its output plus exit code ("exit=<n>"). */
+async function inSandboxFailing(tag: string, cmd: string): Promise<string> {
+  return inSandbox(tag, `{ ${cmd}; } 2>&1; echo exit=$?`);
+}
+
+/** Every tool's check command prints something as uid 1000 (no network). */
+async function expectToolChecks(tag: string, t: ResolvedTemplate): Promise<void> {
+  for (const tool of t.tools)
+    expect(
+      (await inSandbox(tag, tool.check)).trim().length,
+      `${t.name}/${tool.name}`,
+    ).toBeGreaterThan(0);
 }
 
 async function resolveText(text: string): Promise<ResolvedTemplate> {
@@ -176,6 +200,158 @@ setup:
       expect(await inSandbox(tag, 'node -e "console.log(1+1)"')).toContain('2');
     },
     15 * 60_000,
+  );
+
+  it(
+    'shell-dev: lints and formats shell, fish and Lua offline as uid 1000',
+    async () => {
+      const t = await new TemplateCatalog().get('shell-dev');
+      const tag = await build(t);
+      await expectToolChecks(tag, t);
+      expect(await inSandbox(tag, 'lua -v')).toMatch(/^Lua 5\.4\./);
+      for (const cmd of [
+        'bash --version',
+        'fish --version',
+        'shellcheck --version',
+        'shfmt --version',
+      ])
+        expect((await inSandbox(tag, cmd)).length, cmd).toBeGreaterThan(5);
+      expect(await inSandbox(tag, 'luacheck --version')).toContain('Luacheck:');
+      expect(await inSandbox(tag, 'stylua --version')).toMatch(/^stylua 2\./);
+      expect(await inSandbox(tag, 'jq -n "[1,2]|add"')).toContain('3');
+      expect(
+        await inSandboxFailing(
+          tag,
+          `cd /tmp && printf '#!/bin/sh\necho $1\n' > a.sh && shellcheck a.sh`,
+        ),
+      ).toMatch(/SC2086[\s\S]*exit=1/);
+      expect(
+        await inSandboxFailing(
+          tag,
+          `cd /tmp && printf '#!/bin/sh\necho "$1"\n' > ok.sh && shellcheck ok.sh`,
+        ),
+      ).toContain('exit=0');
+      expect(
+        await inSandboxFailing(
+          tag,
+          `cd /tmp && printf 'if true\nthen echo  x;fi\n' > f.sh && shfmt -d f.sh`,
+        ),
+      ).toMatch(/exit=1/);
+      expect(
+        await inSandboxFailing(tag, `cd /tmp && printf 'x = nope\n' > a.lua && luacheck a.lua`),
+      ).toMatch(/non-standard global variable[\s\S]*exit=1/);
+      expect(
+        await inSandboxFailing(
+          tag,
+          `cd /tmp && printf 'local x   =  1\n' > f.lua && stylua --check f.lua`,
+        ),
+      ).toMatch(/exit=1/);
+      expect(
+        await inSandboxFailing(
+          tag,
+          `cd /tmp && printf 'function f\n if true\nend\n' > b.fish && fish -n b.fish`,
+        ),
+      ).toMatch(/Missing end/);
+      expect(await inSandbox(tag, 'id -u')).toContain('1000');
+    },
+    15 * 60_000,
+  );
+
+  it(
+    'php-dev: extensions, composer and the built-in server work as uid 1000',
+    async () => {
+      const t = await new TemplateCatalog().get('php-dev');
+      const tag = await build(t);
+      await expectToolChecks(tag, t);
+      const modules = await inSandbox(tag, 'php -m');
+      for (const m of ['mbstring', 'xml', 'curl', 'zip', 'sqlite3', 'pdo_sqlite', 'intl', 'dom'])
+        expect(modules, m).toContain(m);
+      expect(await inSandbox(tag, 'composer --version')).toMatch(/^Composer version 2\.10\./);
+      expect(
+        await inSandbox(
+          tag,
+          `php -r 'echo mb_strtoupper("abc"), (new PDO("sqlite::memory:"))->query("select 41+1")->fetchColumn(), class_exists("Collator") ? "+intl" : "";'`,
+        ),
+      ).toContain('ABC42+intl');
+      // No dependencies: composer needs no network to write the lock file and the autoloader.
+      expect(
+        await inSandbox(
+          tag,
+          'cd /tmp && mkdir p && cd p && composer init --no-interaction --name smoke/p --require "php:>=8.1" >/dev/null 2>&1 && composer install --no-interaction 2>&1 && test -f vendor/autoload.php && echo autoload-ok',
+        ),
+      ).toContain('autoload-ok');
+      expect(
+        await inSandbox(
+          tag,
+          `mkdir -p /tmp/site && printf '<?php echo "served by php ", PHP_MAJOR_VERSION;' > /tmp/site/index.php && (php -S 127.0.0.1:8123 -t /tmp/site >/dev/null 2>&1 & ) && sleep 1 && curl -fsS http://127.0.0.1:8123/ && php -l /tmp/site/index.php`,
+        ),
+      ).toMatch(/served by php 8[\s\S]*No syntax errors/);
+    },
+    15 * 60_000,
+  );
+
+  it(
+    'tauri-dev: Rust, Node, pnpm and the Tauri system libraries are in place; a crate compiles offline',
+    async () => {
+      const t = await new TemplateCatalog().get('tauri-dev');
+      const tag = await build(t);
+      await expectToolChecks(tag, t);
+      const pkgs = await inSandbox(
+        tag,
+        'pkg-config --modversion webkit2gtk-4.1 libsoup-3.0 librsvg-2.0 ayatana-appindicator3-0.1 openssl gtk+-3.0',
+      );
+      expect(pkgs.trim().split('\n')).toHaveLength(6);
+      expect(await inSandbox(tag, 'cargo clippy --version && cargo fmt --version')).toMatch(
+        /clippy[\s\S]*rustfmt/,
+      );
+      expect(await inSandbox(tag, 'node --version && pnpm --version')).toMatch(
+        /^v24\.[\s\S]*\n10\./,
+      );
+      expect(
+        await inSandbox(
+          tag,
+          'cd /tmp && cargo new --offline hello >/dev/null 2>&1 && cd hello && cargo build --offline 2>&1 && ./target/debug/hello',
+          '1000',
+          5 * 60_000,
+        ),
+      ).toContain('Hello, world!');
+    },
+    20 * 60_000,
+  );
+});
+
+describe.skipIf(!HEAVY)('heavy built-in templates (docker, ABOX_TEST_HEAVY_TEMPLATES=1)', () => {
+  it(
+    'flutter-dev: create, pub get, analyze, test and build web and linux work offline as uid 1000',
+    async () => {
+      const t = await new TemplateCatalog().get('flutter-dev');
+      const tag = await build(t);
+      await expectToolChecks(tag, t);
+      expect(await inSandbox(tag, 'flutter --version')).toMatch(/Flutter 3\.47\.7 .*Dart 3\.13\./s);
+      expect(await inSandbox(tag, 'dart --version')).toMatch(/Dart SDK version: 3\.13\./);
+      // The default app template's packages are in the image's pub cache, so nothing needs the network.
+      const out = await inSandbox(
+        tag,
+        [
+          'cd /tmp',
+          'flutter create --offline --project-name smoke app >/dev/null 2>&1',
+          'cd app',
+          'flutter analyze 2>&1 | tail -n 3',
+          'flutter test 2>&1 | tail -n 2',
+          'dart format --set-exit-if-changed lib test && echo format-ok',
+          'flutter build web 2>&1 | tail -n 1',
+          'flutter build linux 2>&1 | tail -n 1',
+        ].join(' && '),
+        '1000',
+        10 * 60_000,
+      );
+      expect(out).toContain('No issues found');
+      expect(out).toContain('All tests passed');
+      expect(out).toContain('format-ok');
+      expect(out).toContain('Built build/web');
+      expect(out).toContain('Built build/linux/x64/release/bundle/smoke');
+    },
+    30 * 60_000,
   );
 });
 

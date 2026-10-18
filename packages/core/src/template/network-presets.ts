@@ -17,6 +17,8 @@ export const NETWORK_PRESETS: Readonly<Record<string, readonly string[]>> = {
   alpine: ['dl-cdn.alpinelinux.org'],
   crates: ['crates.io', 'index.crates.io', 'static.crates.io'],
   go: ['proxy.golang.org', 'sum.golang.org'],
+  pub: ['pub.dev'],
+  packagist: ['packagist.org', 'repo.packagist.org'],
 };
 
 export function isNetworkPreset(name: string): boolean {

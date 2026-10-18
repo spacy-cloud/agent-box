@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AboxError } from '../errors.js';
 import { TemplateCatalog, builtinTemplatesDir } from './catalog.js';
 import { validateTemplate } from './validate.js';
-import { renderToolPreset, TOOL_PRESETS } from './presets.js';
+import { renderToolPreset, STYLUA_SHA256, TOOL_PRESETS } from './presets.js';
 
 const tpl = (name: string, extra = '', base = 'base:\n  os: alpine:3.22\n') =>
   `apiVersion: 1\nname: ${name}\ndescription: Template ${name} used in catalog tests\nbackend: docker\n${base}${extra}`;
@@ -37,12 +37,16 @@ describe('builtin templates', () => {
     const names = (await catalog.list()).map((t) => t.name);
     expect(names).toEqual([
       'alpine-min',
+      'flutter-dev',
       'host-shell',
       'node-dev',
+      'php-dev',
       'py-dev',
       'py-offline',
       'py-uv',
       'rust-dev',
+      'shell-dev',
+      'tauri-dev',
     ]);
   });
 
@@ -79,6 +83,60 @@ describe('builtin templates', () => {
     const hostShell = validateTemplate(await catalog.get('host-shell'));
     expect(hostShell.warnings.join('\n')).toContain('NOT isolated');
     expect(hostShell.warnings.join('\n')).toContain('"open"');
+  });
+
+  it('the stack templates have the documented tools, packages and network', async () => {
+    const flutter = await catalog.get('flutter-dev');
+    expect(flutter.tools.map((t) => `${t.name}${t.version ? `@${t.version}` : ''}`)).toEqual([
+      'flutter@3.47.7',
+      'git',
+    ]);
+    expect(flutter.network.mode).toBe('allowlist');
+    expect(flutter.network.allow).toEqual(expect.arrayContaining(['pub.dev', 'github.com']));
+    expect(flutter.env.PUB_CACHE).toBe('/opt/pub-cache');
+    expect(flutter.base.osFamily).toBe('debian');
+
+    const tauri = await catalog.get('tauri-dev');
+    expect(tauri.tools.map((t) => t.name)).toEqual(['rust', 'node', 'pnpm', 'git']);
+    expect(tauri.network.allow).toEqual(
+      expect.arrayContaining(['crates.io', 'static.crates.io', 'registry.npmjs.org', 'github.com']),
+    );
+    const tauriApt = tauri.build.find((s) => s.name.startsWith('apt: '))?.script ?? '';
+    for (const pkg of [
+      'build-essential',
+      'pkg-config',
+      'libssl-dev',
+      'libwebkit2gtk-4.1-dev',
+      'libsoup-3.0-dev',
+      'librsvg2-dev',
+      'libayatana-appindicator3-dev',
+    ])
+      expect(tauriApt, pkg).toContain(`'${pkg}'`);
+
+    const php = await catalog.get('php-dev');
+    expect(php.tools.map((t) => t.name)).toEqual(['composer', 'git']);
+    expect(php.network.allow).toEqual(
+      expect.arrayContaining(['packagist.org', 'repo.packagist.org', 'codeload.github.com']),
+    );
+    const phpApt = php.build.find((s) => s.name.startsWith('apt: '))?.script ?? '';
+    for (const ext of ['mbstring', 'xml', 'curl', 'zip', 'sqlite3', 'intl'])
+      expect(phpApt, ext).toContain(`'php-${ext}'`);
+
+    const shell = await catalog.get('shell-dev');
+    expect(shell.network.mode).toBe('none');
+    expect(shell.tools.map((t) => t.name)).toEqual(['stylua', 'git']);
+    const shellApt = shell.build.find((s) => s.name.startsWith('apt: '))?.script ?? '';
+    for (const pkg of ['fish', 'shellcheck', 'shfmt', 'lua5.4', 'lua-check', 'jq'])
+      expect(shellApt, pkg).toContain(`'${pkg}'`);
+  });
+
+  it('the descriptions state the image size and what is not included', async () => {
+    for (const name of ['flutter-dev', 'tauri-dev', 'php-dev', 'shell-dev']) {
+      const t = await catalog.get(name);
+      expect(t.description, name).toMatch(/image is about [\d.]+ ?(MB|GB)/);
+    }
+    expect((await catalog.get('flutter-dev')).description).toContain('no Android SDK');
+    expect((await catalog.get('tauri-dev')).description).toContain('no display');
   });
 });
 
@@ -267,7 +325,9 @@ describe('extends across locations', () => {
 describe('tool presets catalog', () => {
   it('lists the documented presets', () => {
     expect(Object.keys(TOOL_PRESETS).sort()).toEqual([
+      'composer',
       'docker-cli',
+      'flutter',
       'gh',
       'git',
       'go',
@@ -277,6 +337,7 @@ describe('tool presets catalog', () => {
       'pnpm',
       'python',
       'rust',
+      'stylua',
     ]);
   });
 
@@ -292,19 +353,28 @@ describe('tool presets catalog', () => {
       gh: 'gh',
       playwright: 'playwright',
       'docker-cli': 'docker-cli',
+      flutter: 'flutter@3.47.7',
+      composer: 'composer@2.10.3',
+      stylua: 'stylua@2.6.0',
     };
     for (const [name, ref] of Object.entries(sample)) {
       const deb = renderToolPreset(ref, 'debian');
       expect(deb.step.script.startsWith('set -eu'), name).toBe(true);
       expect(deb.step.script.endsWith('\n')).toBe(true);
       expect(deb.tool.check.length).toBeGreaterThan(3);
-      if (name === 'playwright') {
-        expect(() => renderToolPreset(ref, 'alpine')).toThrow(/"playwright".*"alpine"/);
+      if (['playwright', 'flutter', 'composer'].includes(name)) {
+        expect(() => renderToolPreset(ref, 'alpine')).toThrow(new RegExp(`"${name}".*"alpine"`));
       } else {
         expect(renderToolPreset(ref, 'alpine').step.script, name).toContain('set -eu');
       }
       expect(() => renderToolPreset(ref, 'fedora'), name).toThrow(/"fedora"/);
     }
+  });
+
+  it('rust: rustup proxies of the clippy and rustfmt components are on the PATH', () => {
+    const s = renderToolPreset('rust', 'debian').step.script;
+    for (const t of ['cargo-clippy', 'cargo-fmt', 'clippy-driver', 'rustfmt'])
+      expect(s, t).toMatch(new RegExp(`for t in [^;]*\\b${t}\\b[^;]*; do ln -sf`));
   });
 
   it('validates versions', () => {
@@ -319,12 +389,70 @@ describe('tool presets catalog', () => {
   });
 
   it('never pipes downloads into a shell', () => {
-    for (const ref of ['node@24', 'python@3.13', 'rust', 'go@1.24', 'docker-cli']) {
+    for (const ref of [
+      'node@24',
+      'python@3.13',
+      'rust',
+      'go@1.24',
+      'docker-cli',
+      'flutter@3.47.7',
+      'composer@2.10.3',
+      'stylua@2.6.0',
+    ]) {
       for (const os of ['debian', 'alpine'] as const) {
-        if (ref === 'docker-cli' && os === 'alpine') continue;
+        if (['docker-cli', 'flutter@3.47.7', 'composer@2.10.3'].includes(ref) && os === 'alpine')
+          continue;
         const s = renderToolPreset(ref, os).step.script;
         expect(s, `${ref}/${os}`).not.toMatch(/\|\s*(ba)?sh\b/);
       }
+    }
+  });
+
+  it('flutter: version grammar, checksum from the release manifest, x86_64 only', () => {
+    expect(() => renderToolPreset('flutter', 'debian')).toThrow(/needs a version/);
+    expect(() => renderToolPreset('flutter@stable', 'debian')).toThrow(/invalid version/);
+    expect(() => renderToolPreset('flutter@2.10.5', 'debian')).toThrow(/invalid version/);
+    const exact = renderToolPreset('flutter@3.47.7', 'debian').step.script;
+    expect(exact).toContain('flutter_infra_release/releases');
+    expect(exact).toContain('flutter_linux_3\\.47\\.7-stable');
+    expect(exact).toContain('sha_check flutter.tar.xz "$SUM"');
+    expect(exact).toContain('x86_64 only');
+    expect(exact).toContain('safe.directory /opt/flutter');
+    expect(exact).not.toContain('--android');
+    // A minor version picks the newest patch release (the manifest lists newest first).
+    expect(renderToolPreset('flutter@3.47', 'debian').step.script).toContain(
+      'flutter_linux_3\\.47(\\.[0-9]+)?-stable',
+    );
+    expect(renderToolPreset('flutter@3.47.7', 'debian').env).toMatchObject({
+      FLUTTER_SUPPRESS_ANALYTICS: 'true',
+    });
+  });
+
+  it('composer: exact version, sha256 file from the same origin, needs php', () => {
+    expect(() => renderToolPreset('composer', 'debian')).toThrow(/needs a version/);
+    expect(() => renderToolPreset('composer@2', 'debian')).toThrow(/invalid version/);
+    expect(() => renderToolPreset('composer@1.10.27', 'debian')).toThrow(/invalid version/);
+    const s = renderToolPreset('composer@2.10.3', 'debian').step.script;
+    expect(s).toContain('command -v php');
+    expect(s).toContain('composer.phar.sha256sum');
+    expect(s).toContain('sha_check composer.phar');
+    expect(s).toContain("V='2.10.3'");
+  });
+
+  it('stylua: only versions with a pinned checksum; the pinned sums are in the script', () => {
+    expect(() => renderToolPreset('stylua', 'debian')).toThrow(/needs a version/);
+    expect(() => renderToolPreset('stylua@0.1.0', 'debian')).toThrow(/invalid version/);
+    for (const [version, sums] of Object.entries(STYLUA_SHA256)) {
+      for (const sum of Object.values(sums)) expect(sum).toMatch(/^[0-9a-f]{64}$/);
+      const deb = renderToolPreset(`stylua@${version}`, 'debian').step.script;
+      expect(deb).toContain(sums.x86_64);
+      expect(deb).toContain(sums.aarch64);
+      expect(deb).not.toContain(sums['x86_64-musl']);
+      expect(deb).toContain(`/download/v${version}/stylua-linux-$ARCH_GNU.zip`);
+      const alp = renderToolPreset(`stylua@${version}`, 'alpine').step.script;
+      expect(alp).toContain(sums['x86_64-musl']);
+      expect(alp).toContain('stylua-linux-$ARCH_GNU-musl.zip');
+      expect(alp).toContain('apk add');
     }
   });
 });

@@ -1,0 +1,53 @@
+apiVersion: 1
+name: flutter-dev
+description: >-
+  Flutter 3.47 (stable channel, Dart 3.13) with git and the Linux desktop build chain (clang,
+  cmake, ninja, GTK 3) on Ubuntu 24.04. Use it for flutter analyze, flutter test, dart format and
+  flutter build web or linux. There is no Android SDK, emulator or display. Network is limited to
+  pub.dev and GitHub. The image is about 3 GB.
+backend: docker
+isolation: container
+
+base:
+  os: ubuntu:24.04
+
+packages:
+  apt: [clang, cmake, ninja-build, pkg-config, libgtk-3-dev, liblzma-dev]
+
+tools:
+  - flutter@3.47.7
+  - git
+
+# The pub cache lives outside the home directory so that the packages of a new Flutter app
+# (Flutter's default project template) are baked into the image and `pub get --offline` works.
+setup:
+  - run: |
+      set -eu
+      export PUB_CACHE=/opt/pub-cache FLUTTER_SUPPRESS_ANALYTICS=true DART_SUPPRESS_ANALYTICS=true CI=true
+      mkdir -p "$PUB_CACHE" /tmp/pub-warmup
+      cd /tmp/pub-warmup
+      flutter create --project-name pub_warmup app
+      cd /
+      rm -rf /tmp/pub-warmup
+      chmod -R a+rwX "$PUB_CACHE"
+
+env:
+  PUB_CACHE: /opt/pub-cache
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 4
+  memory: 8g
+  pids: 1024
+  ttl: 2h
+
+network:
+  mode: allowlist
+  presets: [pub, github]
+
+labels:
+  use-for: Flutter and Dart apps (analyze, test, format, web and Linux builds; no Android, pub.dev and GitHub reachable)

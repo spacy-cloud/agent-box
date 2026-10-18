@@ -12,9 +12,11 @@ import { TOOL_REF_RE } from './schema.js';
  *
  * Supply-chain policy (see docs/security.md): distro packages where the version does
  * not matter (git, gh, java), otherwise official release artifacts that are verified
- * with a published SHA-256 (node, go, uv, rustup-init). Documented exceptions:
+ * with a published SHA-256 (node, go, uv, rustup-init, flutter, composer). Documented exceptions:
  *  - checksums come from the same HTTPS origin as the artifact (integrity against
  *    transport/mirror corruption, not against a compromised upstream),
+ *  - `stylua` publishes no checksum file: the SHA-256 of each supported release is pinned in
+ *    this file (taken from the GitHub release assets and re-computed from the downloads),
  *  - `node` on Alpine uses the musl builds of unofficial-builds.nodejs.org (run by the
  *    Node.js build working group) because Alpine ships only one Node version,
  *  - `docker-cli` on Debian/Ubuntu uses Docker's apt repository; its signing key
@@ -181,7 +183,9 @@ function rustScript(os: PresetOs, v: string | undefined): string {
     'chmod +x rustup-init',
     `./rustup-init -y --no-modify-path --profile minimal --default-toolchain ${shQuote(v ?? 'stable')}`,
     'rm -f rustup-init rustup-init.sha256',
-    'for t in cargo rustc rustup rustdoc; do ln -sf "/opt/rust/cargo/bin/$t" "/usr/local/bin/$t"; done',
+    // rustup creates a proxy for every tool; the ones of components (clippy, rustfmt) fail with a hint
+    // until `rustup component add` has installed them, e.g. in a `setup:` step.
+    'for t in cargo rustc rustup rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver; do ln -sf "/opt/rust/cargo/bin/$t" "/usr/local/bin/$t"; done',
     'chmod -R a+rX /opt/rust',
     'rustc --version && cargo --version',
   ].join('\n');
@@ -212,6 +216,112 @@ function goScript(_os: PresetOs, v: string | undefined): string {
     'ln -sf /usr/local/go/bin/go /usr/local/bin/go',
     'ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt',
     'go version',
+  ].join('\n');
+}
+
+const FLUTTER_VERSION_RE = /^3\.\d+(?:\.\d+)?$/;
+
+function flutterScript(v: string | undefined): string {
+  const version = v ?? '';
+  const exact = version.split('.').length >= 3;
+  // The manifest lists releases newest first; a "3.47" request therefore picks the latest 3.47.x.
+  const archiveRe = `stable/linux/flutter_linux_${version.replace(/\./g, '\\.')}${exact ? '' : '(\\.[0-9]+)?'}-stable\\.tar\\.xz`;
+  return [
+    HEADER,
+    SHELL_HELPERS,
+    '[ "$ARCH_GNU" = x86_64 ] || { echo "the flutter preset supports x86_64 only (Flutter publishes no Linux arm64 SDK archive)" >&2; exit 1; }',
+    // git: the flutter tool and its launcher script refuse to run without it; unzip: used to unpack engine artifacts.
+    aptInstall(['git', 'unzip', 'ca-certificates']),
+    'cd /tmp',
+    'BASE="https://storage.googleapis.com/flutter_infra_release/releases"',
+    'fetch "$BASE/releases_linux.json" flutter-releases.json',
+    `export AWK_RE="^${archiveRe}$"`,
+    // The manifest is pretty-printed: "archive" is followed by the "sha256" of the same release object.
+    `LINE=$(awk '/"archive":/ { gsub(/[",]/, "", $2); hit = ($2 ~ ENVIRON["AWK_RE"]) ? $2 : ""; next } hit != "" && /"sha256":/ { gsub(/[",]/, "", $2); print hit " " $2; exit }' flutter-releases.json)`,
+    `[ -n "$LINE" ] || { echo "no stable Flutter release matching ${version} for linux" >&2; exit 1; }`,
+    'FILE=${LINE% *}; SUM=${LINE#* }',
+    'fetch "$BASE/$FILE" flutter.tar.xz',
+    'sha_check flutter.tar.xz "$SUM"',
+    'rm -rf /opt/flutter',
+    'tar -xJf flutter.tar.xz -C /opt --no-same-owner',
+    'rm -f flutter.tar.xz flutter-releases.json',
+    // The archive ships Dart and the Linux, web and Android engine artifacts. Android builds are not
+    // supported by this preset; dropping the artifacts (and their stamps, so a later
+    // `flutter precache --android` fetches them again) saves about 850 MB.
+    'rm -rf /opt/flutter/bin/cache/artifacts/engine/android-*',
+    'rm -f /opt/flutter/bin/cache/android-sdk.stamp /opt/flutter/bin/cache/android-internal-build-artifacts.stamp /opt/flutter/bin/cache/gradle_wrapper.stamp',
+    // The SDK is root-owned but used by the unprivileged sandbox user: git must trust the directory,
+    // and the tool writes to the SDK (bin/cache lock files, .pub-preload-cache) like in a per-user install.
+    'git config --system --add safe.directory /opt/flutter',
+    'chmod -R a+rwX /opt/flutter',
+    'for t in flutter dart; do ln -sf "/opt/flutter/bin/$t" "/usr/local/bin/$t"; done',
+    'export FLUTTER_SUPPRESS_ANALYTICS=true DART_SUPPRESS_ANALYTICS=true CI=true',
+    'flutter --version',
+  ].join('\n');
+}
+
+const COMPOSER_VERSION_RE = /^2\.\d+\.\d+$/;
+
+function composerScript(v: string | undefined): string {
+  return [
+    HEADER,
+    SHELL_HELPERS,
+    requireCmd(
+      'php',
+      'composer preset requires php (add php-cli to packages.apt or use a php base image)',
+    ),
+    // Composer unpacks dist archives with unzip when the zip extension is missing and is much slower without it.
+    aptInstall(['unzip', 'ca-certificates']),
+    `V=${shQuote(v ?? '')}`,
+    'cd /tmp',
+    'fetch "https://getcomposer.org/download/$V/composer.phar" composer.phar',
+    'fetch "https://getcomposer.org/download/$V/composer.phar.sha256sum" composer.sha256',
+    'sha_check composer.phar "$(cut -d\' \' -f1 composer.sha256)"',
+    'install -m 0755 composer.phar /usr/local/bin/composer',
+    'rm -f composer.phar composer.sha256',
+    'COMPOSER_ALLOW_SUPERUSER=1 composer --version',
+  ].join('\n');
+}
+
+/** SHA-256 of the StyLua release archives (`stylua-linux-<arch>[-musl].zip`), per version. */
+export const STYLUA_SHA256: Readonly<
+  Record<string, Readonly<Record<'x86_64' | 'x86_64-musl' | 'aarch64' | 'aarch64-musl', string>>>
+> = {
+  '2.6.0': {
+    x86_64: 'a485f72bbfa22e4642e77a84b5edc2611a5cab7477b34e2e709dd8f78e919895',
+    'x86_64-musl': '48ee7db28346f96f4bd545e190ab080a88a7b5a664e97649cf5d5c60426f402d',
+    aarch64: '8e67539e5fdf7a81cd03cf592b0df18d3bb96ee17a5ea5d9bf67b86387b903b0',
+    'aarch64-musl': '278495597e3827417f3af7b9ad38011ad4a5ec725503553160ab69b7301059bb',
+  },
+  '2.5.0': {
+    x86_64: '91e416c033f2213e3e9f98b4f50d9becc241bf01f31f11f70d7eca275ce0de28',
+    'x86_64-musl': 'e5388b9f1b774c04858e4d9ac56b427b8beb4a622cdce5b06db00d574e3de2da',
+    aarch64: '8b0df7ca01353a6b2f36c1631686a7670647a8677142ea8328c6a7bc7f906352',
+    'aarch64-musl': '0ac35fcfa305dc94d608f1b109237d26d0498dd2ac2cb535f5324435170a939c',
+  },
+};
+
+function styluaScript(os: PresetOs, v: string | undefined): string {
+  const version = v ?? '';
+  // The version was checked against STYLUA_SHA256 by the preset's versionRe.
+  const sums = STYLUA_SHA256[version]!;
+  const musl = os === 'alpine' ? '-musl' : '';
+  const x86 = os === 'alpine' ? sums['x86_64-musl'] : sums.x86_64;
+  const arm = os === 'alpine' ? sums['aarch64-musl'] : sums.aarch64;
+  return [
+    HEADER,
+    SHELL_HELPERS,
+    os === 'alpine'
+      ? apkInstall(['unzip', 'ca-certificates'])
+      : aptInstall(['unzip', 'ca-certificates']),
+    `case "$ARCH_GNU" in x86_64) SUM=${shQuote(x86)} ;; aarch64) SUM=${shQuote(arm)} ;; esac`,
+    'cd /tmp',
+    `fetch "https://github.com/JohnnyMorganz/StyLua/releases/download/v${version}/stylua-linux-$ARCH_GNU${musl}.zip" stylua.zip`,
+    'sha_check stylua.zip "$SUM"',
+    'unzip -q -o stylua.zip stylua',
+    'install -m 0755 stylua /usr/local/bin/stylua',
+    'rm -f stylua.zip stylua',
+    'stylua --version',
   ].join('\n');
 }
 
@@ -318,6 +428,46 @@ export const TOOL_PRESETS: Readonly<Record<string, ToolPreset>> = {
         ].join('\n'),
     },
     check: () => 'java -version',
+  },
+  flutter: {
+    name: 'flutter',
+    summary:
+      'Flutter SDK (stable channel) with its Dart SDK in /opt/flutter, x86_64 Debian/Ubuntu only. Archive SHA-256 from the release manifest; includes the Linux and web engine artifacts, no Android',
+    version: 'required',
+    versionHint: 'a minor or patch version of a stable release (3.47, 3.47.7)',
+    versionRe: FLUTTER_VERSION_RE,
+    phase: 0,
+    downloads: true,
+    install: { debian: (v) => flutterScript(v) },
+    check: () => 'flutter --version',
+    env: () => ({ FLUTTER_SUPPRESS_ANALYTICS: 'true', DART_SUPPRESS_ANALYTICS: 'true' }),
+  },
+  composer: {
+    name: 'composer',
+    summary:
+      'Composer (PHP dependency manager) as composer.phar in /usr/local/bin, SHA-256 verified; needs php (apt: php-cli)',
+    version: 'required',
+    versionHint: 'a full version (2.10.3)',
+    versionRe: COMPOSER_VERSION_RE,
+    phase: 1,
+    downloads: true,
+    install: { debian: (v) => composerScript(v) },
+    check: () => 'composer --version',
+  },
+  stylua: {
+    name: 'stylua',
+    summary: `StyLua (Lua formatter) release binary, SHA-256 pinned in abox; versions: ${Object.keys(STYLUA_SHA256).join(', ')}`,
+    version: 'required',
+    versionHint: `one of ${Object.keys(STYLUA_SHA256).join(', ')}`,
+    versionRe: new RegExp(
+      `^(?:${Object.keys(STYLUA_SHA256)
+        .map((k) => k.replace(/\./g, '\\.'))
+        .join('|')})$`,
+    ),
+    phase: 0,
+    downloads: true,
+    install: { debian: (v) => styluaScript('debian', v), alpine: (v) => styluaScript('alpine', v) },
+    check: () => 'stylua --version',
   },
   git: {
     name: 'git',
@@ -511,7 +661,17 @@ export function renderToolPreset(
 }
 
 function exampleVersion(name: string): string {
-  return { node: '24', python: '3.13', go: '1.24', java: '21' }[name] ?? '1';
+  return (
+    {
+      node: '24',
+      python: '3.13',
+      go: '1.24',
+      java: '21',
+      flutter: '3.47',
+      composer: '2.10.3',
+      stylua: '2.6.0',
+    }[name] ?? '1'
+  );
 }
 
 /** Shared prerequisites (curl, CA certificates, xz) for presets that download release archives. */

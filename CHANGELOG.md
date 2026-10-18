@@ -10,6 +10,18 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Built-in templates for more stacks: `flutter-dev` (Flutter 3.47 and Dart 3.13 with the Linux
+  desktop build chain: analyze, test, format, web and Linux builds, the packages of a new app
+  baked into the pub cache; no Android), `tauri-dev` (Rust, Node.js 24, pnpm and the Tauri 2
+  system libraries; no display), `php-dev` (PHP 8.3 with common extensions, Composer 2.10, the
+  built-in server) and `shell-dev` (bash, fish, ShellCheck, shfmt, Lua 5.4, luacheck, StyLua, jq;
+  no network).
+- Tool presets `flutter@<version>` (archive checksum from Flutter's release manifest, x86_64
+  Debian/Ubuntu only), `composer@<version>` (checksum from getcomposer.org) and `stylua@<version>`
+  (SHA-256 pinned in abox); network presets `pub` (`pub.dev`) and `packagist` (`packagist.org`,
+  `repo.packagist.org`). The destinations were measured with the egress audit.
+- `ABOX_TEST_HEAVY_TEMPLATES=1` enables the build of `flutter-dev` (about 5 minutes, 3-4 GB) in
+  the Docker template tests; the other new templates are built with `ABOX_TEST_DOCKER=1`.
 - `.gitignore` for `copy` and `sync` workspaces, on by default: what the project's `.gitignore`
   files (nested ones, `!` negation, anchoring, `**`) and `.git/info/exclude` ignore is not copied, so
   `node_modules`, build output and `.env` files stay out of the sandbox. The rules are applied by abox
@@ -124,6 +136,9 @@ export` leaves out ignored paths the sandbox created (`stats.ignored`).
 
 ### Changed
 
+- The built-in default policy lets agents use every built-in template except `host-shell`
+  (adds `py-uv`, `rust-dev`, `tauri-dev`, `flutter-dev`, `php-dev`, `shell-dev`) and the registry
+  presets `crates`, `pub` and `packagist`; limits and approval mode are unchanged.
 - GUI: the Options step of the New sandbox dialog follows the design mockup: Name and Host on top, a "Workspace" and a "Resources and network" section with aligned rows (mode, folder and Choose …; CPUs, memory, lifetime, network), the profile limits as a short hint under the section title, the template's values as placeholders of the empty resource fields, single-line help texts and a dialog width of at most 720 px.
 - `abox doctor` and the GUI diagnostics tell apart four severities: `ok`, `info`, `warning` and
   failed. A backend that works is `ok` even with advisory notes (rootful engine, no disk quota,
@@ -274,6 +289,10 @@ into the sandbox …` lines through `onProgress` (stderr of `abox create`; the G
 
 ### Fixed
 
+- The `rust` tool preset links the rustup proxies of `rustfmt`, `cargo-fmt`, `cargo-clippy` and
+  `clippy-driver` into `/usr/local/bin`, so `cargo clippy` and `cargo fmt` work after
+  `rustup component add clippy rustfmt` in a `setup:` step (they failed with "no such command").
+  The environment images of templates with the `rust` tool are rebuilt once.
 - GUI diagnostics: the lines behind a "Details" disclosure (for example of an optional backend that
   is not running) use the full width instead of wrapping after every few characters.
 - **Copying a huge folder no longer fails minutes later with the wrong message.** The create used to
