@@ -15,6 +15,7 @@ import type {
   IsolationLevel,
   NetworkEvent,
   NetworkSpec,
+  PortForwardRequest,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
@@ -22,6 +23,7 @@ import type {
   SandboxFilter,
   SandboxId,
   SandboxInfo,
+  SandboxPortForward,
   SandboxProvider,
   SandboxSpec,
   TtyOptions,
@@ -641,6 +643,28 @@ export class PythonProvider implements SandboxProvider {
     if (!provider.extendExpiry)
       throw unsupported('extending the lifetime of a running sandbox is not supported');
     await provider.extendExpiry(id, expiresAt);
+  }
+
+  async addPortForward(id: SandboxId, req: PortForwardRequest): Promise<SandboxPortForward> {
+    const { provider } = await this.route(id);
+    if (!provider.addPortForward)
+      throw unsupported(
+        'a venv sandbox runs on the host itself: a server in it already listens on the host network',
+      );
+    return provider.addPortForward(id, req);
+  }
+
+  async listPortForwards(id: SandboxId): Promise<SandboxPortForward[]> {
+    const { provider } = await this.route(id);
+    return provider.listPortForwards ? provider.listPortForwards(id) : [];
+  }
+
+  async removePortForward(
+    id: SandboxId,
+    sandboxPort: number,
+  ): Promise<SandboxPortForward | undefined> {
+    const { provider } = await this.route(id);
+    return provider.removePortForward ? provider.removePortForward(id, sandboxPort) : undefined;
   }
 
   async networkEvents(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]> {

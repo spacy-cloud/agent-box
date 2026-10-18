@@ -115,7 +115,7 @@ always exits 0. Fix: install abox or set `ABOX_BIN`, then restart Claude Code.
 When you open a terminal in a sandbox that Claude owns (GUI terminal tab or `abox shell`), abox
 **pauses Claude's input** there, as the GUI concept asks: `sandbox_exec`, `sandbox_process_start`,
 `sandbox_process_stop`, `sandbox_write_file`, `sandbox_snapshot`, `sandbox_restore`, `sandbox_start`,
-`sandbox_stop`, `sandbox_delete` and `access_request` answer `conflict` with "paused: a human is
+`sandbox_stop`, `sandbox_delete`, `sandbox_port_forward` and `access_request` answer `conflict` with "paused: a human is
 working in sandbox ...", and `sandbox_inspect` / `sandbox_list` carry `human_attached`.
 Reading (files, listing, logs, inspect) keeps working. See [GUI: taking over a
 sandbox](gui.md#taking-over-an-agents-sandbox).

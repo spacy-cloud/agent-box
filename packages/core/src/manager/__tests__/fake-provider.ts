@@ -12,6 +12,7 @@ import type {
   ForeignResource,
   HostConnection,
   NetworkEvent,
+  NetworkMode,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
@@ -20,6 +21,7 @@ import type {
   SandboxFilter,
   SandboxId,
   SandboxInfo,
+  SandboxPortForward,
   SandboxSpec,
   TtySession,
 } from '../../types.js';
@@ -58,6 +60,8 @@ export interface FakeOptions {
   failUpdateResources?: string;
   /** Provide `stats`: the sample for a running sandbox (default: a fixed one); a sandbox that is not running is `conflict`. */
   stats?: boolean | ((id: SandboxId) => ResourceUsage);
+  /** Provide port forwards for these network modes (`true` = allowlist and open, like the container backends). */
+  portForward?: boolean | NetworkMode[];
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -77,6 +81,8 @@ export class FakeProvider implements SandboxProvider {
   readonly gcCalls: string[][] = [];
   /** Every `extendExpiry` call that was accepted. */
   readonly expiryUpdates: Array<{ id: SandboxId; expiresAt: number }> = [];
+  /** Open port forwards per sandbox (closed again by `stop` / `remove`, like a real backend does). */
+  readonly portForwards = new Map<SandboxId, SandboxPortForward[]>();
   /** Every `stats` call. */
   readonly statsCalls: SandboxId[] = [];
   /** Every `updateResources` call that was accepted. */
@@ -101,6 +107,9 @@ export class FakeProvider implements SandboxProvider {
   extendExpiry?: SandboxProvider['extendExpiry'];
   updateResources?: SandboxProvider['updateResources'];
   stats?: SandboxProvider['stats'];
+  addPortForward?: SandboxProvider['addPortForward'];
+  listPortForwards?: SandboxProvider['listPortForwards'];
+  removePortForward?: SandboxProvider['removePortForward'];
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
   networkEvents?: SandboxProvider['networkEvents'];
@@ -181,6 +190,50 @@ export class FakeProvider implements SandboxProvider {
             pids: 3,
           },
         );
+      };
+    }
+    if (opts.portForward) {
+      this.caps.portForward = Array.isArray(opts.portForward)
+        ? opts.portForward
+        : ['allowlist', 'open'];
+      let nextHostPort = 40_000;
+      this.addPortForward = (id, req) => {
+        const sb = this.get(id);
+        if (sb.state !== 'running')
+          return Promise.reject(new AboxError('conflict', `sandbox ${id} is not running`));
+        const open = this.portForwards.get(id) ?? [];
+        if (open.some((p) => p.sandboxPort === req.sandboxPort))
+          return Promise.reject(new AboxError('conflict', 'already forwarded'));
+        const hostPort = req.hostPort ?? nextHostPort++;
+        const fwd: SandboxPortForward = {
+          sandboxPort: req.sandboxPort,
+          hostAddress: '127.0.0.1',
+          hostPort,
+          url: `http://127.0.0.1:${hostPort}/`,
+          createdAt: this.now(),
+          target: 'unknown',
+          connections: 0,
+        };
+        this.portForwards.set(id, [...open, fwd]);
+        return Promise.resolve({ ...fwd });
+      };
+      this.listPortForwards = (id) => {
+        this.get(id);
+        return Promise.resolve(
+          [...(this.portForwards.get(id) ?? [])]
+            .sort((a, b) => a.sandboxPort - b.sandboxPort)
+            .map((p) => ({ ...p })),
+        );
+      };
+      this.removePortForward = (id, sandboxPort) => {
+        this.get(id);
+        const open = this.portForwards.get(id) ?? [];
+        const gone = open.find((p) => p.sandboxPort === sandboxPort);
+        this.portForwards.set(
+          id,
+          open.filter((p) => p !== gone),
+        );
+        return Promise.resolve(gone ? { ...gone } : undefined);
       };
     }
     if (opts.updateNetwork) {
@@ -295,11 +348,13 @@ export class FakeProvider implements SandboxProvider {
 
   stop(id: SandboxId): Promise<void> {
     this.get(id).state = 'stopped';
+    this.portForwards.delete(id);
     return Promise.resolve();
   }
 
   remove(id: SandboxId): Promise<void> {
     this.sandboxes.delete(id);
+    this.portForwards.delete(id);
     return Promise.resolve();
   }
 

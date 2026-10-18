@@ -21,6 +21,7 @@ import {
   approvalRows,
   kindHintKey,
   kindLabelKey,
+  portRequest,
   requestTemplateName,
   riskHints,
 } from '../../shared/approval-diff';
@@ -125,10 +126,18 @@ export function ApprovalsView() {
                       <strong>
                         <Safe text={a.requester.replace(/^agent:/, '')} max={60} />
                       </strong>{' '}
-                      &middot; {kindLabel(t, a.kind)}
+                      &middot; {kindLabel(t, a.kind, a.request)}
                     </span>
                     <span className="muted small plain">
-                      {safeInline(requestTemplateName(a.request) ?? a.sandboxId ?? '', 60)}
+                      {portRequest(a.request)
+                        ? safeInline(
+                            t('approvals.port.queue', {
+                              port: portRequest(a.request)!.sandboxPort,
+                              sandbox: safeInline(a.sandboxId ?? '', 40),
+                            }),
+                            60,
+                          )
+                        : safeInline(requestTemplateName(a.request) ?? a.sandboxId ?? '', 60)}
                       {a.status === 'pending'
                         ? ` · ${t('approvals.expiresIn', { time: formatDuration(remainingMs(a.expiresAt, now)) })}`
                         : ` · ${t(`approvals.status.${a.status}`)}`}
@@ -184,7 +193,8 @@ export function ApprovalDialog(props: {
     { id: a.id },
     { enabled: isPending && IMAGE_KINDS.includes(a.kind), live: false },
   );
-  const hintKey = kindHintKey(a.kind);
+  const hintKey = kindHintKey(a.kind, a.request);
+  const port = portRequest(a.request);
 
   const rows = useMemo(() => approvalRows(a.request), [a.request]);
   const hints = useMemo(() => riskHints(a.kind, a.request), [a.kind, a.request]);
@@ -232,7 +242,7 @@ export function ApprovalDialog(props: {
         onKeyDown={onKeyDown}
         data-approval-id={a.id}
       >
-        <h2 id={titleId}>{kindLabel(t, a.kind)}</h2>
+        <h2 id={titleId}>{kindLabel(t, a.kind, a.request)}</h2>
         <p id={descId} className="meta">
           <OwnerBadge owner={a.requester} />
           {a.sandboxId ? (
@@ -258,6 +268,15 @@ export function ApprovalDialog(props: {
 
         {hintKey === 'approvals.kind.unknown.hint' ? (
           <Banner tone="warn">{t(hintKey)}</Banner>
+        ) : null}
+
+        {port ? (
+          <p data-testid="port-summary" className="plain">
+            {t('approvals.port.summary', {
+              port: port.sandboxPort,
+              sandbox: safeInline(a.sandboxId ?? '', 80),
+            })}
+          </p>
         ) : null}
 
         <AgentText text={a.reason} label={t('approvals.agentReason')} />
@@ -441,10 +460,11 @@ export function ApprovalDialog(props: {
 const IMAGE_KINDS = ['create', 'template_trust', 'image_registry'];
 
 /** Label of a request kind; a kind this app does not know gets a generic label instead of a raw key. */
-function kindLabel(t: TFn, kind: string): string {
-  return kindLabelKey(kind) === 'approvals.kind.unknown'
+function kindLabel(t: TFn, kind: string, request?: unknown): string {
+  const key = kindLabelKey(kind, request);
+  return key === 'approvals.kind.unknown'
     ? t('approvals.kind.unknown', { kind: safeText(kind) })
-    : t(kindLabelKey(kind));
+    : t(key);
 }
 
 function DiffRow(props: { row: ApprovalRow }) {

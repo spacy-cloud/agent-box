@@ -9,6 +9,7 @@ import { registerInit } from './commands/init.js';
 import { registerMcp } from './commands/mcp.js';
 import { registerOps } from './commands/ops.js';
 import { registerPolicy } from './commands/policy.js';
+import { registerPort } from './commands/port.js';
 import { registerRun } from './commands/run.js';
 import { registerSandbox } from './commands/sandbox.js';
 import { registerSecret } from './commands/secret.js';
@@ -66,6 +67,7 @@ export function buildProgram(cli: Cli): Command {
   registerData(program, cli);
   registerApprovals(program, cli);
   registerPolicy(program, cli);
+  registerPort(program, cli);
   registerOps(program, cli);
   registerMcp(program, cli);
   registerInit(program, cli);

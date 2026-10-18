@@ -35,6 +35,7 @@ import type {
   SandboxWorkspaceView,
 } from './types.js';
 import { collectNetworkEvents } from './network-audit.js';
+import { auditPortsClosing } from './ports.js';
 import { errMessage, isPidAlive, SANDBOX_ID_RE } from './util.js';
 
 export interface AboxOptions {
@@ -821,6 +822,7 @@ export class Internals {
         done.push(rec.id);
         let stopError: string | undefined;
         await collectNetworkEvents(this, rec);
+        await auditPortsClosing(this, rec, 'system', 'expired');
         try {
           const p = await this.providerForRecord(rec);
           await p.stop(rec.id);

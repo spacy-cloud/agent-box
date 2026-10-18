@@ -10,6 +10,25 @@ release. Nothing has been released yet.
 
 ### Added
 
+- **Port forwards (preview of dev servers):** `abox port add <sandbox> <port> [--host-port N]`,
+  `abox port ls` and `abox port rm` publish a TCP port of a running sandbox on `127.0.0.1` of this
+  machine (a free port is picked unless `--host-port` is given; never 0.0.0.0, never below 1024), so
+  a Vite, Flutter web or `php -S` server in the sandbox opens in the host browser. Agents use the
+  MCP tool `sandbox_port_forward` (also `access_request` kind `port`); the request needs a human
+  approval bound to its digest unless the profile says otherwise: new profile key
+  `ports: { allow: false | ask | true, max }` (default `ask`, 3 per sandbox; the human profile
+  allows 16). Agents cannot choose the host port. Docker and Podman run one small sidecar container
+  per forward (`abox/forward` image, dependency-free Node, on the sandbox's network and
+  published on `127.0.0.1` only), so a forward outlives the CLI and the sandbox gets no new egress;
+  it checks the `Host` header of HTTP requests against DNS rebinding and reports whether the
+  target answers. The `vm` backend uses a QEMU `hostfwd` rule. Sandboxes with network `none`
+  and remote ssh hosts are `unsupported` (documented), UDP is not forwarded. Forwards are listed in
+  `abox inspect` / `sandbox_inspect`, audited (`sandbox.port.add`, `.remove`, `.close` with
+  connection counts, no per-connection log) and closed when the sandbox stops, expires or is
+  removed. GUI: a "Ports" area in the sandbox detail view (forward a port, open the preview in the
+  browser for http(s) loopback URLs only, close) and agent requests in Approvals. New provider
+  capability `portForward`. See `docs/cli.md`, `docs/mcp.md`, `docs/gui.md`, `docs/security.md`
+  and `docs/backends.md`.
 - Built-in templates for more stacks: `flutter-dev` (Flutter 3.47 and Dart 3.13 with the Linux
   desktop build chain: analyze, test, format, web and Linux builds, the packages of a new app
   baked into the pub cache; no Android), `tauri-dev` (Rust, Node.js 24, pnpm and the Tauri 2

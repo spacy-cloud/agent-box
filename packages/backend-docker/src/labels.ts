@@ -23,7 +23,7 @@ export const LABEL = {
    * `abox.expires` wins): the only way to move the deadline, because labels are immutable.
    */
   expiryFile: 'abox.expiry-file',
-  /** `sandbox` | `proxy` | `network` | `image`. */
+  /** `sandbox` | `proxy` | `forward` | `network` | `image`. */
   role: 'abox.role',
   baseDigest: 'abox.base-digest',
   readonlyRootfs: 'abox.readonly-rootfs',
@@ -35,6 +35,9 @@ export const LABEL = {
   snapshotName: 'abox.snapshot-name',
   /** `1` when spec files for the /tmp tmpfs are stashed and copied there on every start. */
   tmpFiles: 'abox.tmp-files',
+  /** Port forwarder sidecars: the sandbox port they forward, and when they were opened (epoch ms). */
+  fwdPort: 'abox.fwd-port',
+  fwdCreated: 'abox.fwd-created',
 } as const;
 
 /** Keys that belong to the backend and are not reported as user labels. */
@@ -85,6 +88,8 @@ export function isValidShort(short: string): boolean {
 
 export const containerName = (host: string, short: string): string => `abox-${host}-${short}`;
 export const proxyName = (short: string): string => `abox-proxy-${short}`;
+export const forwardName = (short: string, sandboxPort: number): string =>
+  `abox-fwd-${short}-${sandboxPort}`;
 export const internalNetName = (short: string): string => `abox-int-${short}`;
 export const snapshotRepo = (short: string): string => `abox-snap/${short}`;
 

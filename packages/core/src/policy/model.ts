@@ -10,6 +10,13 @@ export const APPROVAL_MODES = ['strict', 'medium', 'open'] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 
 /**
+ * `ports.allow` of a profile: `false` = agents may not forward ports, `'ask'` = a human has to
+ * approve every forward (the default), `true` = agents may forward without a question (still
+ * bound by `max`, and by approval mode `strict`).
+ */
+export type PortsAllow = false | 'ask' | true;
+
+/**
  * A profile after `extends` resolution and defaulting. Same shape as the
  * policy.yaml profile, but every field is present. Safe defaults for fields
  * that are missing from the whole chain: no templates, no secrets, no mounts,
@@ -77,6 +84,12 @@ export interface ResolvedProfile {
   /** Host ids, or `['*']` for any. */
   hosts: string[];
   exec: { approval: boolean };
+  /** Port forwards (`127.0.0.1` on the host to a port in the sandbox) for dev-server previews. */
+  ports: {
+    allow: PortsAllow;
+    /** Most forwards one sandbox may have open at the same time. */
+    max: number;
+  };
 }
 
 export interface ContextDef {

@@ -2,7 +2,13 @@ export * from './model.js';
 export * from './units.js';
 export * from './domains.js';
 export * from './images.js';
-export { ProfileSchema, PolicyFileSchema, ContextSchema, isValidRootSyntax } from './schema.js';
+export {
+  ProfileSchema,
+  PolicyFileSchema,
+  ContextSchema,
+  PORTS_MAX_LIMIT,
+  isValidRootSyntax,
+} from './schema.js';
 export type { RawPolicy, RawProfile } from './schema.js';
 export {
   loadPolicy,
@@ -18,6 +24,8 @@ export {
   DEFAULT_WORKSPACE_ROOTS,
   DEFAULT_MAX_COPY_BYTES,
   DEFAULT_MAX_COPY_ENTRIES,
+  DEFAULT_PORTS_ALLOW,
+  DEFAULT_PORTS_MAX,
 } from './load.js';
 export * from './context.js';
 export * from './paths.js';

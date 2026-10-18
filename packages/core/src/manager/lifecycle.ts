@@ -46,6 +46,7 @@ import type { ScanResult, WorkspaceRecord } from '../workspace/index.js';
 import { confirmationRequired, consumeApproval, gate } from './approvals.js';
 import { collectNetworkEvents } from './network-audit.js';
 import type { Internals, StoredEffective } from './internals.js';
+import { auditPortsClosing, portsOf } from './ports.js';
 import { createRequestSchema } from './schemas.js';
 import { requireNotTakenOver } from './takeover.js';
 import {
@@ -1252,7 +1253,8 @@ export async function inspectSandbox(
     endedAt: p.endedAt,
   }));
   const pendingApprovals = I.state.approvals.list({ status: 'pending', sandboxId: rec.id }).length;
-  return { ...view, processes, pendingApprovals };
+  const ports = await portsOf(I, rec);
+  return { ...view, processes, pendingApprovals, ports };
 }
 
 // ---------------------------------------------------------------------------
@@ -1291,6 +1293,7 @@ export async function stopSandbox(I: Internals, caller: Caller, id: string): Pro
   requireNotTakenOver(I, ctx, rec, 'sandbox.stop');
   const provider = await I.providerForRecord(rec);
   await collectNetworkEvents(I, rec);
+  await auditPortsClosing(I, rec, ctx.owner, 'stop');
   await provider.stop(id);
   I.state.sandboxes.transition(id, ['created', 'running', 'stopped'], 'stopped');
   for (const p of I.state.processes.list(id))
@@ -1310,6 +1313,7 @@ export async function destroySandbox(
 ): Promise<void> {
   const provider = await I.providerForRecord(rec);
   await collectNetworkEvents(I, rec); // the proxy and its log disappear with the sandbox
+  await auditPortsClosing(I, rec, actor, 'remove');
   try {
     await provider.stop(rec.id);
   } catch {

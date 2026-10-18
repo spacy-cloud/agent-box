@@ -105,7 +105,7 @@ describe('serveHttp: identity and sessions', () => {
     expect(http.address.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
     const a = await client(tokenA);
     const b = await client(tokenB);
-    expect((await a.client.listTools()).tools.length).toBe(20);
+    expect((await a.client.listTools()).tools.length).toBe(21);
     const c = await a.call('sandbox_create', {
       template: 'fake-box',
       workspace: { mode: 'empty' },

@@ -26,6 +26,9 @@ export function isValidRootSyntax(root: string): boolean {
   return !root.split('/').includes('..');
 }
 
+/** Upper bound of `ports.max` (every forward is a helper process or container). */
+export const PORTS_MAX_LIMIT = 32;
+
 const nameSchema = z.string().regex(NAME, 'must match [a-z0-9][a-z0-9._-]* (max 64 chars)');
 const rootSchema = z
   .string({
@@ -117,6 +120,14 @@ export const ProfileSchema = z.strictObject({
   min_isolation: isolationObject.optional(),
   hosts: z.array(z.string().regex(HOST_PATTERN, 'invalid host id')).optional(),
   exec: z.strictObject({ approval: z.boolean().optional() }).optional(),
+  ports: z
+    .strictObject({
+      /** `false`, `ask` (default) or `true`. */
+      allow: z.union([z.boolean(), z.literal('ask')]).optional(),
+      /** Most forwards one sandbox may have open at once. */
+      max: z.number().int().min(0).max(PORTS_MAX_LIMIT).optional(),
+    })
+    .optional(),
 });
 export type RawProfile = z.infer<typeof ProfileSchema>;
 

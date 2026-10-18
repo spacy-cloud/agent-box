@@ -15,6 +15,7 @@ import type {
   SandboxFilter,
   SandboxId,
   SandboxInfo,
+  SandboxPortForward,
   SandboxSpec,
   TtySession,
 } from '@abox/core';
@@ -30,6 +31,8 @@ export interface FakeOptions {
   kind?: SandboxProvider['kind'];
   capabilities?: Partial<ProviderCapabilities>;
   updateNetwork?: boolean;
+  /** Provide port forwards for allowlist and open sandboxes (like the container backends). */
+  portForward?: boolean;
   /** Called for every exec; return a partial result. */
   execHandler?: (
     id: SandboxId,
@@ -58,6 +61,10 @@ export class FakeProvider implements SandboxProvider {
   private readonly caps: ProviderCapabilities;
   updateNetwork?: SandboxProvider['updateNetwork'];
   extendExpiry?: SandboxProvider['extendExpiry'];
+  addPortForward?: SandboxProvider['addPortForward'];
+  listPortForwards?: SandboxProvider['listPortForwards'];
+  removePortForward?: SandboxProvider['removePortForward'];
+  readonly portForwards = new Map<SandboxId, SandboxPortForward[]>();
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
 
@@ -86,6 +93,43 @@ export class FakeProvider implements SandboxProvider {
       sb.spec = { ...sb.spec, expiresAt };
       return Promise.resolve();
     };
+    if (opts.portForward) {
+      this.caps.portForward = ['allowlist', 'open'];
+      let next = 40_000;
+      this.addPortForward = (id, req) => {
+        const sb = this.get(id);
+        if (sb.state !== 'running')
+          return Promise.reject(new AboxError('conflict', `sandbox ${id} is not running`));
+        const open = this.portForwards.get(id) ?? [];
+        if (open.some((p) => p.sandboxPort === req.sandboxPort))
+          return Promise.reject(new AboxError('conflict', 'already forwarded'));
+        const hostPort = req.hostPort ?? next++;
+        const fwd: SandboxPortForward = {
+          sandboxPort: req.sandboxPort,
+          hostAddress: '127.0.0.1',
+          hostPort,
+          url: `http://127.0.0.1:${hostPort}/`,
+          createdAt: Date.now(),
+          target: 'unknown',
+        };
+        this.portForwards.set(id, [...open, fwd]);
+        return Promise.resolve({ ...fwd });
+      };
+      this.listPortForwards = (id) => {
+        this.get(id);
+        return Promise.resolve((this.portForwards.get(id) ?? []).map((p) => ({ ...p })));
+      };
+      this.removePortForward = (id, sandboxPort) => {
+        this.get(id);
+        const open = this.portForwards.get(id) ?? [];
+        const gone = open.find((p) => p.sandboxPort === sandboxPort);
+        this.portForwards.set(
+          id,
+          open.filter((p) => p !== gone),
+        );
+        return Promise.resolve(gone ? { ...gone } : undefined);
+      };
+    }
     if (opts.updateNetwork) {
       this.updateNetwork = (id, network) => {
         this.get(id).spec.network = network;
@@ -176,6 +220,7 @@ export class FakeProvider implements SandboxProvider {
 
   stop(id: SandboxId): Promise<void> {
     this.get(id).state = 'stopped';
+    this.portForwards.delete(id);
     return Promise.resolve();
   }
 

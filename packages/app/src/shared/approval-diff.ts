@@ -22,7 +22,8 @@ export type RiskHint =
   | 'isolation_none'
   | 'untrusted_template'
   | 'private_address'
-  | 'network_destinations';
+  | 'network_destinations'
+  | 'port_forward';
 
 /**
  * Request kinds the app has a label for: the kinds of the approval queue (`create`, `exec`, `access`,
@@ -40,15 +41,37 @@ export const KNOWN_APPROVAL_KINDS = [
 /** Kinds with an explanation under the options table. */
 const KINDS_WITH_HINT: readonly string[] = ['template_trust', 'image_registry'];
 
-/** i18n key for the label of a request kind (`approvals.kind.unknown` for a kind this version does not know). */
-export function kindLabelKey(kind: string): string {
+/**
+ * A port forward requested through `access_request` (kind `port`): the sandbox port, as the approval is bound to
+ * it (`request.request.details.sandboxPort`). Null for any other request.
+ */
+export function portRequest(request: unknown): { sandboxPort: number; hostPort?: number } | null {
+  if (!isRecord(request) || !isRecord(request['request'])) return null;
+  const r = request['request'];
+  if (r['kind'] !== 'port' || !isRecord(r['details'])) return null;
+  const port = r['details']['sandboxPort'];
+  const host = r['details']['hostPort'];
+  if (typeof port !== 'number' || !Number.isInteger(port)) return null;
+  return typeof host === 'number' && Number.isInteger(host)
+    ? { sandboxPort: port, hostPort: host }
+    : { sandboxPort: port };
+}
+
+/**
+ * i18n key for the label of a request kind (`approvals.kind.unknown` for a kind this version does not know).
+ * An `access` request for a port forward has a label of its own so that it is not mistaken for a network or
+ * mount request; pass the stored request for that.
+ */
+export function kindLabelKey(kind: string, request?: unknown): string {
+  if (kind === 'access' && portRequest(request)) return 'approvals.kind.access.port';
   return (KNOWN_APPROVAL_KINDS as readonly string[]).includes(kind)
     ? `approvals.kind.${kind}`
     : 'approvals.kind.unknown';
 }
 
 /** i18n key for the explanation of a request kind, or null when the kind has none. */
-export function kindHintKey(kind: string): string | null {
+export function kindHintKey(kind: string, request?: unknown): string | null {
+  if (kind === 'access' && portRequest(request)) return 'approvals.kind.access.port.hint';
   if (KINDS_WITH_HINT.includes(kind)) return `approvals.kind.${kind}.hint`;
   return (KNOWN_APPROVAL_KINDS as readonly string[]).includes(kind)
     ? null
@@ -155,6 +178,8 @@ export function riskHints(kind: string, request: unknown): RiskHint[] {
   if (Array.isArray(secrets) && secrets.length > 0) out.add('secret');
   if (request['isolation'] === 'none') out.add('isolation_none');
   if (kind === 'template_trust' || (tpl && tpl['trusted'] === false)) out.add('untrusted_template');
+
+  if (portRequest(request)) out.add('port_forward');
 
   // access requests: { kind: 'access', details?: … } shapes are handled generically
   const details = isRecord(request['details']) ? request['details'] : undefined;

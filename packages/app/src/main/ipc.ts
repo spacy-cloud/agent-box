@@ -1,7 +1,7 @@
 import { createWriteStream, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { dialog, clipboard, ipcMain } from 'electron';
+import { dialog, clipboard, ipcMain, shell } from 'electron';
 import type { BrowserWindow } from 'electron';
 import { AboxError } from '@abox/core';
 import type { ProgressInfo } from '@abox/core';
@@ -14,6 +14,7 @@ import type { AppInfo, Outputs, SaveResult } from '../shared/types';
 import { toIpcError } from './errors';
 import { senderAllowed } from './guard';
 import { createHostsService } from './hosts';
+import { openPreview } from './preview';
 import { resolveProjectDir } from './projects';
 import type { HostsService } from './hosts';
 import { createManagerHandlers } from './service';
@@ -74,6 +75,8 @@ const WRITE_CHANNELS = new Set<IpcChannel>([
   'sandboxes:create',
   'snapshots:create',
   'snapshots:restore',
+  'ports:add',
+  'ports:remove',
   'approvals:approve',
   'approvals:deny',
   'policy:set',
@@ -161,6 +164,13 @@ export function registerIpc(d: IpcDeps): IpcHandle {
       await need().abox.copyOut({ contextId: 'human' }, i.id, i.sandboxPath, target);
       return { copied: target };
     },
+    // The only way a URL leaves the app: the main process builds it from a forward of that sandbox (preview.ts).
+    'ports:openPreview': (i) =>
+      openPreview(
+        { abox: need().abox, openExternal: (url) => shell.openExternal(url) },
+        i.id,
+        i.port,
+      ),
     'askpass:answer': (i) => {
       d.askpass.answer(i.id, i.value);
     },

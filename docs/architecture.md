@@ -190,6 +190,17 @@ in `packages/proxy`. The wiring and configuration contract between the proxy and
 described in `docs/internal/proxy-contract.md`; user-facing limits are in
 [security.md](security.md#network-modes-and-the-egress-proxy).
 
+## Port forwards
+
+A forward publishes one TCP port of a sandbox on `127.0.0.1` of the host (previews of dev servers).
+The request is an `access_request` of kind `port` (policy `ports`, approval bound to the request
+digest, audit); the backend holds the forwarder, so it outlives the CLI: a small sidecar container per
+forward on Docker and Podman (`packages/backend-docker/runtime/forward.mjs`, published on
+`127.0.0.1` only, no new egress for the sandbox), a QEMU `hostfwd` rule on the VM backend. The
+manager keeps no forward state of its own and asks the provider (`listPortForwards`). Details and
+limits: [backends.md](backends.md#port-forwards) and
+[security.md](security.md#port-forwards-previews).
+
 ## Error model
 
 Error codes are part of the public interface (CLI exit codes, MCP results): `0` ok, `1` internal,
