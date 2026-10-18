@@ -58,6 +58,8 @@ export interface FakeOptions {
   failUpdateResources?: string;
   /** Provide `stats`: the sample for a running sandbox (default: a fixed one); a sandbox that is not running is `conflict`. */
   stats?: boolean | ((id: SandboxId) => ResourceUsage);
+  /** Provide `hostResources` (cpus and memory of the machine the engine runs on). */
+  hostResources?: { cpus: number; memoryBytes: number };
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -101,6 +103,9 @@ export class FakeProvider implements SandboxProvider {
   extendExpiry?: SandboxProvider['extendExpiry'];
   updateResources?: SandboxProvider['updateResources'];
   stats?: SandboxProvider['stats'];
+  hostResources?: SandboxProvider['hostResources'];
+  /** Every `hostResources` call. */
+  hostResourcesCalls = 0;
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
   networkEvents?: SandboxProvider['networkEvents'];
@@ -181,6 +186,13 @@ export class FakeProvider implements SandboxProvider {
             pids: 3,
           },
         );
+      };
+    }
+    if (opts.hostResources) {
+      const r = opts.hostResources;
+      this.hostResources = () => {
+        this.hostResourcesCalls++;
+        return Promise.resolve({ ...r });
       };
     }
     if (opts.updateNetwork) {

@@ -2478,6 +2478,18 @@ export class DockerProvider implements SandboxProvider {
     });
   }
 
+  /** `NCPU` and `MemTotal` of the engine's `info`: the capacity of the machine the sandboxes share. */
+  async hostResources(): Promise<{ cpus: number; memoryBytes: number } | undefined> {
+    return this.guard(async () => {
+      const raw = (await this.engineFacts()).raw as { NCPU?: unknown; MemTotal?: unknown };
+      const cpus = Number(raw.NCPU);
+      const memoryBytes = Number(raw.MemTotal);
+      return Number.isFinite(cpus) && cpus > 0 && Number.isFinite(memoryBytes) && memoryBytes > 0
+        ? { cpus, memoryBytes }
+        : undefined;
+    });
+  }
+
   // -------------------------------------------------------------------------
   // Logs / events
   // -------------------------------------------------------------------------

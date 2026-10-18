@@ -54,7 +54,7 @@ hosts:
 | `runtimes`                          | hardened OCI runtime of the engine **on this host**, per engine: `runtimes: { docker: runsc }` (see below)             |
 | `allow_rootful`                     | `true` accepts a rootful engine on a `shared`/`restricted` host (root-equivalent; default: refused)                    |
 | `data_dir`                          | working directory root on the host (process/vm backends)                                                               |
-| `limits`                            | `cpus`, `memory`, `sandboxes` caps for everything on this host (`abox host add --cpus/--memory/--max-sandboxes`)       |
+| `limits`                            | `cpus`, `memory`, `sandboxes` caps for everything on this host (`abox host add` / `abox host set`, or the GUI)         |
 | `tags`, `favorite`, `port_forwards` | organisation and saved forwards (loopback only)                                                                        |
 
 Manage profiles with the CLI (agents cannot):
@@ -68,14 +68,27 @@ abox host trust lab1
 abox host rm lab1        # its sandboxes are not touched
 ```
 
-The host limits are set when adding the host: `--max-sandboxes <n>` (0 to 10000), `--cpus <n>`
-(more than 0, up to 1024) and `--memory <size>` (for example `16g`). They cap all sandboxes on that
-host together, on top of the profile limits of the agent. For example:
+### Limiting a host
+
+The host limits are `--max-sandboxes <n>` (0 to 10000), `--cpus <n>` (more than 0, up to 1024) and
+`--memory <size>` (for example `16g`). They cap all sandboxes on that host together, on top of the
+profile limits of the agent. Set them when adding the host, or change them later (also for the host
+`local`, which is this machine):
 
 ```sh
 abox host add lab1 --hostname lab1.example.org --user abox-sandbox --zone lab \
   --backend podman --max-sandboxes 4 --cpus 8 --memory 16g
+
+abox host set lab1 --max-sandboxes 3          # at most 3 containers on lab1; other limits stay
+abox host set lab1 --cpus none --memory 12g   # "none" removes a limit
+abox host set local --max-sandboxes 5         # limit this computer, too
 ```
+
+"At most 3 containers" is `--max-sandboxes 3`. In the app the same fields are in the "Limits"
+section of the host dialog (Hosts view, "Edit"); for `local` there is a "Limits" button on its row.
+Leaving a field empty means no limit. Existing sandboxes are not touched: a lower limit only
+refuses new creates until enough room is free. The limits of `local` are kept in `hosts.yaml` like
+those of any other host (entry `local`).
 
 `abox host rm` forgets the profile, closes its engine tunnel and also ends a live ssh master
 connection (`ssh -O exit`, see [host keys](#host-keys)), so a removed host is not reachable through
@@ -91,6 +104,59 @@ limit); not counted are expired, removed and failed ones and those the backend n
 The check is repeated inside the registry transaction that claims the new sandbox, so parallel
 creates (several terminals, the GUI and an agent at once) cannot overshoot the budget. Reservations
 are the configured limits, not live usage.
+
+### Capacity and utilisation
+
+To judge whether a host has room, abox shows what the machine is, what it uses and what is
+reserved (`abox host test <id>`, `abox host ls --usage`, `abox host ls --json`, and the Hosts view
+of the app):
+
+- **Size of the machine**: cpu count and memory as reported by the container engine (`NCPU`,
+  `MemTotal`); if the engine does not say, from `/proc` on the host; for this computer from the
+  operating system. If none of these is known, it says "unknown".
+- **In use now** (the whole machine, not only abox): the cpu share between two readings of
+  `/proc/stat` about half a second apart, memory used (`MemTotal` minus `MemAvailable`) and the load
+  average. Linux hosts only; on others the live values are unknown.
+- **What abox reserves**: the sum of the cpu and memory limits of the sandboxes on the host (and,
+  from a short sample, their actual use). A reservation is a ceiling for a sandbox, **not** its use:
+  most sandboxes use far less than they reserve.
+- **Limits**: the configured host limits and how much of each is reserved.
+
+Unknown values are never guessed or filled in; they are shown as unknown. Readings are cached for a
+few seconds per host (reservations are always current).
+
+On a remote host the live values come from one fixed read-only command over the same hardened ssh
+connection as everything else (`sh -c` with `uname`, `head` of `/proc/stat`, `cat /proc/loadavg`,
+`grep` of `MemTotal`/`MemAvailable` in `/proc/meminfo` and the processor count in
+`/proc/cpuinfo`). Nothing is installed on the host, no daemon runs there, and only these numbers
+(no process names, file names or other content) are read and kept in memory. The command is the
+same for every host and takes no input. A host whose key is not trusted yet is not contacted
+(`abox host trust` first), and while the ssh master connection is alive the check of the host key is
+the one of that connection (see [host keys](#host-keys)). The remote read is written to the audit
+log (`host.capacity`) at most once per 10 minutes per host; reading this computer is not audited.
+A host without a reachable engine and without backends listed in its profile (an ssh-only profile)
+shows its capacity as unknown.
+
+#### Estimate when creating
+
+`abox create` (on a terminal, and in the app's New sandbox dialog on the Options step) estimates how
+the new sandbox fits, for example "fits ~3x on lab1 (limited by the sandbox limit of the host); with
+it ~80% CPU and ~95% RAM reserved". The number is the smallest of:
+
+- what the configured host limits still allow (sandboxes, cpus, memory) and the sandboxes your
+  policy profile permits;
+- how many more sandboxes of this size can be reserved on the machine (reservations against its
+  cpu count and memory);
+- how many fit into the memory that is free right now.
+
+The current cpu load does not lower the number (it changes every second), but it adds a warning when
+the machine is busy. Warnings (shown in amber) are, among others: memory over-committed (the memory
+limits of all sandboxes would exceed the machine), more than 90% of the memory reserved, not enough
+memory free right now. If the create would exceed a host or profile limit, it is shown as refused
+(red) and the app does not allow "Next" until the numbers are changed. It is a ceiling computed
+from limits and reservations, **not a prediction of performance**: a sandbox that reserves 2 cpus
+does not use 2 cpus, and a machine that "fits 3x" can still be slow when all three run builds.
+Agents cannot ask for the capacity or the estimate (human only).
 
 Only the engine backends make sense on a remote host in practice: of all backends, only
 `docker` and `podman` can work through an engine socket today (the VM backend does not support

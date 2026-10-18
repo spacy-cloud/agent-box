@@ -10,6 +10,21 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Host limits can be changed after the fact: `abox host set <id>` with `--max-sandboxes`, `--cpus`
+  and `--memory` (a value or `none`; also for `local`), and the host dialog of the app has a "Limits" section
+  (Max. sandboxes, CPUs in total, Memory in total; empty = no limit) plus a "Limits" button for this
+  computer. `abox host ls` shows the limits.
+- Host capacity and utilisation: `Abox.hostCapacity` (size of the machine from the engine or `/proc`, what
+  it uses right now, what abox's sandboxes reserve and use, configured limits; unknown values are never
+  guessed; human only). Remote hosts are read with one fixed read-only ssh command (only `/proc` numbers).
+  Shown by `abox host test`, `abox host ls --usage` / `--json` and as live CPU and RAM bars in the Hosts view
+  (amber above 80 %, red above 95 %).
+- Fit estimate when creating: `Abox.estimateFit` says how often a sandbox fits on the host (by the host
+  limits, the reservations against the machine and the memory free now), the resulting reserved share of CPU
+  and RAM, warnings (memory over-commit and others) and refusals by host or profile limits. `abox create`
+  prints it on stderr on a terminal (`estimate` with `--json`); the New sandbox dialog shows it on the
+  Options step and does not allow "Next" when a limit would refuse the sandbox. It is a ceiling, not a
+  performance prediction.
 - Built-in templates for more stacks: `flutter-dev` (Flutter 3.47 and Dart 3.13 with the Linux
   desktop build chain: analyze, test, format, web and Linux builds, the packages of a new app
   baked into the pub cache; no Android), `tauri-dev` (Rust, Node.js 24, pnpm and the Tauri 2

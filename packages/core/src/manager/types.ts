@@ -886,3 +886,140 @@ export interface WorkspaceEstimate {
   hard: WorkspaceEstimateLimits;
   durationMs: number;
 }
+
+// -- host capacity and fit estimate --------------------------------------------------------------
+
+/** A configured host limit and how much of it the sandboxes on the host reserve. */
+export interface HostLimitUse {
+  limit: number;
+  reserved: number;
+}
+
+/**
+ * What a host can run and how busy it is (`hostCapacity`). Human only. Every number that could not be
+ * measured is `null` / `available: false`: nothing is guessed. `reserved` is what the sandboxes were
+ * created with (their cpu and memory limits), not what they use; `live` is the whole machine (everything
+ * running there, abox or not); `abox.usage` is what abox's own running sandboxes use right now.
+ */
+export interface HostCapacity {
+  host: string;
+  /** When the measured parts (capacity, live, abox.usage) were taken (epoch ms); cached for a few seconds. */
+  ts: number;
+  /** Total cpus and memory of the machine the engine runs on. */
+  capacity: {
+    cpus: number | null;
+    memoryBytes: number | null;
+    /** `engine` = Docker/Podman `info`, `proc` = `/proc` of the host, `os` = this machine's `os` module. */
+    source: 'engine' | 'proc' | 'os' | 'unknown';
+  };
+  live: {
+    available: boolean;
+    /** Why `available` is false. */
+    reason?: string;
+    /** Share of all cpus that was busy during a short sample (0..100). */
+    cpuPercent: number | null;
+    load: { m1: number; m5: number; m15: number } | null;
+    memoryTotalBytes: number | null;
+    memoryAvailableBytes: number | null;
+    /** `MemTotal - MemAvailable`. */
+    memoryUsedBytes: number | null;
+    /** How the numbers were read: directly on this machine, or over ssh. */
+    source: 'local' | 'ssh' | null;
+  };
+  abox: {
+    /** Sandboxes that count against the host limits (being created, created, running, stopped). */
+    sandboxes: number;
+    running: number;
+    /** Sum of the cpu and memory limits those sandboxes were created with. */
+    reserved: { cpus: number; memoryBytes: number };
+    /** Summed live use of the running sandboxes that reported one; null when none did. */
+    usage: { cpuPercent: number; memoryBytes: number; sampled: number } | null;
+  };
+  /** The limits of the host profile (hosts.yaml `limits`) that are set. */
+  limits: {
+    sandboxes?: HostLimitUse;
+    cpus?: HostLimitUse;
+    memoryBytes?: HostLimitUse;
+  };
+}
+
+export interface EstimateFitInput {
+  /** Host to place the sandbox on (default `local`). */
+  hostId?: string;
+  template: string;
+  /** The resources the sandbox would get instead of the template's. */
+  overrides?: { cpus?: number; memory?: string | number };
+  /** Project folder / workspace a project template may live in (as for a create). */
+  projectDir?: string;
+  workspacePath?: string;
+}
+
+/** One ceiling on how many sandboxes of the planned size fit. */
+export interface FitBound {
+  /** `limit` = host limit of hosts.yaml, `profile` = the policy profile, `reservation` = reserved vs the machine, `live` = free right now. */
+  source: 'limit' | 'profile' | 'reservation' | 'live';
+  resource: 'sandboxes' | 'cpu' | 'memory';
+  /** Sandboxes of this size that fit under this ceiling, the planned one included (0 = it does not fit). */
+  count: number;
+  /**
+   * Shown but not counted in `fits` / `limitedBy`: how busy the cpus are right now says little about
+   * whether a sandbox fits (cpus are shared in time), so it only raises a warning.
+   */
+  advisory?: boolean;
+}
+
+export interface FitBlock {
+  kind: 'host_limit' | 'profile_limit';
+  field: 'sandboxes' | 'cpus' | 'memory';
+  reason: string;
+  hint?: string;
+}
+
+export type FitWarningCode =
+  | 'memory_overcommit'
+  | 'cpu_overcommit'
+  | 'memory_high'
+  | 'memory_not_free'
+  | 'cpu_busy'
+  | 'capacity_unknown';
+
+export interface FitWarning {
+  code: FitWarningCode;
+  message: string;
+}
+
+/**
+ * Answer to "does this sandbox fit on that host, and how often?" (`estimateFit`). Human only, read-only.
+ *
+ * It is a ceiling derived from limits and reservations, NOT a performance prediction: a sandbox that
+ * "fits" can still be slow when the host is busy, and cpu / memory limits that are reserved are not use.
+ */
+export interface FitEstimate {
+  host: string;
+  ts: number;
+  request: { template: string; cpus: number; memoryBytes: number };
+  /**
+   * Sandboxes of this size that fit, the planned one included: the smallest of all ceilings in `bounds`.
+   * 0 = it does not fit; null = nothing is known that bounds it (no limits, capacity unknown).
+   */
+  fits: number | null;
+  /** The ceiling that is reached first. */
+  limitedBy: FitBound | null;
+  bounds: FitBound[];
+  /** What the host looks like once the planned sandbox is there. Percent values are whole numbers; null = unknown. */
+  projection: {
+    /** Reserved (limits of all sandboxes incl. this one) against the machine's cpus and memory. */
+    reservedPercent: { cpu: number | null; memory: number | null };
+    /** The same against the host limits of hosts.yaml, for the limits that are set. */
+    limitPercent: { sandboxes?: number; cpu?: number; memory?: number };
+    /** What the whole machine uses right now (live, before the planned sandbox). */
+    usedPercent: { cpu: number | null; memory: number | null };
+  };
+  /** Host or profile limits the create would exceed: it is refused (`policy_denied`). */
+  blocked: FitBlock[];
+  warnings: FitWarning[];
+  /** `error` = refused, `warn` = allowed but over-committed / nearly full, `info` otherwise. */
+  tone: 'info' | 'warn' | 'error';
+  /** The host numbers this estimate is based on. */
+  capacity: HostCapacity;
+}

@@ -109,7 +109,7 @@ epoch):
 
 | Command             | `data`                                                                                                                                                                                                                                                        |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create`            | `{status, sandbox, idempotent, warnings, durationMs}`; `sandbox` is the object below                                                                                                                                                                          |
+| `create`            | `{status, sandbox, idempotent, warnings, durationMs, estimate?}`; `sandbox` is the object below; `estimate` is the fit on the host (see `abox create`)                                                                                                        |
 | `ls`                | `{sandboxes: [...], orphans: [...], unreachableHosts: [...]}`, plus `hostProblems: {host: reason}` when a host is listed as unreachable                                                                                                                       |
 | `inspect`           | the sandbox object plus `processes`, `pendingApprovals` and `effective` (`policy`: what was granted, `provider`: what the backend reports)                                                                                                                    |
 | `start`, `stop`     | `{results: [{id, sandbox}]}`                                                                                                                                                                                                                                  |
@@ -319,6 +319,13 @@ remains, and the progress output says how many entries were left out); `--exclud
 `--gitignore` / `--no-gitignore` with another mode than `copy`/`sync` is refused. See
 [templates](templates.md#gitignore) for the rules and
 [quickstart](quickstart.md#what-copy-and-sync-copy-and-how-big-it-may-be).
+
+On a terminal (and with `--json`) `abox create` first estimates how the sandbox fits on the host:
+`Fits ~3x on home-server (limited by a configured limit). With it: ~80% CPU and ~95% RAM reserved; in use now: 35% CPU, 60% RAM.`
+It goes to stderr, in yellow with a warning (for example over-committed memory) and in red when the host or
+profile limits would refuse the create. `--json` has the same in `data.estimate`. The estimate is a ceiling
+from the limits and reservations, not a performance prediction; reserved is not used. If it cannot be
+computed in a few seconds, the create goes ahead without it. See [hosts](hosts-ssh.md#capacity-and-utilisation).
 
 ### `abox ls`
 
@@ -806,7 +813,11 @@ Hosts where sandboxes can run (human only)
 
 `abox host ls|list [options]`
 
-List host profiles
+List host profiles with their limits (--json also has capacity and utilisation of every host)
+
+| Option    | Meaning                                                               |
+| --------- | --------------------------------------------------------------------- |
+| `--usage` | show the utilisation of each host (reads it; ssh hosts take a moment) |
 
 #### `abox host add`
 
@@ -838,6 +849,24 @@ Add an SSH host profile (metadata only; keys stay with ssh-agent / your key file
 | `--cpus <n>`                 | limit: CPUs for all sandboxes on this host together (up to 1024)                                                     |
 | `--memory <size>`            | limit: memory for all sandboxes on this host together, e.g. 16g                                                      |
 
+#### `abox host set`
+
+`abox host set [options] <id>`
+
+Change the limits of a host profile ("none" removes one); the sandboxes already there are not touched
+
+| Argument | Meaning                                                                  |
+| -------- | ------------------------------------------------------------------------ |
+| `id`     | host id ("local" is this machine; its limits are kept in hosts.yaml too) |
+
+| Option                      | Meaning                                                          |
+| --------------------------- | ---------------------------------------------------------------- |
+| `--max-sandboxes <n\|none>` | limit: sandboxes on this host in total (0..10000)                |
+| `--cpus <n\|none>`          | limit: CPUs for all sandboxes on this host together (up to 1024) |
+| `--memory <size\|none>`     | limit: memory for all sandboxes on this host together, e.g. 16g  |
+
+Limits that are not mentioned stay as they are.
+
 #### `abox host rm`
 
 `abox host rm|remove [options] <id>`
@@ -852,7 +881,9 @@ Remove a host profile (its sandboxes are not touched)
 
 `abox host test [options] [id]`
 
-Check reachability, host key, login and available backends
+Check reachability, host key, login and available backends. For a reachable host it also shows the
+size of the machine, what it uses right now, what abox's sandboxes reserve and the configured limits
+(`--json`: `capacity`). Only /proc numbers are read; unknown values are shown as unknown.
 
 | Argument | Meaning                   |
 | -------- | ------------------------- |

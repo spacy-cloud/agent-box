@@ -21,6 +21,7 @@ import {
   estimateBlocksCreate,
   useWorkspaceEstimate,
 } from '../components/WorkspaceEstimate';
+import { FitNote, fitBlocksCreate, useFitEstimate } from '../components/FitEstimate';
 import { NETWORK_MODES, WORKSPACE_MODES } from '../../shared/constants';
 import { describeBase } from '../../shared/image-ref';
 import type { IpcInput } from '../../shared/ipc';
@@ -189,6 +190,16 @@ export function NewSandboxDialog(props: {
     exclude: splitList(form.exclude ?? ''),
     gitignore: form.gitignore ?? templateGitignore,
   });
+  // how often the sandbox fits on the chosen host and what the host looks like with it (read-only, debounced)
+  const fit = useFitEstimate({
+    enabled: step === 'options',
+    host: form.host ?? '',
+    template: form.template,
+    cpus: form.cpus,
+    memory: form.memory,
+    projectDir,
+    workspacePath,
+  });
   const baseImage =
     step === 'confirm' &&
     confirmation?.items.some((it) => it.kind === 'image_registry') &&
@@ -290,7 +301,7 @@ export function NewSandboxDialog(props: {
     step === 'template'
       ? Boolean(chosen && chosen.allowed && chosen.backendAvailable)
       : step === 'options'
-        ? validOptions(form) && !estimateBlocksCreate(estimate)
+        ? validOptions(form) && !estimateBlocksCreate(estimate) && !fitBlocksCreate(fit)
         : true;
 
   const footer = (
@@ -612,6 +623,7 @@ export function NewSandboxDialog(props: {
                 )}
               </Field>
             </div>
+            <FitNote state={fit} host={form.host ?? ''} />
             {form.networkMode === 'allowlist' ||
             (form.networkMode === '' && chosen?.networkMode === 'allowlist') ? (
               <>

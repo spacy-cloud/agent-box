@@ -154,7 +154,7 @@ const hostFields = {
         .string()
         .regex(/^\d{1,6}(\.\d+)?[kmgt]?b?$/i)
         .optional(),
-      sandboxes: z.number().int().min(1).max(10_000).optional(),
+      sandboxes: z.number().int().min(0).max(10_000).optional(),
     })
     .strict(),
   portForwards: z.array(portForward).max(30),
@@ -247,6 +247,27 @@ export const IPC = {
       exclude: z.array(z.string().min(1).max(512)).max(256).optional(),
       gitignore: z.boolean().optional(),
       progressKey: progressKey.optional(),
+    })
+    .strict(),
+  /**
+   * Capacity and live utilisation of one host (size of the machine, what it uses now, what abox reserves, the host limits);
+   * read-only, cached for a few seconds by the manager. One host per call so a slow ssh host does not hold up the others.
+   */
+  'capacity:host': z.object({ id: hostId }).strict(),
+  /**
+   * How often a planned sandbox fits on a host and what the host looks like with it (limits, reservations, free now);
+   * read-only. `overrides` are the cpu / memory fields of the New-sandbox form.
+   */
+  'capacity:estimate': z
+    .object({
+      host: hostId.optional(),
+      template: shortText,
+      overrides: z
+        .object({ cpus: z.number().positive().max(1024).optional(), memory: sizeText.optional() })
+        .strict()
+        .optional(),
+      projectDir: projectDir.optional(),
+      workspacePath: absPath.optional(),
     })
     .strict(),
   /** Cancels a running `sandboxes:create` or `workspace:estimate` call by its `progressKey`. */

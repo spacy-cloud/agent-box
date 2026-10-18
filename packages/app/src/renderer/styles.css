@@ -18,6 +18,7 @@
   --danger-fg: #8a1c12;
   --strong-bg: #b42318;
   --strong-fg: #ffffff;
+  --meter-warn: #c77700;
   --info-bg: #dbe9f9;
   --info-fg: #0a3f78;
   --neutral-bg: #e3e8ed;
@@ -47,6 +48,7 @@
     --danger-fg: #ffb4ab;
     --strong-bg: #d92d20;
     --strong-fg: #ffffff;
+    --meter-warn: #f0a030;
     --info-bg: #17324f;
     --info-fg: #a9d2ff;
     --neutral-bg: #2d3640;
@@ -1341,4 +1343,76 @@ dd > .scroll-text {
   flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 0.4rem;
+}
+
+/* ---- hosts: live utilisation of the machine ---------------------------------------------------------------------- */
+.live {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 11rem;
+  margin-bottom: 0.5rem;
+}
+/* label and "used / total" on one line, the thin bar below */
+.live-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  column-gap: 0.6rem;
+  row-gap: 0.15rem;
+}
+.live-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.live-text {
+  font-size: 0.82rem;
+  text-align: right;
+  white-space: nowrap;
+}
+.live-bar {
+  grid-column: 1 / -1;
+  display: block;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--neutral-bg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.live-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.live-fill-warn {
+  background: var(--meter-warn);
+}
+.live-fill-danger {
+  background: var(--strong-bg);
+}
+.live-tone {
+  font-weight: 700;
+}
+.live-tone-warn {
+  color: var(--warn-fg);
+}
+.live-tone-danger {
+  color: var(--danger-fg);
+}
+
+/* ---- host dialog: limits; new sandbox: fit estimate ------------------------------------------------------------- */
+.limits-section {
+  margin: 1rem 0 0;
+}
+.limits-section legend {
+  font-weight: 700;
+}
+.fit-note {
+  margin-top: 0.6rem;
+}
+.fit-note .banner {
+  margin: 0;
+}
+.fit-note .banner ul {
+  margin: 0.3rem 0 0;
 }

@@ -94,6 +94,8 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       createSandbox: rec('createSandbox', { status: 'created' }),
       extendTtl: rec('extendTtl'),
       sandboxStats: rec('sandboxStats', { usage: {} }),
+      hostCapacity: rec('hostCapacity', { host: 'srv' }),
+      estimateFit: rec('estimateFit', { host: 'srv', fits: 3 }),
       approve: rec('approve'),
       deny: rec('deny'),
       queryAudit: rec('queryAudit', []),
@@ -238,6 +240,33 @@ describe('manager handlers are thin: always the human caller, confirmation only 
     });
     expect(calls).toEqual([
       { fn: 'sandboxStats', args: [{ contextId: 'human' }, ['local/a', 'local/b']] },
+    ]);
+  });
+
+  it('capacity and the fit estimate are asked as the human, with only the fields the view sent', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await expect(h['capacity:host']({ id: 'srv' }, {})).resolves.toEqual({ host: 'srv' });
+    await h['capacity:estimate'](
+      {
+        host: 'srv',
+        template: 'node-dev',
+        overrides: { cpus: 2, memory: '4g' },
+        projectDir: undefined,
+      } as never,
+      {},
+    );
+    await h['capacity:estimate']({ template: 'node-dev' }, {});
+    expect(calls).toEqual([
+      { fn: 'hostCapacity', args: [{ contextId: 'human' }, 'srv'] },
+      {
+        fn: 'estimateFit',
+        args: [
+          { contextId: 'human' },
+          { hostId: 'srv', template: 'node-dev', overrides: { cpus: 2, memory: '4g' } },
+        ],
+      },
+      { fn: 'estimateFit', args: [{ contextId: 'human' }, { template: 'node-dev' }] },
     ]);
   });
 

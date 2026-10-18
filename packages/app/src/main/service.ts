@@ -48,6 +48,8 @@ export type ManagerChannel =
   | 'sandboxes:create'
   | 'workspace:estimate'
   | 'jobs:cancel'
+  | 'capacity:host'
+  | 'capacity:estimate'
   | 'templates:list'
   | 'templates:show'
   | 'templates:review'
@@ -170,6 +172,18 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         }),
       );
     },
+    'capacity:host': (i) => abox.hostCapacity(HUMAN, i.id),
+    'capacity:estimate': (i) =>
+      abox.estimateFit(
+        HUMAN,
+        clean({
+          hostId: i.host,
+          template: i.template,
+          overrides: i.overrides ? clean(i.overrides) : undefined,
+          projectDir: i.projectDir,
+          workspacePath: i.workspacePath,
+        }),
+      ),
     'jobs:cancel': async (i) => {
       const ctl = jobs.get(i.key);
       ctl?.abort();

@@ -17,6 +17,8 @@ import type {
   DoctorReport,
   DoctorSeverity,
   ExportSandboxResult,
+  FitEstimate,
+  HostCapacity,
   InspectResult,
   PolicyRevisionDetail,
   PolicyRevisionSummary,
@@ -56,6 +58,8 @@ export type {
   DoctorReport,
   DoctorSeverity,
   ExportSandboxResult,
+  FitEstimate,
+  HostCapacity,
   InspectResult,
   PolicyValidation,
   PolicyView,
@@ -330,6 +334,8 @@ export interface Outputs {
   'sandboxes:create': CreateResult;
   'workspace:estimate': WorkspaceEstimate;
   'jobs:cancel': { cancelled: boolean };
+  'capacity:host': HostCapacity;
+  'capacity:estimate': FitEstimate;
   'templates:list': TemplateList;
   'templates:show': TemplateDetails;
   'templates:review': TemplateReview;

@@ -161,6 +161,13 @@ export interface SandboxProvider {
    */
   stats?(id: SandboxId): Promise<ResourceUsage>;
 
+  /**
+   * Total cpus and memory of the machine the engine runs on (Docker / Podman `info`: `NCPU`, `MemTotal`),
+   * which is the capacity sandboxes there share. `undefined` when the engine does not say. Optional;
+   * absent = the manager asks the host itself (`/proc`) or reports the capacity as unknown.
+   */
+  hostResources?(): Promise<{ cpus: number; memoryBytes: number } | undefined>;
+
   /** Egress decisions recorded by the proxy since `sinceTs` (allowlist mode only). */
   networkEvents?(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]>;
   /** Combined stdout/stderr of the sandbox main process, if any. */
