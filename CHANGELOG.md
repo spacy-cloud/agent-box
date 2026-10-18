@@ -124,6 +124,7 @@ export` leaves out ignored paths the sandbox created (`stats.ignored`).
 
 ### Changed
 
+- GUI: the Options step of the New sandbox dialog follows the design mockup: Name and Host on top, a "Workspace" and a "Resources and network" section with aligned rows (mode, folder and Choose …; CPUs, memory, lifetime, network), the profile limits as a short hint under the section title, the template's values as placeholders of the empty resource fields, single-line help texts and a dialog width of at most 720 px.
 - `abox doctor` and the GUI diagnostics tell apart four severities: `ok`, `info`, `warning` and
   failed. A backend that works is `ok` even with advisory notes (rootful engine, no disk quota,
   `process`/venv mode without isolation, VM `open` network mode), which are listed as `info` notes

@@ -13,7 +13,7 @@ import {
   Badge,
   Safe,
 } from '../components/ui';
-import { safeInline, safeText } from '../../shared/format';
+import { formatDurationSpec, formatSizeSpec, safeInline, safeText } from '../../shared/format';
 import { ImageUseBlock, TemplateReviewPanel } from '../components/review';
 import { ProjectFolderPicker } from '../components/ProjectFolder';
 import {
@@ -171,6 +171,18 @@ export function NewSandboxDialog(props: {
   const templateGitignore =
     (details.data?.template.workspace as { gitignore?: boolean } | undefined)?.gitignore ?? true;
   const copiesFolder = effectiveMode === 'copy' || effectiveMode === 'sync';
+  // empty resource fields fall back to the template: show what it resolves to
+  const resolved = details.data?.template as
+    | {
+        resources?: { cpus?: number; memoryBytes?: number; ttlMs?: number };
+        network?: { mode?: string; allow?: string[] };
+      }
+    | undefined;
+  const templateCpus =
+    resolved?.resources?.cpus !== undefined ? String(resolved.resources.cpus) : '';
+  const templateMemory = formatSizeSpec(resolved?.resources?.memoryBytes ?? 0);
+  const templateTtl = formatDurationSpec(resolved?.resources?.ttlMs ?? 0);
+  const templateNetwork = templateNetworkLabel();
   const estimate = useWorkspaceEstimate({
     path: workspacePath,
     mode: step === 'options' || step === 'summary' ? effectiveMode : '',
@@ -206,6 +218,17 @@ export function NewSandboxDialog(props: {
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [progress]);
+
+  /** First option of the network select: the template default with what it resolves to. */
+  function templateNetworkLabel(): string {
+    const mode = resolved?.network?.mode;
+    if (!mode) return t('new.templateDefault');
+    const allow = resolved?.network?.allow ?? [];
+    const shown = allow.slice(0, 3).join(', ');
+    const more = allow.length > 3 ? `, +${allow.length - 3}` : '';
+    const detail = mode === 'allowlist' && allow.length > 0 ? `: ${shown}${more}` : '';
+    return `${t('new.templateDefault')} (${t(`network.${mode}`)}${detail})`;
+  }
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -407,206 +430,227 @@ export function NewSandboxDialog(props: {
       ) : null}
 
       {step === 'options' ? (
-        <div className="form-grid">
-          {profile ? (
-            <p className="muted wide-col">
-              {t('new.policyHint', {
-                profile: profile.name,
-                cpus: profile.limits.cpus,
-                memory: profile.limits.memory,
-                ttl: profile.limits.ttl,
-              })}
-            </p>
-          ) : null}
-          <Field label={t('new.name')} hint={t('new.nameHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={form.name}
-                onChange={(e) => set('name', e.target.value)}
-                pattern="[A-Za-z0-9][A-Za-z0-9._-]*"
-              />
-            )}
-          </Field>
-          <Field label={t('new.host')} hint={t('new.hostHint')}>
-            {(id) => (
-              <select id={id} value={form.host ?? ''} onChange={(e) => set('host', e.target.value)}>
-                <option value="">{t('hosts.thisComputer')}</option>
-                {(hosts.data ?? [])
-                  .filter(
-                    (r) =>
-                      r.profile.kind === 'ssh' &&
-                      (r.profile.backends.length > 0 || r.profile.id === form.host),
-                  )
-                  .map((r) => (
-                    <option key={r.profile.id} value={r.profile.id}>
-                      {r.profile.id} ({t(`hosts.zone.${r.profile.zone}`)})
-                    </option>
-                  ))}
-                {form.host && !(hosts.data ?? []).some((r) => r.profile.id === form.host) ? (
-                  <option value={form.host}>{form.host}</option>
-                ) : null}
-              </select>
-            )}
-          </Field>
-          <div className="wide-col workspace-row">
-            <Field label={t('new.workspaceMode')}>
-              {(id) => (
-                <select
-                  id={id}
-                  value={form.workspaceMode}
-                  onChange={(e) => set('workspaceMode', e.target.value)}
-                >
-                  <option value="">{t('new.templateDefault')}</option>
-                  {(profile?.workspace.modes ?? WORKSPACE_MODES).map((m) => (
-                    <option key={m} value={m}>
-                      {t(`workspace.${m}`)}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </Field>
-            {form.workspaceMode !== 'empty' ? (
-              <Field label={t('new.workspacePath')} hint={t('new.workspacePathHint')}>
-                {(id) => (
-                  <div className="with-button">
-                    <input
-                      id={id}
-                      type="text"
-                      value={form.workspacePath}
-                      onChange={(e) => set('workspacePath', e.target.value)}
-                    />
-                    <button type="button" onClick={() => void pickDir()}>
-                      {t('new.pickDirectory')}
-                    </button>
-                  </div>
-                )}
-              </Field>
-            ) : null}
-          </div>
-          {form.workspaceMode !== 'empty' && copiesFolder ? (
-            <div className="field wide-col">
-              <label className="inline">
-                <input
-                  type="checkbox"
-                  checked={form.gitignore ?? templateGitignore}
-                  onChange={(e) => set('gitignore', e.target.checked)}
-                />{' '}
-                {t('new.gitignore')}
-              </label>
-              <small className="muted">{t('new.gitignoreHint')}</small>
-            </div>
-          ) : null}
-          {form.workspaceMode !== 'empty' &&
-          !['mount', 'clone', 'worktree'].includes(effectiveMode) ? (
-            <Field label={t('new.exclude')} hint={t('new.excludeHint')}>
+        <div className="options">
+          <div className="opt-row opt-row-2">
+            <Field label={t('new.name')} hint={t('new.nameHint')}>
               {(id) => (
                 <input
                   id={id}
                   type="text"
-                  value={form.exclude ?? ''}
-                  placeholder={t('new.excludePlaceholder')}
-                  onChange={(e) => set('exclude', e.target.value)}
+                  value={form.name}
+                  onChange={(e) => set('name', e.target.value)}
+                  pattern="[A-Za-z0-9][A-Za-z0-9._-]*"
                 />
               )}
             </Field>
-          ) : null}
-          {form.workspaceMode !== 'empty' ? (
-            <div className="wide-col">
+            <Field label={t('new.host')} hint={t('new.hostHint')}>
+              {(id) => (
+                <select
+                  id={id}
+                  value={form.host ?? ''}
+                  title={t('new.hostDetails')}
+                  onChange={(e) => set('host', e.target.value)}
+                >
+                  <option value="">{t('hosts.thisComputer')}</option>
+                  {(hosts.data ?? [])
+                    .filter(
+                      (r) =>
+                        r.profile.kind === 'ssh' &&
+                        (r.profile.backends.length > 0 || r.profile.id === form.host),
+                    )
+                    .map((r) => (
+                      <option key={r.profile.id} value={r.profile.id}>
+                        {r.profile.id} ({t(`hosts.zone.${r.profile.zone}`)})
+                      </option>
+                    ))}
+                  {form.host && !(hosts.data ?? []).some((r) => r.profile.id === form.host) ? (
+                    <option value={form.host}>{form.host}</option>
+                  ) : null}
+                </select>
+              )}
+            </Field>
+          </div>
+
+          <section className="opt-section" aria-labelledby="opt-workspace">
+            <h3 id="opt-workspace">{t('new.section.workspace')}</h3>
+            <div
+              className={`opt-row opt-row-workspace${form.workspaceMode === 'empty' ? ' no-path' : ''}`}
+            >
+              <Field label={t('new.workspaceMode')}>
+                {(id) => (
+                  <select
+                    id={id}
+                    value={form.workspaceMode}
+                    onChange={(e) => set('workspaceMode', e.target.value)}
+                  >
+                    <option value="">{t('new.templateDefault')}</option>
+                    {(profile?.workspace.modes ?? WORKSPACE_MODES).map((m) => (
+                      <option key={m} value={m}>
+                        {t(`workspace.${m}`)}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Field>
+              {form.workspaceMode !== 'empty' ? (
+                <Field label={t('new.workspacePath')}>
+                  {(id) => (
+                    <div className="with-button">
+                      <input
+                        id={id}
+                        type="text"
+                        value={form.workspacePath}
+                        placeholder={t('new.workspacePathHint')}
+                        onChange={(e) => set('workspacePath', e.target.value)}
+                      />
+                      <button type="button" onClick={() => void pickDir()}>
+                        {t('new.pickDirectory')}
+                      </button>
+                    </div>
+                  )}
+                </Field>
+              ) : null}
+            </div>
+            {form.workspaceMode !== 'empty' && copiesFolder ? (
+              <div className="field opt-check">
+                <label className="inline">
+                  <input
+                    type="checkbox"
+                    checked={form.gitignore ?? templateGitignore}
+                    onChange={(e) => set('gitignore', e.target.checked)}
+                  />{' '}
+                  {t('new.gitignore')}
+                </label>
+                <small className="muted">{t('new.gitignoreHint')}</small>
+              </div>
+            ) : null}
+            {form.workspaceMode !== 'empty' &&
+            !['mount', 'clone', 'worktree'].includes(effectiveMode) ? (
+              <Field label={t('new.exclude')} hint={t('new.excludeHint')}>
+                {(id) => (
+                  <input
+                    id={id}
+                    type="text"
+                    value={form.exclude ?? ''}
+                    placeholder={t('new.excludePlaceholder')}
+                    onChange={(e) => set('exclude', e.target.value)}
+                  />
+                )}
+              </Field>
+            ) : null}
+            {form.workspaceMode !== 'empty' ? (
               <WorkspaceEstimateNote
                 state={estimate}
                 modes={profile?.workspace.modes ?? WORKSPACE_MODES}
                 onUseMode={(m) => set('workspaceMode', m)}
               />
-            </div>
-          ) : null}
-          <Field label={t('new.cpus')} hint={t('new.templateDefaultHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="number"
-                min="0.5"
-                step="0.5"
-                value={form.cpus}
-                onChange={(e) => set('cpus', e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label={t('new.memory')} hint="512m, 4g">
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={form.memory}
-                onChange={(e) => set('memory', e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label={t('new.ttl')} hint="30m, 2h, 1d">
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={form.ttl}
-                onChange={(e) => set('ttl', e.target.value)}
-              />
-            )}
-          </Field>
-          <Field label={t('new.networkMode')}>
-            {(id) => (
-              <select
-                id={id}
-                value={form.networkMode}
-                onChange={(e) => set('networkMode', e.target.value)}
-              >
-                <option value="">{t('new.templateDefault')}</option>
-                {(profile?.network.modes ?? NETWORK_MODES).map((m) => (
-                  <option key={m} value={m}>
-                    {t(`network.${m}`)}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-          {form.networkMode === 'allowlist' ||
-          (form.networkMode === '' && chosen?.networkMode === 'allowlist') ? (
-            <>
-              <Field label={t('new.allow')} hint={t('new.allowHint')}>
+            ) : null}
+          </section>
+
+          <section className="opt-section" aria-labelledby="opt-resources">
+            <h3 id="opt-resources">{t('new.section.resources')}</h3>
+            {profile ? (
+              <p className="muted small opt-hint">
+                {t('new.policyHint', {
+                  profile: profile.name,
+                  cpus: profile.limits.cpus,
+                  memory: profile.limits.memory,
+                  ttl: profile.limits.ttl,
+                })}
+              </p>
+            ) : null}
+            <div className="opt-row opt-row-resources">
+              <Field label={t('new.cpus')}>
+                {(id) => (
+                  <input
+                    id={id}
+                    type="number"
+                    min="0.5"
+                    step="0.5"
+                    value={form.cpus}
+                    placeholder={templateCpus}
+                    onChange={(e) => set('cpus', e.target.value)}
+                  />
+                )}
+              </Field>
+              <Field label={t('new.memory')} hint={t('new.memoryHint')}>
                 {(id) => (
                   <input
                     id={id}
                     type="text"
-                    value={form.allow}
-                    onChange={(e) => set('allow', e.target.value)}
+                    value={form.memory}
+                    placeholder={templateMemory}
+                    onChange={(e) => set('memory', e.target.value)}
                   />
                 )}
               </Field>
-              <fieldset className="wide-col">
-                <legend>{t('new.presets')}</legend>
-                {(profile?.network.allow_presets ?? []).map((p) => (
-                  <label key={p} className="inline">
+              <Field label={t('new.ttl')} hint={t('new.ttlHint')}>
+                {(id) => (
+                  <input
+                    id={id}
+                    type="text"
+                    value={form.ttl}
+                    placeholder={templateTtl}
+                    onChange={(e) => set('ttl', e.target.value)}
+                  />
+                )}
+              </Field>
+              <Field label={t('new.networkMode')}>
+                {(id) => (
+                  <select
+                    id={id}
+                    value={form.networkMode}
+                    onChange={(e) => set('networkMode', e.target.value)}
+                  >
+                    <option value="">{templateNetwork}</option>
+                    {(profile?.network.modes ?? NETWORK_MODES).map((m) => (
+                      <option key={m} value={m}>
+                        {t(`network.${m}`)}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Field>
+            </div>
+            {form.networkMode === 'allowlist' ||
+            (form.networkMode === '' && chosen?.networkMode === 'allowlist') ? (
+              <>
+                <Field label={t('new.allow')} hint={t('new.allowHint')}>
+                  {(id) => (
                     <input
-                      type="checkbox"
-                      checked={form.presets.includes(p)}
-                      onChange={(e) =>
-                        set(
-                          'presets',
-                          e.target.checked
-                            ? [...form.presets, p]
-                            : form.presets.filter((x) => x !== p),
-                        )
-                      }
-                    />{' '}
-                    {p}
-                  </label>
-                ))}
-              </fieldset>
-            </>
-          ) : null}
-          {form.networkMode === 'open' ? (
-            <Banner tone="danger">{t('new.openNetworkWarning')}</Banner>
-          ) : null}
+                      id={id}
+                      type="text"
+                      value={form.allow}
+                      onChange={(e) => set('allow', e.target.value)}
+                    />
+                  )}
+                </Field>
+                <fieldset>
+                  <legend>{t('new.presets')}</legend>
+                  {(profile?.network.allow_presets ?? []).map((p) => (
+                    <label key={p} className="inline">
+                      <input
+                        type="checkbox"
+                        checked={form.presets.includes(p)}
+                        onChange={(e) =>
+                          set(
+                            'presets',
+                            e.target.checked
+                              ? [...form.presets, p]
+                              : form.presets.filter((x) => x !== p),
+                          )
+                        }
+                      />{' '}
+                      {p}
+                    </label>
+                  ))}
+                </fieldset>
+              </>
+            ) : null}
+            {form.networkMode === 'open' ? (
+              <Banner tone="danger">{t('new.openNetworkWarning')}</Banner>
+            ) : null}
+          </section>
         </div>
       ) : null}
 

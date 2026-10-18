@@ -5,6 +5,8 @@ import {
   formatBytes,
   formatCpuPercent,
   formatDuration,
+  formatDurationSpec,
+  formatSizeSpec,
   formatMemoryUsage,
   remainingMs,
   shortId,
@@ -118,6 +120,19 @@ describe('format', () => {
     expect(formatBytes(1536)).toBe('1.5 KiB');
     expect(remainingMs(1000, 5000)).toBe(0);
     expect(shortId('local/ab12cd34')).toBe('ab12cd34');
+  });
+});
+
+describe('format: template syntax of the resource fields', () => {
+  it('writes bytes and durations the way the fields accept them', () => {
+    expect(formatSizeSpec(6 * 1024 ** 3)).toBe('6g');
+    expect(formatSizeSpec(512 * 1024 ** 2)).toBe('512m');
+    expect(formatSizeSpec(1536 * 1024 ** 2)).toBe('1536m');
+    expect(formatSizeSpec(0)).toBe('');
+    expect(formatDurationSpec(2 * 3_600_000)).toBe('2h');
+    expect(formatDurationSpec(90 * 60_000)).toBe('90m');
+    expect(formatDurationSpec(86_400_000)).toBe('1d');
+    expect(formatDurationSpec(Number.NaN)).toBe('');
   });
 });
 
