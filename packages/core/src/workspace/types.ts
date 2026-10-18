@@ -29,9 +29,15 @@ export interface PrepareWorkspaceInput {
   remote: boolean;
   /**
    * Exclude patterns for `copy` / `sync` (and `clone` is unaffected). Default: nothing is excluded.
-   * Syntax: see `compileExcludes` (gitignore-like, no negation).
+   * Syntax: see `compileExcludes` (gitignore-like, no negation). They apply on top of `gitignore`.
    */
   exclude?: string[];
+  /**
+   * `copy` / `sync` only (other modes ignore it): leave out what the `.gitignore` files of the
+   * source (and its `.git/info/exclude`) ignore, see gitignore.ts. Default `true`. Does not touch
+   * `.git` itself.
+   */
+  gitignore?: boolean;
   /** Short sandbox id used for branch names (`abox/<short>`). Default: derived from the basename of `sandboxDir`. */
   short?: string;
   /** Progress lines while scanning, copying and recording the baseline of a `copy` / `sync` workspace. */
@@ -41,6 +47,7 @@ export interface PrepareWorkspaceInput {
   /**
    * A complete pre-scan (`scanTree`) of `source` with the same excludes, taken a moment ago. Saves
    * the copy a second walk; only used for its totals (progress), the copy enforces its limits itself.
+   * Must have been taken with the same `gitignore` setting.
    */
   scan?: ScanResult;
 }
@@ -122,6 +129,13 @@ export interface WorkspaceRecord {
   /** Directory delivered to the sandbox with `copy` delivery. */
   staging?: string;
   exclude: string[];
+  /**
+   * `copy` / `sync`: whether `.gitignore` rules were applied to the copy, how many entries they left
+   * out, and the `.git/info/exclude` that was in force (the export applies the same rules, with the
+   * `.gitignore` files of the baseline, to what the sandbox created). Absent in older records and
+   * in other modes.
+   */
+  gitignore?: { enabled: boolean; ignored: number; infoExclude?: string };
   createdAt: number;
 }
 
@@ -195,6 +209,14 @@ export interface ExportStats {
   scannedBytes: number;
   /** Entries dropped by exclude patterns. */
   excluded: number;
+  /**
+   * Entries of the sandbox tree that `.gitignore` rules of the workspace ignore and that did not
+   * exist in the baseline (a `node_modules` that `npm install` created…): not exported. Only set
+   * when the workspace was copied with `gitignore` on.
+   */
+  ignored?: number;
+  /** The first of those paths (a directory stands for everything below it). */
+  ignoredPaths?: string[];
   /** Entries that could not be exported (special files, too large, refused names…). */
   skipped: Array<{ path: string; reason: string }>;
 }

@@ -56,6 +56,32 @@ async function rejects(p: Promise<unknown>): Promise<AboxError> {
   throw new Error('expected rejection');
 }
 
+describe('workspace.gitignore', () => {
+  it('is carried into the resolved template, inherited and overridden like the other workspace keys', async () => {
+    const off = await resolve(spec('workspace: { gitignore: false }\n'));
+    expect(off.workspace).toEqual({
+      mode: 'copy',
+      path: '/workspace',
+      access: 'rw',
+      gitignore: false,
+    });
+    const lookup = mapLookup({
+      parent: spec('workspace: { gitignore: false, mode: copy }\n', 'parent'),
+    });
+    const inherited = await resolve(spec('extends: parent\n', 'child'), lookup);
+    expect(inherited.workspace.gitignore).toBe(false);
+    const overridden = await resolve(
+      spec('extends: parent\nworkspace: { gitignore: true }\n', 'child'),
+      lookup,
+    );
+    expect(overridden.workspace.gitignore).toBe(true);
+  });
+
+  it('must be true or false', async () => {
+    await rejects(resolve(spec('workspace: { gitignore: "yes" }\n')));
+  });
+});
+
 describe('restrictive defaults', () => {
   it('network none, non-root, no sudo, ttl set, copy workspace', async () => {
     const t = await resolve(spec(''));
@@ -68,6 +94,8 @@ describe('restrictive defaults', () => {
     expect(t.resources.pids).toBe(512);
     expect(t.resources.diskBytes).toBeUndefined();
     expect(t.workspace).toEqual({ mode: 'copy', path: '/workspace', access: 'rw' });
+    // unset stays unset: the default "on" lives in the manager
+    expect(t.workspace).not.toHaveProperty('gitignore');
     expect(t.mounts).toEqual([]);
     expect(t.secrets).toEqual([]);
     expect(t.isolation).toBe('container');

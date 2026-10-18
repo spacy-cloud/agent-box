@@ -10,7 +10,13 @@ import {
 } from './flagged.js';
 import { checkGitMarker, scanSandboxGitDir } from './gitmarker.js';
 import { runGit } from './git.js';
-import { compileExcludes } from './glob.js';
+import {
+  compileGitignoreSet,
+  GITIGNORE_LIMITS,
+  GitignoreSession,
+  type PathIgnoreMatcher,
+} from './gitignore.js';
+import { compileExcludes, type ExcludeMatcher } from './glob.js';
 import {
   commitTree,
   createScratchRepo,
@@ -44,6 +50,12 @@ export const DEFAULT_EXPORT_EXCLUDE: readonly string[] = [
 
 /**
  * Export of a sandbox workspace back to the host.
+ *
+ * A workspace that was copied with `.gitignore` applied (`record.gitignore`) leaves out, on the
+ * sandbox side, what its ignore rules match and the baseline does not contain (a `node_modules`
+ * that `npm install` created, build output, `.env` files…). The rules are the `.gitignore` files of
+ * the baseline (host-owned, so the sandbox cannot widen them to hide changes) and the recorded
+ * `.git/info/exclude`. Paths the baseline has are always compared, as git never ignores tracked files.
  *
  * Nothing from the sandbox tree is ever executed or interpreted by git:
  * the tree is read by abox itself (symlink-safe, see safefs.ts), contents are hashed into
@@ -277,6 +289,16 @@ async function doExport(
     record.baseline.kind === 'git' ? await listTree(git, record.baseline.commit) : new Map();
   const gitlinks = [...baseEntries].filter(([, e]) => e.mode === '160000').map(([p]) => p);
 
+  const blobText = async (oid: string | undefined): Promise<string | undefined> => {
+    if (!oid || /^0+$/.test(oid)) return undefined;
+    const r = await runGit(['cat-file', 'blob', oid], {
+      gitDir: git,
+      allowFailure: true,
+      maxStdoutBytes: 2 * 1024 * 1024,
+    });
+    return r.code === 0 ? r.stdout : undefined;
+  };
+
   // 3. read the sandbox tree -----------------------------------------------------
   const excludePatterns = input.exclude ?? [...DEFAULT_EXPORT_EXCLUDE];
   const matcher = compileExcludes(excludePatterns);
@@ -296,8 +318,45 @@ async function doExport(
     return matcher(p, false);
   };
 
+  // .gitignore rules of the workspace, from the baseline (see the note above exportWorkspace)
+  let gitignored: PathIgnoreMatcher | undefined;
+  const baseDirs = new Set<string>();
+  let ignoredCount = 0;
+  const ignoredPaths: string[] = [];
+  if (record.gitignore?.enabled) {
+    const texts = new Map<string, string>();
+    for (const [p, e] of baseEntries) {
+      if (p !== '.gitignore' && !p.endsWith('/.gitignore')) continue;
+      if (e.mode !== '100644' && e.mode !== '100755') continue;
+      const text = await blobText(e.oid);
+      if (text === undefined || text.length > GITIGNORE_LIMITS.fileBytes) continue;
+      texts.set(p === '.gitignore' ? '' : p.slice(0, -'/.gitignore'.length), text);
+    }
+    gitignored = compileGitignoreSet(texts, {
+      ...(record.gitignore.infoExclude ? { infoExclude: record.gitignore.infoExclude } : {}),
+      session: new GitignoreSession(),
+    });
+    for (const p of baseEntries.keys()) {
+      for (let i = p.lastIndexOf('/'); i > 0; i = p.lastIndexOf('/', i - 1)) {
+        if (baseDirs.has(p.slice(0, i))) break;
+        baseDirs.add(p.slice(0, i));
+      }
+    }
+  }
+  const ignoredBy = gitignored;
+  const walkExclude: ExcludeMatcher = ignoredBy
+    ? (rel, isDir) => {
+        if (matcher(rel, isDir)) return true;
+        if (!ignoredBy(rel, isDir)) return false;
+        if (isDir ? baseDirs.has(rel) : baseEntries.has(rel)) return false;
+        ignoredCount++;
+        if (ignoredPaths.length < 20) ignoredPaths.push(isDir ? `${rel}/` : rel);
+        return true;
+      }
+    : matcher;
+
   const snap = await snapshotTree(treeRoot, git, fmt, {
-    exclude: matcher,
+    exclude: walkExclude,
     known: baseEntries,
     ...(input.limits ? { limits: input.limits } : {}),
     gitMode: 'skip',
@@ -378,16 +437,6 @@ async function doExport(
     );
   }
 
-  const blobText = async (oid: string | undefined): Promise<string | undefined> => {
-    if (!oid || /^0+$/.test(oid)) return undefined;
-    const r = await runGit(['cat-file', 'blob', oid], {
-      gitDir: git,
-      allowFailure: true,
-      maxStdoutBytes: 2 * 1024 * 1024,
-    });
-    return r.code === 0 ? r.stdout : undefined;
-  };
-
   const files: ExportedFile[] = [];
   let insertions = 0;
   let deletions = 0;
@@ -443,7 +492,8 @@ async function doExport(
     deletions,
     scannedEntries: snap.walk.entries,
     scannedBytes: snap.walk.bytes,
-    excluded: snap.walk.excluded,
+    excluded: snap.walk.excluded - ignoredCount,
+    ...(gitignored ? { ignored: ignoredCount, ignoredPaths } : {}),
     skipped,
   };
   const result: ExportResult = {
@@ -453,6 +503,11 @@ async function doExport(
     stats,
     warnings,
   };
+  if (ignoredCount > 0) {
+    warnings.push(
+      `${ignoredCount} path(s) of the sandbox are ignored by the workspace's .gitignore and were not exported (e.g. ${ignoredPaths.slice(0, 3).join(', ')})`,
+    );
+  }
   if (files.length === 0) warnings.push('no changes to export');
 
   // 7. format specific output ------------------------------------------------------

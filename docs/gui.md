@@ -108,14 +108,20 @@ a project template. Looking at a review never trusts anything.
 
 ## New sandbox: big folders
 
-For a `copy`/`sync` workspace the **Options** step measures the folder as soon as you have chosen
-or typed it (a fast read-only scan, no file content is read; it is cancelled and restarted when you
-change the folder). Under the field it shows "≈ 3.2 GiB, 41 000 files", a warning for a folder
-above the policy's soft limit (default 1 GiB or 50 000 entries; creating it asks for your
-confirmation) and an error that blocks **Next** for a folder above the hard copy limit (64 GiB or
-2 000 000 entries). Both come with buttons to switch to `mount` or `clone` and with the advice to
-choose the project folder itself or fill **Exclude** (patterns like `node_modules *.log`; `.gitignore`
-is not read). While the sandbox is created the dialog shows the lines of the scan, the copy
+In the **Options** step the workspace mode, the project folder and **Choose …** share one row. For
+a `copy`/`sync` workspace the checkbox **Respect .gitignore** follows (ticked unless the template
+says otherwise; "Ignored files (e.g. build/, .dart_tool/) are not copied"), then **Also exclude**
+(patterns like `*.log coverage`, applied on top of `.gitignore`), then the size note. The folder is
+measured as soon as you have chosen or typed it (a fast read-only scan, no file content is read; it
+is cancelled and restarted when you change the folder, the checkbox or the patterns). The note is an
+info banner: "≈ 38 MiB, 1,240 files will be copied" in bold and, when `.gitignore` left something
+out, a second line "2.1 GiB in 61,000 files left out by .gitignore" ("≥" when measuring that part
+stopped at its bound). Unticking the checkbox measures and copies everything, `node_modules` and
+`.env` included; `.git` is copied either way. A folder above the policy's soft limit (default 1 GiB
+or 50 000 entries; creating it asks for your confirmation) turns the note into a warning, and a
+folder above the hard copy limit (64 GiB or 2 000 000 entries) into an error that blocks **Next**.
+Both come with buttons to switch to `mount` or `clone` and with the advice to choose the project
+folder itself or add **Also exclude** patterns. While the sandbox is created the dialog shows the lines of the scan, the copy
 (`copying workspace … X of Y`, with a progress bar) and the image build, and **Cancel** stops the
 create at the next file and removes what was made.
 

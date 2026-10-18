@@ -40,6 +40,8 @@ interface Form {
   workspacePath: string;
   /** Exclude patterns of a copy workspace (space or comma separated). */
   exclude?: string;
+  /** Respect .gitignore in a copy / sync workspace; unset = the template's choice (else on). */
+  gitignore?: boolean;
   cpus: string;
   memory: string;
   ttl: string;
@@ -71,7 +73,11 @@ function splitList(s: string): string[] {
     .filter(Boolean);
 }
 
-export function buildCreateInput(f: Form): IpcInput<'sandboxes:create'> {
+export function buildCreateInput(
+  f: Form,
+  /** Mode the workspace really gets (the form's choice, else the template's). */
+  effectiveMode: string = f.workspaceMode,
+): IpcInput<'sandboxes:create'> {
   const workspace: NonNullable<IpcInput<'sandboxes:create'>['workspace']> = {};
   if (f.workspaceMode) workspace.mode = f.workspaceMode as (typeof WORKSPACE_MODES)[number];
   if (f.workspacePath.trim() && f.workspaceMode !== 'empty')
@@ -79,6 +85,9 @@ export function buildCreateInput(f: Form): IpcInput<'sandboxes:create'> {
   const exclude = splitList(f.exclude ?? '');
   if (exclude.length > 0 && !['empty', 'mount', 'clone', 'worktree'].includes(f.workspaceMode))
     workspace.exclude = exclude;
+  // the core refuses the option for other modes, so it is only sent where it applies
+  if (f.gitignore !== undefined && (effectiveMode === 'copy' || effectiveMode === 'sync'))
+    workspace.gitignore = f.gitignore;
   const net: NonNullable<NonNullable<IpcInput<'sandboxes:create'>['overrides']>['network']> = {};
   if (f.networkMode) net.mode = f.networkMode as (typeof NETWORK_MODES)[number];
   const allow = splitList(f.allow);
@@ -159,10 +168,14 @@ export function NewSandboxDialog(props: {
     form.workspaceMode ||
     (details.data?.template.workspace as { mode?: string } | undefined)?.mode ||
     '';
+  const templateGitignore =
+    (details.data?.template.workspace as { gitignore?: boolean } | undefined)?.gitignore ?? true;
+  const copiesFolder = effectiveMode === 'copy' || effectiveMode === 'sync';
   const estimate = useWorkspaceEstimate({
     path: workspacePath,
     mode: step === 'options' || step === 'summary' ? effectiveMode : '',
     exclude: splitList(form.exclude ?? ''),
+    gitignore: form.gitignore ?? templateGitignore,
   });
   const baseImage =
     step === 'confirm' &&
@@ -215,7 +228,7 @@ export function NewSandboxDialog(props: {
     setError(undefined);
     try {
       const res = await call('sandboxes:create', {
-        ...buildCreateInput(form),
+        ...buildCreateInput(form, effectiveMode),
         confirmed,
         progressKey: key.current,
       });
@@ -437,36 +450,65 @@ export function NewSandboxDialog(props: {
               </select>
             )}
           </Field>
-          <Field label={t('new.workspaceMode')}>
-            {(id) => (
-              <select
-                id={id}
-                value={form.workspaceMode}
-                onChange={(e) => set('workspaceMode', e.target.value)}
-              >
-                <option value="">{t('new.templateDefault')}</option>
-                {(profile?.workspace.modes ?? WORKSPACE_MODES).map((m) => (
-                  <option key={m} value={m}>
-                    {t(`workspace.${m}`)}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-          {form.workspaceMode !== 'empty' ? (
-            <Field label={t('new.workspacePath')} hint={t('new.workspacePathHint')}>
+          <div className="wide-col workspace-row">
+            <Field label={t('new.workspaceMode')}>
               {(id) => (
-                <div className="with-button">
-                  <input
-                    id={id}
-                    type="text"
-                    value={form.workspacePath}
-                    onChange={(e) => set('workspacePath', e.target.value)}
-                  />
-                  <button type="button" onClick={() => void pickDir()}>
-                    {t('common.browse')}
-                  </button>
-                </div>
+                <select
+                  id={id}
+                  value={form.workspaceMode}
+                  onChange={(e) => set('workspaceMode', e.target.value)}
+                >
+                  <option value="">{t('new.templateDefault')}</option>
+                  {(profile?.workspace.modes ?? WORKSPACE_MODES).map((m) => (
+                    <option key={m} value={m}>
+                      {t(`workspace.${m}`)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+            {form.workspaceMode !== 'empty' ? (
+              <Field label={t('new.workspacePath')} hint={t('new.workspacePathHint')}>
+                {(id) => (
+                  <div className="with-button">
+                    <input
+                      id={id}
+                      type="text"
+                      value={form.workspacePath}
+                      onChange={(e) => set('workspacePath', e.target.value)}
+                    />
+                    <button type="button" onClick={() => void pickDir()}>
+                      {t('new.pickDirectory')}
+                    </button>
+                  </div>
+                )}
+              </Field>
+            ) : null}
+          </div>
+          {form.workspaceMode !== 'empty' && copiesFolder ? (
+            <div className="field wide-col">
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={form.gitignore ?? templateGitignore}
+                  onChange={(e) => set('gitignore', e.target.checked)}
+                />{' '}
+                {t('new.gitignore')}
+              </label>
+              <small className="muted">{t('new.gitignoreHint')}</small>
+            </div>
+          ) : null}
+          {form.workspaceMode !== 'empty' &&
+          !['mount', 'clone', 'worktree'].includes(effectiveMode) ? (
+            <Field label={t('new.exclude')} hint={t('new.excludeHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={form.exclude ?? ''}
+                  placeholder={t('new.excludePlaceholder')}
+                  onChange={(e) => set('exclude', e.target.value)}
+                />
               )}
             </Field>
           ) : null}
@@ -478,20 +520,6 @@ export function NewSandboxDialog(props: {
                 onUseMode={(m) => set('workspaceMode', m)}
               />
             </div>
-          ) : null}
-          {form.workspaceMode !== 'empty' &&
-          !['mount', 'clone', 'worktree'].includes(effectiveMode) ? (
-            <Field label={t('new.exclude')} hint={t('new.excludeHint')}>
-              {(id) => (
-                <input
-                  id={id}
-                  type="text"
-                  value={form.exclude ?? ''}
-                  placeholder="node_modules"
-                  onChange={(e) => set('exclude', e.target.value)}
-                />
-              )}
-            </Field>
           ) : null}
           <Field label={t('new.cpus')} hint={t('new.templateDefaultHint')}>
             {(id) => (
@@ -602,6 +630,9 @@ export function NewSandboxDialog(props: {
               {form.workspacePath}
               {splitList(form.exclude ?? '').length > 0 && effectiveMode !== 'mount'
                 ? ` (− ${splitList(form.exclude ?? '').join(', ')})`
+                : ''}
+              {form.workspaceMode !== 'empty' && copiesFolder
+                ? ` · ${t((form.gitignore ?? templateGitignore) ? 'new.gitignoreOn' : 'new.gitignoreOff')}`
                 : ''}
             </dd>
             <dt>

@@ -11,6 +11,14 @@ export {
   type GitResult,
 } from './git.js';
 export { compileExcludes, type ExcludeMatcher } from './glob.js';
+export {
+  GitignoreSession,
+  GITIGNORE_LIMITS,
+  IgnoreLayer,
+  compileGitignoreSet,
+  type PathIgnoreMatcher,
+} from './gitignore.js';
+export { readTrackedPaths, type TrackedPaths, type TrackedResult } from './gitindex.js';
 export { classifyChange, type ChangeInfo, type ContentReader } from './flagged.js';
 export {
   walkTree,
@@ -22,6 +30,7 @@ export {
 export { copyTreeSafely, symlinkEscapes } from './snapshot.js';
 export {
   scanTree,
+  IGNORED_MEASURE_ENTRIES,
   copyLimitError,
   describeScan,
   formatCount,

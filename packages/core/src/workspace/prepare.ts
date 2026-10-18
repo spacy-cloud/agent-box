@@ -2,6 +2,7 @@ import { lstat, mkdir, rm, stat } from 'node:fs/promises';
 import { basename, isAbsolute, join } from 'node:path';
 import { AboxError } from '../errors.js';
 import type { WorkspaceDelivery } from '../types.js';
+import { GitignoreSession } from './gitignore.js';
 import { compileExcludes } from './glob.js';
 import { captureGitMarker } from './gitmarker.js';
 import {
@@ -16,6 +17,7 @@ import { initBareRepo, type ObjectFormat } from './objstore.js';
 import {
   copyLimitError,
   describeScan,
+  formatCount,
   scanTree,
   WORKSPACE_COPY_LIMITS,
   type ScanResult,
@@ -53,9 +55,10 @@ import { formatBytesHuman } from '../policy/units.js';
  *              as `copy`. Baseline = pristine bare repo `<sandboxDir>/baseline.git`. Uncommitted
  *              changes of the source and submodule contents are not included. For remote hosts
  *              the staging dir is created locally and uploaded by the provider.
- * - `copy`     source copied to `<sandboxDir>/staging` without following symlinks. Default: nothing
- *   `sync`     excluded (so a source `.git` including hooks and remote URLs IS copied — pass
- *              `exclude: ['.git']` to avoid it; a warning is emitted). `sync` currently has initial-
+ * - `copy`     source copied to `<sandboxDir>/staging` without following symlinks. What `.gitignore`
+ *   `sync`     files ignore is left out (`gitignore`, default on; see gitignore.ts), plus explicit
+ *              `exclude` patterns. A source `.git` including hooks and remote URLs IS copied (never
+ *              evaluated as content) — pass `exclude: ['.git']` to avoid it; a warning is emitted. `sync` currently has initial-
  *              copy semantics (one-way, no later re-sync); it is meant for remote hosts.
  *              Baseline = snapshot commit of the staging dir + JSON manifest.
  */
@@ -65,6 +68,9 @@ const DEFAULT_LIMITS = {
   maxFileBytes: WORKSPACE_COPY_LIMITS.maxFileBytes,
   maxTotalBytes: WORKSPACE_COPY_LIMITS.maxTotalBytes,
 };
+
+/** `.git/info/exclude` text kept in the workspace record (bigger files are applied to the copy but not to exports). */
+const MAX_RECORDED_INFO_EXCLUDE = 64 * 1024;
 
 /** At most one progress line per second per phase (plus the final one), so a terminal log stays readable. */
 const PROGRESS_INTERVAL_MS = 1000;
@@ -96,7 +102,7 @@ function phaseReporter(
  */
 export async function scanForCopy(
   source: string,
-  input: Pick<PrepareWorkspaceInput, 'exclude' | 'onProgress' | 'signal' | 'scan'>,
+  input: Pick<PrepareWorkspaceInput, 'exclude' | 'gitignore' | 'onProgress' | 'signal' | 'scan'>,
   opts: { purpose?: 'copy' | 'baseline'; gitMode?: 'skip' | 'visit' } = {},
 ): Promise<ScanResult> {
   let scan = input.scan;
@@ -104,6 +110,10 @@ export async function scanForCopy(
     scan = await scanTree(source, {
       exclude: compileExcludes(input.exclude),
       gitMode: opts.gitMode ?? 'visit',
+      // a baseline snapshot (non-git mount) records the directory as it is: no .gitignore there
+      ...(opts.purpose !== 'baseline' && input.gitignore !== false
+        ? { gitignore: new GitignoreSession() }
+        : {}),
       ...(input.signal ? { signal: input.signal } : {}),
       onProgress: (p) =>
         input.onProgress?.(`scanning workspace … ${describeScan(p)}`, {
@@ -554,19 +564,20 @@ async function prepareCopy(
   });
 
   const exclude = compileExcludes(input.exclude);
+  const gitignore = input.gitignore !== false ? new GitignoreSession() : undefined;
   const scan = await scanForCopy(source, input);
   const copied = await copyTreeSafely(source, staging, {
     exclude,
     limits: DEFAULT_LIMITS,
     gitMode: 'visit',
+    ...(gitignore ? { gitignore } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
     onBytes: phaseReporter(input, 'copy', 'copying', scan.bytes),
   });
-  input.onProgress?.(`copied workspace: ${describeScan(scan)}`, {
-    phase: 'copy',
-    done: scan.bytes,
-    total: scan.bytes,
-  });
+  input.onProgress?.(
+    `copied workspace: ${describeScan(scan)}${copied.walk.ignored > 0 ? ` (${formatCount(copied.walk.ignored)} entries ignored by .gitignore)` : ''}`,
+    { phase: 'copy', done: scan.bytes, total: scan.bytes },
+  );
 
   // optional link to the user's repository (target of branch exports)
   let sourceGit: WorkspaceRecord['sourceGit'];
@@ -611,6 +622,15 @@ async function prepareCopy(
     );
   }
   for (const s of copied.walk.skipped) warnings.push(`not copied: ${s.path} (${s.reason})`);
+  for (const w of gitignore?.allWarnings() ?? []) warnings.push(`.gitignore: ${w}`);
+  // Kept in the record so that an export applies the same rules to what the sandbox creates.
+  let infoExclude = gitignore?.infoExclude;
+  if (infoExclude !== undefined && infoExclude.length > MAX_RECORDED_INFO_EXCLUDE) {
+    warnings.push(
+      `.gitignore: .git/info/exclude is larger than ${MAX_RECORDED_INFO_EXCLUDE / 1024} KiB; an export will not apply it`,
+    );
+    infoExclude = undefined;
+  }
   if (sourceGit) {
     const headTree = await treeOf(sourceGit.gitDir, sourceGit.head).catch(() => '');
     if (headTree !== created.tree) {
@@ -636,6 +656,11 @@ async function prepareCopy(
       ...(sourceGit ? { sourceGit } : {}),
       manifest,
       staging,
+      gitignore: {
+        enabled: gitignore !== undefined,
+        ignored: copied.walk.ignored,
+        ...(infoExclude ? { infoExclude } : {}),
+      },
     },
   };
 }

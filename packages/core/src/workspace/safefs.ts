@@ -3,6 +3,7 @@ import { open, readdir, readlink, lstat, realpath, type FileHandle } from 'node:
 import { join } from 'node:path';
 import { AboxError } from '../errors.js';
 import type { ExcludeMatcher } from './glob.js';
+import type { GitignoreSession, IgnoreLayer } from './gitignore.js';
 
 /**
  * Symlink-safe tree walking.
@@ -18,6 +19,8 @@ import type { ExcludeMatcher } from './glob.js';
  * - skips sockets, FIFOs and devices,
  * - skips `.git` entries (and spellings git treats as `.git` on other file systems)
  *   unless `gitMode: 'visit'` is requested,
+ * - applies `.gitignore` rules when given a {@link GitignoreSession} (the files are opened like
+ *   everything else, without following links; `.git` entries are not evaluated),
  * - enforces hard limits so a hostile tree cannot exhaust the host.
  */
 
@@ -56,6 +59,8 @@ export interface WalkOptions {
   limits?: WalkLimits;
   /** `skip` (default): ignore `.git`-like entries and report them. `visit`: treat `.git` as ordinary content. */
   gitMode?: 'skip' | 'visit';
+  /** Leave out what the `.gitignore` files of the tree (and `.git/info/exclude` at its root) ignore. */
+  gitignore?: GitignoreSession;
   /** Skip symlinks named like git config files that git's fsck rejects as links (`.gitmodules`, …). Default true. */
   skipGitConfigSymlinks?: boolean;
 }
@@ -65,6 +70,8 @@ export interface WalkResult {
   /** Relative paths of `.git`-like entries that were not visited. */
   gitEntries: string[];
   excluded: number;
+  /** Entries left out by `.gitignore` rules (an ignored directory counts once). */
+  ignored: number;
   entries: number;
   files: number;
   symlinks: number;
@@ -139,6 +146,7 @@ export async function walkTree(
     skipped: [],
     gitEntries: [],
     excluded: 0,
+    ignored: 0,
     entries: 0,
     files: 0,
     symlinks: 0,
@@ -149,9 +157,23 @@ export async function walkTree(
   const realRoot = await realpath(root);
   const rootHandle = await open(realRoot, O_DIR_FLAGS);
 
-  async function visitDir(dir: DirRef, relPrefix: string, depth: number): Promise<void> {
+  async function visitDir(
+    dir: DirRef,
+    relPrefix: string,
+    depth: number,
+    parentIgnore: IgnoreLayer | undefined,
+  ): Promise<void> {
     if (depth > limits.maxDepth) throw limitError('directory depth', limits.maxDepth);
     const names = (await readdir(dirListPath(dir))).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    // `undefined` = no gitignore rules here (not asked for, or inside a `.git` directory)
+    const ignore =
+      parentIgnore && opts.gitignore
+        ? await opts.gitignore.load(
+            parentIgnore,
+            relPrefix,
+            names.includes('.gitignore') ? child(dir, '.gitignore') : undefined,
+          )
+        : undefined;
     for (const name of names) {
       const rel = relPrefix ? `${relPrefix}/${name}` : name;
       if (name.includes('�')) {
@@ -174,6 +196,16 @@ export async function walkTree(
       if (exclude(rel, isDir)) {
         result.excluded++;
         continue;
+      }
+      let childIgnore = ignore;
+      if (ignore && opts.gitignore) {
+        const verdict = opts.gitignore.decide(ignore, rel, name, isDir);
+        if (verdict === 'ignore') {
+          result.ignored++;
+          continue;
+        }
+        if (verdict === 'forced') childIgnore = ignore.forcedView();
+        else if (isDotGitLike(name)) childIgnore = undefined;
       }
       if (++result.entries > limits.maxEntries) throw limitError('entry count', limits.maxEntries);
 
@@ -213,7 +245,7 @@ export async function walkTree(
           }
           result.directories++;
           await visitor.directory?.(rel, st.mode & 0o7777);
-          await visitDir({ fh, base: join(dir.base, name) }, rel, depth + 1);
+          await visitDir({ fh, base: join(dir.base, name) }, rel, depth + 1, childIgnore);
         } finally {
           await fh.close();
         }
@@ -264,7 +296,12 @@ export async function walkTree(
   }
 
   try {
-    await visitDir({ fh: rootHandle, base: realRoot }, '', 0);
+    await visitDir(
+      { fh: rootHandle, base: realRoot },
+      '',
+      0,
+      opts.gitignore ? await opts.gitignore.root(realRoot) : undefined,
+    );
   } finally {
     await rootHandle.close();
   }

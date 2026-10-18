@@ -150,21 +150,78 @@ code.
 
 ### `workspace`
 
-| Key      | Default      | Meaning                                                                                                                                        |
-| -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mode`   | `copy`       | `mount` `clone` `worktree` `copy` `empty` `sync`, see [quickstart](quickstart.md#workspace-modes)                                              |
-| `path`   | `/workspace` | absolute path inside the sandbox, no `..`; must not be below `/proc`, `/sys`, `/dev`, `/etc`, `/run`, `/boot`, `/bin`, `/sbin`, `/usr`, `/lib` |
-| `access` | `rw`         | `ro` or `rw` (for `mount`)                                                                                                                     |
-| `ref`    | none         | git ref for `clone` and `worktree`                                                                                                             |
+| Key         | Default      | Meaning                                                                                                                                        |
+| ----------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`      | `copy`       | `mount` `clone` `worktree` `copy` `empty` `sync`, see [quickstart](quickstart.md#workspace-modes)                                              |
+| `path`      | `/workspace` | absolute path inside the sandbox, no `..`; must not be below `/proc`, `/sys`, `/dev`, `/etc`, `/run`, `/boot`, `/bin`, `/sbin`, `/usr`, `/lib` |
+| `access`    | `rw`         | `ro` or `rw` (for `mount`)                                                                                                                     |
+| `ref`       | none         | git ref for `clone` and `worktree`                                                                                                             |
+| `gitignore` | `true`       | `copy` and `sync`: leave out what the project's `.gitignore` files ignore (`true`/`false`, see below); has no effect in the other modes        |
 
-`create` can override mode, path and ref (`--mode`, `--workspace`, `--ref`); the policy decides
-which modes and which host directories are allowed.
+`create` can override mode, path, ref and gitignore (`--mode`, `--workspace`, `--ref`,
+`--gitignore` / `--no-gitignore`); the policy decides which modes and which host directories are
+allowed.
 
-`copy` and `sync` copy the directory **as it is**: there is no template key for exclusions and
-`.gitignore` is not honoured (so `node_modules`, build output and `.git` are copied unless left
-out). Exclusions are a property of the create request: `abox create --exclude <patterns>`, MCP
-`workspace.exclude`, the **Exclude** field in the GUI. Patterns are comma separated and
-gitignore-like, without negation:
+`copy` and `sync` copy the directory without following links. Two things decide what is left out:
+the project's **`.gitignore` rules** (on by default) and the **explicit exclude patterns** of the
+create request.
+
+#### `.gitignore`
+
+With `gitignore: true` (the default; a request can set it either way) a copy leaves out what git
+would ignore: `node_modules`, build output, `.env` files and so on. Besides making the copy small,
+this keeps files you listed in `.gitignore` because they are local or secret out of the sandbox.
+It is not a security boundary: abox trusts the file, and a secret that is not listed in it is copied.
+The rules are applied inside abox (git is not started for it), as git applies them:
+
+- the `.gitignore` of every directory, for the entries below that directory; deeper files win over
+  shallower ones, and within a file the last matching line wins;
+- the `.git/info/exclude` of the project (when `.git` is a directory), with the lowest precedence;
+- comments, blank lines, `\#` and `\!` escapes, trailing spaces (unless escaped), `!` negation,
+  `/` anchoring, `dir/`, `*` `?` `[a-z]` `[!a]` `[[:digit:]]`, and `**` as a whole path segment;
+- a directory that is ignored is not entered, so a file below it cannot be re-included (git's rule);
+- **files that git tracks are never ignored**, whatever a pattern says (abox reads the names from
+  `.git/index` for that), and an ignored directory with tracked files below it is entered and only
+  those files are kept. So a committed `dist/` stays in the copy and an export does not show it as
+  deleted.
+
+Not applied: the global `core.excludesFile` of your user (it is specific to your machine and would
+make the same project copy differently elsewhere), `.gitignore` files of directories **above** the
+folder you copy (choose the repository root, or put a `.gitignore` into the folder), the
+`.git/info/exclude` of nested repositories, and `core.ignorecase` (names are matched
+case-sensitively).
+
+`.git` itself is not touched by this: it is still copied as before (history, config with remote
+URLs, hooks; see [security](security.md#mounts)), never evaluated as content, and
+nothing inside it is read for rules. To keep it out, use `--exclude .git`. Explicit excludes apply
+**in addition** and can name anything, `.git` included.
+
+An ignored file cannot be re-included on its own. If the sandbox needs one (a `.env` for a test
+run, a generated file), either copy it in afterwards, or set `gitignore: false` and use
+`--exclude` for the bulk (`--exclude node_modules,dist`).
+
+`.gitignore` files that cannot be used are skipped with a warning (in the create warnings and
+the audit entry): one that is a symbolic link (links are never followed), is
+not a regular file, is larger than 1 MiB, or sits beyond the totals (10 000 files, 16 MiB). A file
+with more than 5 000 patterns is skipped as a whole, and so is one that would bring the patterns
+that apply to a directory above 10 000; patterns longer than 1 024 characters or with
+more than 64 path segments are skipped individually. Matching is bounded (no regular expressions),
+so a hostile pattern cannot stall the copy.
+
+In the modes `mount`, `worktree`, `clone` and `empty` the option does not apply: `mount` and
+`worktree` use the files as they are, `clone` only has what git tracks. A **template** may set
+`gitignore` regardless of the mode (a create can change the mode), and it is then ignored; a create
+**request** that sets it for another mode is refused (`invalid_input`) so that a mistake is visible.
+
+The size estimate, the soft and hard size limits of a copy and the numbers in the progress output
+all count what remains after `.gitignore`. After the sandbox ran, `abox export` leaves out what the
+rules ignore and the baseline did not contain (see [cli](cli.md#abox-export)).
+
+#### Exclude patterns
+
+Exclusions on top of `.gitignore` are a property of the create request: `abox create --exclude
+<patterns>`, MCP `workspace.exclude`, the **Also exclude** field in the GUI. Patterns are comma
+separated and gitignore-like, without negation:
 
 | Pattern  | Matches                                                   |
 | -------- | --------------------------------------------------------- |

@@ -38,4 +38,18 @@ describe('IPC: workspace estimate, cancel and exclude', () => {
       false,
     );
   });
+
+  it('both carry the .gitignore choice as a boolean', () => {
+    expect(ok('workspace:estimate', { path: '/p', gitignore: false })).toBe(true);
+    expect(ok('workspace:estimate', { path: '/p', gitignore: 'no' })).toBe(false);
+    expect(
+      ok('sandboxes:create', {
+        template: 't',
+        workspace: { mode: 'copy', path: '/p', gitignore: false },
+      }),
+    ).toBe(true);
+    expect(ok('sandboxes:create', { template: 't', workspace: { gitignore: 1 } as unknown })).toBe(
+      false,
+    );
+  });
 });

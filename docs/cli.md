@@ -297,7 +297,9 @@ Create a sandbox from a template
 | `-w, --workspace <path>` | host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared                         |
 | `--mode <mode>`          | how the workspace is delivered (default: the template's mode with --workspace, "empty" without) (choices: "mount", "clone", "worktree", "copy", "empty", "sync") |
 | `--ref <ref>`            | git ref for clone/worktree workspaces (needs --workspace)                                                                                                        |
-| `--exclude <patterns>`   | leave these out of a copy/sync workspace, comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)                                         |
+| `--exclude <patterns>`   | leave these out of a copy/sync workspace (on top of .gitignore), comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)                  |
+| `--gitignore`            | copy/sync workspace: leave out what .gitignore files ignore (node_modules, build output, .env...); the default                                                   |
+| `--no-gitignore`         | copy/sync workspace: copy everything, ignored files included (needs --workspace)                                                                                 |
 | `--net <mode>`           | network mode (choices: "none", "allowlist", "open")                                                                                                              |
 | `--allow <domains>`      | extra allowed destinations, comma separated (with --net allowlist)                                                                                               |
 | `--ttl <duration>`       | lifetime, e.g. 2h                                                                                                                                                |
@@ -311,7 +313,11 @@ prints `workspace: N files, X` and, while copying, `copying workspace ... X of Y
 `--json` or `--quiet`). A folder above the policy's soft limit (default 1 GiB or 50 000 entries,
 `workspace.max_copy_bytes` / `max_copy_entries`) needs `--yes` (or the interactive answer); a folder
 above the hard limit (64 GiB or 2 000 000 entries) fails with `invalid_input` after the scan, which takes
-seconds. Ctrl-C cancels the scan or the copy. `.gitignore` is not read; use `--exclude`. See
+seconds. Ctrl-C cancels the scan or the copy. A `copy`/`sync` workspace leaves out what the project's
+`.gitignore` files ignore (default, `--no-gitignore` copies everything; the numbers above count what
+remains, and the progress output says how many entries were left out); `--exclude` adds patterns.
+`--gitignore` / `--no-gitignore` with another mode than `copy`/`sync` is refused. See
+[templates](templates.md#gitignore) for the rules and
 [quickstart](quickstart.md#what-copy-and-sync-copy-and-how-big-it-may-be).
 
 ### `abox ls`
@@ -558,6 +564,13 @@ Get the changes of a sandbox out (never applies anything to your project)
 | `--branch <name>`   | branch format: branch name (default abox/<id>-export)                                                                                             |
 | `--paths <list>`    | only these paths, comma separated (relative to the workspace)                                                                                     |
 | `--force`           | branch format: overwrite an existing export branch                                                                                                |
+
+For a `copy`/`sync` workspace that was copied with `.gitignore` applied, paths that its rules ignore
+and that did not exist in the copy (a `node_modules` or `dist` the sandbox created, `.env` files)
+are not exported and not listed as additions: the warning `N path(s) ... ignored by the workspace's .gitignore`
+names a few, and `--json` has `stats.ignored` and `stats.ignoredPaths`. The rules are those of the
+`.gitignore` files of the copy as it was made (not what the sandbox changed them to), so the sandbox
+cannot hide a change by editing them. Paths the copy contained are always compared, ignored or not.
 
 ### `abox approvals`
 

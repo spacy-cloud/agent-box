@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { TemplateListEntry, WorkspaceEstimate } from '@abox/core';
+import { WorkspaceEstimateNote } from '../../src/renderer/components/WorkspaceEstimate';
 import { NewSandboxDialog, buildCreateInput } from '../../src/renderer/views/NewSandbox';
 import type { ProgressEvent } from '../../src/shared/constants';
 import { renderApp } from './harness';
@@ -138,7 +139,7 @@ describe('New sandbox: folder size when the folder is picked', () => {
     typeFolder('/work/p');
     typeFolder('/work/proj');
     expect((await screen.findByTestId('estimate-ok', {}, { timeout: 3000 })).textContent).toBe(
-      '≈ 12 MiB, 340 files',
+      '≈ 12 MiB, 340 files will be copied',
     );
     const asks = r.calls.filter((c) => c.channel === 'workspace:estimate');
     expect(asks).toHaveLength(1);
@@ -148,7 +149,8 @@ describe('New sandbox: folder size when the folder is picked', () => {
   });
 
   it('shows the live scan line while measuring', async () => {
-    const r = rig({ estimate: () => estimate({}) });
+    // the scan stays open, so the line is what the note shows
+    const r = rig({ estimate: () => new Promise<never>(() => undefined) as never });
     mount();
     await toOptions();
     typeFolder('/work/proj');
@@ -174,7 +176,7 @@ describe('New sandbox: folder size when the folder is picked', () => {
     await toOptions();
     typeFolder('/work/proj');
     const warn = await screen.findByTestId('estimate-large', {}, { timeout: 3000 });
-    expect(warn.textContent).toContain('≈ 3.2 GiB, 41 000 files');
+    expect(warn.textContent).toContain('≈ 3.2 GiB, 41,000 files');
     expect(warn.textContent).toContain('Copying will take a while');
     const banner = warn.closest('.banner') as HTMLElement;
     expect(banner.textContent).toContain('"mount" or "clone"');
@@ -201,7 +203,7 @@ describe('New sandbox: folder size when the folder is picked', () => {
     await toOptions();
     typeFolder('/work/huge');
     const err = await screen.findByTestId('estimate-too-large', {}, { timeout: 3000 });
-    expect(err.textContent).toContain('Larger than the copy limit (64 GiB, 2 000 000 entries)');
+    expect(err.textContent).toContain('Larger than the copy limit (64 GiB, 2,000,000 entries)');
     const banner = err.closest('.banner') as HTMLElement;
     expect(banner.textContent).toContain('≥ 65 GiB, 900 files');
     expect(screen.getByRole('button', { name: 'Next' })).toHaveProperty('disabled', true);
@@ -230,7 +232,7 @@ describe('New sandbox: folder size when the folder is picked', () => {
     typeFolder('/work/proj');
     await new Promise((res) => setTimeout(res, 600));
     expect(r.calls.some((c) => c.channel === 'workspace:estimate')).toBe(false);
-    expect(screen.queryByLabelText(/Exclude/)).toBeNull();
+    expect(screen.queryByLabelText(/exclude/i)).toBeNull();
   });
 
   it('repeats the size note in the summary before Create', async () => {
@@ -241,7 +243,120 @@ describe('New sandbox: folder size when the folder is picked', () => {
     await screen.findByTestId('estimate-ok', {}, { timeout: 3000 });
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     await screen.findByRole('button', { name: 'Check and create' });
-    expect((await screen.findByTestId('estimate-ok')).textContent).toBe('≈ 12 MiB, 340 files');
+    expect((await screen.findByTestId('estimate-ok')).textContent).toBe(
+      '≈ 12 MiB, 340 files will be copied',
+    );
+  });
+});
+
+describe('New sandbox: respecting .gitignore', () => {
+  it('offers the checkbox, ticked, for copy workspaces only', async () => {
+    rig({ estimate: () => estimate({}) });
+    mount();
+    await toOptions();
+    const box = (await screen.findByLabelText('Respect .gitignore')) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.change(screen.getByLabelText('Workspace mode'), { target: { value: 'mount' } });
+    expect(screen.queryByLabelText('Respect .gitignore')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Workspace mode'), { target: { value: 'sync' } });
+    expect(screen.getByLabelText('Respect .gitignore')).toBeTruthy();
+  });
+
+  it('shows how much .gitignore saved next to the size', async () => {
+    rig({
+      estimate: () =>
+        estimate({
+          ignored: 12,
+          ignoredTotals: { files: 30_000, bytes: 2.1 * GIB, partial: false },
+        }),
+    });
+    mount();
+    await toOptions();
+    typeFolder('/work/proj');
+    expect((await screen.findByTestId('estimate-ok', {}, { timeout: 3000 })).textContent).toBe(
+      '≈ 12 MiB, 340 files will be copied',
+    );
+    // an info banner: the bold first line and what .gitignore left out underneath
+    const banner = screen.getByTestId('estimate-ok').closest('.banner') as HTMLElement;
+    expect(banner.className).toContain('banner-info');
+    expect(within(banner).getByTestId('estimate-left-out').textContent).toBe(
+      '2.1 GiB in 30,000 files left out by .gitignore',
+    );
+  });
+
+  it('writes the numbers the German way', () => {
+    renderApp(
+      <WorkspaceEstimateNote
+        state={{
+          status: 'ready',
+          estimate: estimate({
+            bytes: 38 * 1024 ** 2,
+            files: 1240,
+            ignoredTotals: { files: 61_000, bytes: 2.1 * GIB, partial: false },
+          }),
+        }}
+        modes={[]}
+      />,
+      { locale: 'de' },
+    );
+    expect(screen.getByTestId('estimate-ok').textContent).toBe(
+      '≈ 38 MiB, 1 240 Dateien werden kopiert',
+    );
+    expect(screen.getByTestId('estimate-left-out').textContent).toBe(
+      '2,1 GiB in 61 000 Dateien durch .gitignore ausgelassen',
+    );
+  });
+
+  it('says "at least" when measuring the ignored part stopped early, and nothing when it is empty', async () => {
+    let e = estimate({ ignored: 1, ignoredTotals: { files: 9, bytes: GIB, partial: true } });
+    rig({ estimate: () => e });
+    mount();
+    await toOptions();
+    typeFolder('/work/proj');
+    await screen.findByTestId('estimate-ok', {}, { timeout: 3000 });
+    expect(screen.getByTestId('estimate-left-out').textContent).toBe(
+      '≥ 1.0 GiB in 9 files left out by .gitignore',
+    );
+    e = estimate({ ignored: 1, ignoredTotals: { files: 0, bytes: 0, partial: false } });
+    typeFolder('/work/other');
+    await waitFor(() => expect(screen.queryByTestId('estimate-left-out')).toBeNull(), {
+      timeout: 3000,
+    });
+  });
+
+  it('unticking measures again without .gitignore and sends the choice with the create', async () => {
+    const r = rig({ estimate: () => estimate({}) });
+    mount();
+    await toOptions();
+    typeFolder('/work/proj');
+    await screen.findByTestId('estimate-ok', {}, { timeout: 3000 });
+    fireEvent.click(screen.getByLabelText('Respect .gitignore'));
+    await waitFor(
+      () => {
+        const asks = r.calls.filter((c) => c.channel === 'workspace:estimate');
+        expect(asks).toHaveLength(2);
+        expect(asks[1]!.input).toMatchObject({ path: '/work/proj', gitignore: false });
+      },
+      { timeout: 3000 },
+    );
+    expect(
+      r.calls.find((c) => c.channel === 'workspace:estimate')!.input as object,
+    ).not.toHaveProperty('gitignore');
+    await screen.findByTestId('estimate-ok', {}, { timeout: 3000 });
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect((await screen.findByText(/\.gitignore not applied/)).textContent).toContain(
+      '.gitignore not applied',
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Check and create' }));
+    const c = await waitFor(() => {
+      const x = r.calls.find((y) => y.channel === 'sandboxes:create');
+      if (!x) throw new Error('not yet');
+      return x;
+    });
+    expect((c.input as { workspace: unknown }).workspace).toEqual({
+      path: '/work/proj',
+      gitignore: false,
+    });
   });
 });
 
@@ -337,5 +452,41 @@ describe('create request builder: exclude', () => {
       buildCreateInput({ ...base, workspaceMode: 'mount', exclude: 'node_modules' }).workspace,
     ).toEqual({ mode: 'mount', path: '/work/p' });
     expect(buildCreateInput({ ...base, exclude: '  ' }).workspace).toEqual({ path: '/work/p' });
+  });
+});
+
+describe('create request builder: gitignore', () => {
+  const base = {
+    template: 't',
+    name: '',
+    workspaceMode: 'copy',
+    workspacePath: '/work/p',
+    cpus: '',
+    memory: '',
+    ttl: '',
+    networkMode: '',
+    allow: '',
+    presets: [] as string[],
+  };
+  it('sends the choice only when it was made, and only where it applies', () => {
+    expect(buildCreateInput(base).workspace).toEqual({ mode: 'copy', path: '/work/p' });
+    expect(buildCreateInput({ ...base, gitignore: false }).workspace).toEqual({
+      mode: 'copy',
+      path: '/work/p',
+      gitignore: false,
+    });
+    expect(buildCreateInput({ ...base, gitignore: true, workspaceMode: 'sync' }).workspace).toEqual(
+      { mode: 'sync', path: '/work/p', gitignore: true },
+    );
+    // the core refuses the option for other modes: a stale choice must not be sent
+    for (const m of ['mount', 'clone', 'worktree', 'empty'])
+      expect(
+        buildCreateInput({ ...base, gitignore: false, workspaceMode: m }).workspace,
+      ).not.toHaveProperty('gitignore');
+    // the template's mode counts when the form has none
+    const t = { ...base, workspaceMode: '', gitignore: false };
+    expect(buildCreateInput(t).workspace).toEqual({ path: '/work/p' });
+    expect(buildCreateInput(t, 'copy').workspace).toEqual({ path: '/work/p', gitignore: false });
+    expect(buildCreateInput(t, 'mount').workspace).toEqual({ path: '/work/p' });
   });
 });
