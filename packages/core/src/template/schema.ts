@@ -288,6 +288,7 @@ export const templateSchema = z.strictObject({
           error: 'workspace.ref must be a plain git ref (letters, digits and . _ / -)',
         })
         .optional(),
+      gitignore: z.boolean({ error: 'workspace.gitignore must be true or false' }).optional(),
     })
     .optional(),
   resources: z

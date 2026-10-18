@@ -76,6 +76,8 @@ export const createRequestSchema = z
         access: z.enum(['ro', 'rw']).optional(),
         /** Exclude patterns of a copy / sync workspace (gitignore-like, see the templates doc). */
         exclude: z.array(z.string().min(1).max(512)).max(256).optional(),
+        /** copy / sync: leave out what `.gitignore` files ignore (core default: true). */
+        gitignore: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -243,6 +245,7 @@ export const IPC = {
       path: projectDir,
       mode: z.enum(WORKSPACE_MODES).optional(),
       exclude: z.array(z.string().min(1).max(512)).max(256).optional(),
+      gitignore: z.boolean().optional(),
       progressKey: progressKey.optional(),
     })
     .strict(),

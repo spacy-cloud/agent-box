@@ -72,7 +72,15 @@ export function registerSandbox(program: Command, cli: Cli): void {
     .option('--ref <ref>', 'git ref for clone/worktree workspaces (needs --workspace)')
     .option(
       '--exclude <patterns>',
-      'leave these out of a copy/sync workspace, comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)',
+      'leave these out of a copy/sync workspace (on top of .gitignore), comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)',
+    )
+    .option(
+      '--gitignore',
+      'copy/sync workspace: leave out what .gitignore files ignore (node_modules, build output, .env...); the default',
+    )
+    .option(
+      '--no-gitignore',
+      'copy/sync workspace: copy everything, ignored files included (needs --workspace)',
     )
     .addOption(new Option('--net <mode>', 'network mode').choices([...NETWORK_MODES]))
     .option(
@@ -93,6 +101,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
           mode?: WorkspaceMode;
           ref?: string;
           exclude?: string;
+          gitignore?: boolean;
           net?: (typeof NETWORK_MODES)[number];
           allow?: string;
           ttl?: string;
@@ -128,9 +137,9 @@ export function registerSandbox(program: Command, cli: Cli): void {
           workspace.path = cli.resolvePath(o.workspace);
           if (o.mode) workspace.mode = o.mode;
         } else {
-          if ((o.mode && o.mode !== 'empty') || o.ref || o.exclude) {
+          if ((o.mode && o.mode !== 'empty') || o.ref || o.exclude || o.gitignore !== undefined) {
             throw invalid(
-              `${o.ref ? '--ref' : o.exclude ? '--exclude' : `--mode ${o.mode}`} needs a project directory`,
+              `${o.ref ? '--ref' : o.exclude ? '--exclude' : o.gitignore !== undefined ? (o.gitignore ? '--gitignore' : '--no-gitignore') : `--mode ${o.mode}`} needs a project directory`,
               'Add --workspace <path> (for example "-w ."), or leave both out for an empty workspace.',
             );
           }
@@ -139,6 +148,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
         if (o.ref) workspace.ref = o.ref;
         const exclude = commaList(o.exclude);
         if (exclude.length > 0) workspace.exclude = exclude;
+        if (o.gitignore !== undefined) workspace.gitignore = o.gitignore;
         const req: CreateSandboxRequest = {
           template,
           ...(o.name ? { name: o.name } : {}),

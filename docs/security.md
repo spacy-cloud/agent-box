@@ -111,6 +111,20 @@ Mount checks happen in the core, not in the backend.
 - **Read-only by default.** Additional mounts are `ro` and need an approval.
 - **`.git` is read-only.** With workspace mode `mount`, `.git` (in particular `.git/hooks`) is
   exposed read-only so a sandbox cannot plant hooks that later run on the host.
+- **`copy`/`sync` and `.gitignore`.** A copy leaves out what the project's `.gitignore` files and
+  `.git/info/exclude` ignore (default on), in-process: git is not run for it, so nothing a
+  repository configures (filters, `core.fsmonitor`, hooks) can execute. The list of tracked files is
+  read from `.git/index` by abox itself. Applied: all of the above, `!`, anchoring, `**`; the files
+  git tracks are always kept. **Not applied:** your global `core.excludesFile`, `.gitignore` files
+  above the copied folder, `.git/info/exclude` of nested repositories. `.git` is still copied
+  (history, remote URLs, hooks; `--exclude .git` avoids it) and never evaluated as content. A
+  `.gitignore` that is a symbolic link (never followed), not a regular file, larger than 1 MiB or
+  beyond the totals (10 000 files, 16 MiB) is skipped with a warning; patterns are matched without
+  regular expressions and with fixed bounds, so a hostile file cannot stall the copy. This is a
+  convenience that also keeps listed secrets (`.env`) out, not a security boundary: what the file
+  does not list is copied. The create audit entry records `workspace.gitignore` (`enabled`,
+  `ignored` count) and the warnings; an export applies the rules of the **copy's** `.gitignore`
+  files (not what the sandbox changed them to) and reports `stats.ignored`.
 - **Dangerous files are flagged on export.** Files that are executed later on the host (git hooks,
   `.envrc`, `package.json` scripts, CI files) are a back channel. The export diff flags changes
   to them specially.
@@ -457,7 +471,8 @@ of this documentation; it will be published per release alongside the changelog.
   (`10.0.2.2`) and your LAN; image checksum lists are fetched over HTTPS but their GPG signatures
   are not verified; x86_64 with `/dev/kvm` only. VM tests run on the developer machine, not in CI.
 - A sandbox can see and use what its workspace contains. `copy`/`sync` copy `.git` (history,
-  remote URLs, hooks) unless excluded; `mount` lets the sandbox edit your real files.
+  remote URLs, hooks) unless excluded, and everything `.gitignore` does not list (see
+  [Mounts](#mounts)); `mount` lets the sandbox edit your real files.
 - Repository-controlled git filter drivers configured in the user's own repository config run for
   `mount` and `worktree` workspaces on the host (hooks, fsmonitor, pagers, editors and diff
   drivers are neutralised).

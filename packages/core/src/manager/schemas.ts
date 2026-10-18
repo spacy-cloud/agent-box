@@ -24,6 +24,7 @@ export const createRequestSchema = z.strictObject({
       ref: z.string().min(1).max(256).optional(),
       access: z.enum(['ro', 'rw']).optional(),
       exclude: z.array(z.string().min(1).max(512)).max(256).optional(),
+      gitignore: z.boolean().optional(),
     })
     .optional(),
   overrides: z
@@ -59,6 +60,7 @@ export const workspaceEstimateSchema = z.strictObject({
   path: hostPathStr,
   mode: z.enum(WORKSPACE_MODES).optional(),
   exclude: z.array(z.string().min(1).max(512)).max(256).optional(),
+  gitignore: z.boolean().optional(),
 });
 
 const envSchema = z

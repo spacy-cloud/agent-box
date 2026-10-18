@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Abox } from '@abox/core';
@@ -300,6 +300,52 @@ resources: { cpus: 1, memory: 512m, ttl: 1h }
       workspace: { ref: 'main' },
     });
     expect(withRef.s['code']).toBe('invalid_input');
+  });
+
+  it('workspace.gitignore: advertised, applied to copy workspaces, refused for other modes', async () => {
+    const { tools } = await a.client.listTools();
+    const create = tools.find((t) => t.name === 'sandbox_create')!;
+    const ws = (
+      create.inputSchema.properties as Record<string, { properties: Record<string, unknown> }>
+    )['workspace']!;
+    expect(ws.properties['gitignore']).toMatchObject({ type: 'boolean' });
+
+    const dir = join(env.projects, 'gi');
+    mkdirSync(join(dir, 'node_modules'), { recursive: true });
+    writeFileSync(join(dir, '.gitignore'), 'node_modules/\n');
+    writeFileSync(join(dir, 'main.c'), 'int main(){}\n');
+    writeFileSync(join(dir, 'node_modules', 'x.js'), 'x');
+    const staged = (): string => {
+      const spec = env.fakes.at(-1)!.specs.at(-1)!;
+      if (spec.workspace.kind !== 'copy') throw new Error('not a copy workspace');
+      return spec.workspace.hostPath;
+    };
+    const on = await a.call('sandbox_create', {
+      template: 'fake-box',
+      workspace: { mode: 'copy', path: dir },
+    });
+    expect(on.s['ok']).toBe(true);
+    expect(existsSync(join(staged(), 'main.c'))).toBe(true);
+    expect(existsSync(join(staged(), 'node_modules'))).toBe(false);
+    const off = await a.call('sandbox_create', {
+      template: 'fake-box',
+      workspace: { mode: 'copy', path: dir, gitignore: false },
+    });
+    expect(off.s['ok']).toBe(true);
+    expect(existsSync(join(staged(), 'node_modules', 'x.js'))).toBe(true);
+
+    const mount = await a.call('sandbox_create', {
+      template: 'fake-box',
+      workspace: { mode: 'clone', path: dir, gitignore: true },
+    });
+    expect(mount.isError).toBe(true);
+    expect(mount.s['code']).toBe('invalid_input');
+    expect(String(mount.s['message'])).toContain('copy and sync');
+    const notBool = await a.call('sandbox_create', {
+      template: 'fake-box',
+      workspace: { mode: 'copy', path: dir, gitignore: 'yes' },
+    });
+    expect(notBool.isError).toBe(true);
   });
 
   it('without a template the config default is used, else the call is refused', async () => {

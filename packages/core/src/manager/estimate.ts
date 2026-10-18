@@ -1,7 +1,12 @@
 import { stat } from 'node:fs/promises';
 import { AboxError } from '../errors.js';
 import { canonicalizePath, checkHostPath } from '../policy/index.js';
-import { compileExcludes, scanTree, WORKSPACE_COPY_LIMITS } from '../workspace/index.js';
+import {
+  compileExcludes,
+  GitignoreSession,
+  scanTree,
+  WORKSPACE_COPY_LIMITS,
+} from '../workspace/index.js';
 import { describeScan } from '../workspace/index.js';
 import type { ProgressInfo } from '../workspace/index.js';
 import type { Internals } from './internals.js';
@@ -69,9 +74,11 @@ export async function estimateWorkspace(
       durationMs: 0,
     };
   }
+  const gitignore = req.gitignore !== false;
   const scan = await scanTree(path, {
     exclude: compileExcludes(req.exclude),
     gitMode: 'visit',
+    ...(gitignore ? { gitignore: new GitignoreSession(), measureIgnored: true } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
     onProgress: (p) =>
       opts.onProgress?.(`scanning workspace … ${describeScan(p)}`, {
@@ -87,6 +94,12 @@ export async function estimateWorkspace(
     entries: scan.entries,
     files: scan.files,
     truncated: scan.stoppedBy !== undefined,
+    ...(gitignore
+      ? {
+          ignored: scan.ignored,
+          ...(scan.ignoredTotals ? { ignoredTotals: scan.ignoredTotals } : {}),
+        }
+      : {}),
     overSoftLimit: scan.bytes > soft.bytes || scan.entries > soft.entries,
     overHardLimit: scan.stoppedBy !== undefined,
     soft,
