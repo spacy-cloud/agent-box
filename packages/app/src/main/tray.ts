@@ -1,7 +1,7 @@
 import { Menu, Notification, Tray, app } from 'electron';
 import type { ApprovalView } from '@abox/core';
 import type { Locale } from '../shared/ipc';
-import { drawIcon } from './icons';
+import { trayIcon } from './icons';
 import { mt } from './i18n';
 
 export interface TrayHandlers {
@@ -27,7 +27,7 @@ export class TrayController {
   ) {
     this.notificationsAvailable = Notification.isSupported();
     try {
-      this.tray = new Tray(drawIcon(32, false));
+      this.tray = new Tray(trayIcon(false));
       this.tray.on('click', () => handlers.showWindow());
       this.refresh();
     } catch {
@@ -55,7 +55,7 @@ export class TrayController {
   private refresh(): void {
     if (!this.tray) return;
     try {
-      this.tray.setImage(drawIcon(32, this.count > 0));
+      this.tray.setImage(trayIcon(this.count > 0));
       this.tray.setToolTip(
         this.count > 0
           ? mt(this.locale, 'main.tray.tooltipPending', { count: this.count })

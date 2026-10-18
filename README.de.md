@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+    <img src="docs/assets/logo.png" alt="abox" width="160">
+  </picture>
+</p>
+
 # abox - Agent Sandbox Manager (Kurzfassung)
 
 Lokale Sandboxes für KI-Agenten. Eine Umgebung wird einmal als Template beschrieben und lässt sich
