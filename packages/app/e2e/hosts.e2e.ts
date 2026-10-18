@@ -144,7 +144,7 @@ Host *
     await expect(dlg.getByRole('button', { name: '0 importieren' })).toBeDisabled();
     await dlg.getByRole('checkbox', { name: 'alpha importieren' }).check();
     await dlg.getByRole('button', { name: '1 importieren' }).click();
-    await expect(page.getByText('1 Host(s) importiert')).toBeVisible();
+    await expect(page.getByText('1 Host importiert')).toBeVisible();
 
     const row = page.locator('tr', { hasText: 'alpha' });
     await expect(row).toContainText('Geteilt');
