@@ -74,6 +74,9 @@ ls [--json]`, `abox cache rm <key>|--project <path>|--all` (human only), `abox g
   prints it on stderr on a terminal (`estimate` with `--json`); the New sandbox dialog shows it on the
   Options step and does not allow "Next" when a limit would refuse the sandbox. It is a ceiling, not a
   performance prediction.
+- Logo: the README shows it (light and dark variant), the GUI uses the mark in the sidebar, as
+  window and tray icon (with a red dot while approvals wait) and the AppImage gets icons from 16 to
+  512 px (`packages/app/build/icons`).
 - Built-in templates for more stacks: `flutter-dev` (Flutter 3.47 and Dart 3.13 with the Linux
   desktop build chain: analyze, test, format, web and Linux builds, the packages of a new app
   baked into the pub cache; no Android), `tauri-dev` (Rust, Node.js 24, pnpm and the Tauri 2

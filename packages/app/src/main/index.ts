@@ -9,7 +9,7 @@ import type { IpcHandle } from './ipc';
 import { Askpass } from './askpass';
 import { openSshPty, sshLabel } from './ssh-pty';
 import { TtyManager, backendFromTtySession } from './tty';
-import { drawIcon } from './icons';
+import { windowIcon } from './icons';
 import { Monitor } from './monitor';
 import { originOf } from './guard';
 import { openRuntime } from './runtime';
@@ -114,7 +114,7 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     title: 'abox',
-    icon: drawIcon(64, false),
+    icon: windowIcon(),
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#14171c' : '#f6f7f9',
     webPreferences: {
       preload: join(import.meta.dirname, '../preload/index.cjs'),

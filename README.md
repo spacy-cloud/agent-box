@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+    <img src="docs/assets/logo.png" alt="abox" width="160">
+  </picture>
+</p>
+
 # abox - Agent Sandbox Manager
 
 [![CI](https://github.com/spacy-cloud/agent-box/actions/workflows/ci.yml/badge.svg)](https://github.com/spacy-cloud/agent-box/actions/workflows/ci.yml)

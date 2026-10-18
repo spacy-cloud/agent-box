@@ -15,6 +15,7 @@ import { TemplatesView } from './views/Templates';
 import { HostsView } from './views/Hosts';
 import { SshPanel, SshTabsProvider, useSshTabs } from './views/ssh-tabs';
 import { AskpassHost } from './components/AskpassDialog';
+import logoMark from './assets/logo-mark.png';
 
 const NAV: Array<{ view: Exclude<ViewName, 'detail'>; key: string }> = [
   { view: 'sandboxes', key: 'nav.sandboxes' },
@@ -89,7 +90,10 @@ function Shell() {
   return (
     <div className="app">
       <nav className="sidebar" aria-label={t('nav.label')}>
-        <div className="brand">abox</div>
+        <div className="brand">
+          <img src={logoMark} alt="" width={28} height={28} />
+          <span>abox</span>
+        </div>
         <ul>
           {NAV.map((n) => (
             <li key={n.view}>
