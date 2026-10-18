@@ -123,6 +123,10 @@ export function registerSandbox(program: Command, cli: Cli): void {
       '--no-gitignore',
       'copy/sync workspace: copy everything, ignored files included (needs --workspace)',
     )
+    .option(
+      '--no-cache',
+      'do not mount the template\'s package caches (pnpm store, Cargo registry, ...): a clean install; see "abox cache"',
+    )
     .addOption(new Option('--net <mode>', 'network mode').choices([...NETWORK_MODES]))
     .option(
       '--allow <domains>',
@@ -143,6 +147,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
           ref?: string;
           exclude?: string;
           gitignore?: boolean;
+          cache?: boolean;
           net?: (typeof NETWORK_MODES)[number];
           allow?: string;
           ttl?: string;
@@ -197,6 +202,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
           workspace,
           ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
           ...(o.requestId ? { requestId: o.requestId } : {}),
+          ...(o.cache === false ? { cache: false } : {}),
           projectDir: cli.projectDir(),
         };
         // Does it fit? One line on stderr for a person, the whole estimate in --json. A ceiling from limits and

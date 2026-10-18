@@ -46,6 +46,8 @@ function mount(status: McpStatus = STATUS) {
         return { agent: 'claude-code', claudeCommand: 'c', json: '{}', contexts: ['claude-code'] };
       case 'doctor:run':
         return { ok: true, backends: [], checks: [] };
+      case 'caches:list':
+        return { caches: [], totalBytes: 0, unreachable: [] };
       case 'tokens:list':
         return [];
       default:

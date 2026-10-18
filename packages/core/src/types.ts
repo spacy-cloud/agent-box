@@ -111,6 +111,28 @@ export interface TemplateSpec {
   python?: { version?: string; project?: string };
   /** VM backend specifics (phase 5). */
   vm?: { image?: string; cloudInit?: string; diskSize?: string };
+  /**
+   * Package caches abox keeps per project (see `docs/templates.md`). Each entry is one directory of
+   * the sandbox that outlives the sandbox, merged by `name` on `extends`.
+   */
+  caches?: CacheDeclaration[];
+}
+
+/** One package cache of a template: where a tool keeps its downloads, and how to point it there. */
+export interface CacheDeclaration {
+  /** Short name of the cache, unique per template: `pnpm-store`, `cargo-registry`. */
+  name: string;
+  /** Absolute path inside the sandbox, or `~/...` (the home directory of the template user). */
+  path: string;
+  /** Environment variables set while the cache is mounted; `${path}` stands for the cache path. */
+  env?: Record<string, string>;
+}
+
+/** A cache of a resolved template: `~` and `${path}` are expanded. */
+export interface TemplateCache {
+  name: string;
+  path: string;
+  env: Record<string, string>;
 }
 
 export type TemplateSourceKind = 'builtin' | 'user' | 'project';
@@ -163,6 +185,8 @@ export interface ResolvedTemplate {
   labels: Record<string, string>;
   python?: { version: string; project?: string };
   vm?: { image: string; cloudInit?: string; diskSize?: string };
+  /** Package caches the template declares (they are only mounted when a project is shared). */
+  caches: TemplateCache[];
   source: { kind: TemplateSourceKind; path?: string };
   /**
    * Templates with `base.dockerfile`: the Dockerfile and the build context it can `COPY`, as
@@ -271,6 +295,44 @@ export interface NetworkSpec {
   injections: ProxyInjection[];
 }
 
+/**
+ * A package cache volume to mount into one sandbox. The `key` identifies the cache (project, owner,
+ * template stack, cache name and user id, see `deriveCacheKey`), the rest is metadata the provider
+ * stores as labels on the volume so that `abox cache ls` can show it.
+ */
+export interface CacheMount {
+  /** Cache key (lowercase hex). The provider names the volume after it. */
+  key: string;
+  /** Cache name from the template (`pnpm-store`). */
+  name: string;
+  /** Mount path inside the sandbox (absolute, resolved). */
+  path: string;
+  /** Canonical source path of the project the cache belongs to. */
+  project: string;
+  /** Template name (the stack) the cache belongs to. */
+  stack: string;
+  /** Owner of the sandboxes that use it: `human` or `agent:<context>`. */
+  owner: string;
+}
+
+/** A cache volume as the backend reports it (`SandboxProvider.listCaches`). */
+export interface CacheVolume {
+  key: string;
+  /** Cache name from the template. */
+  name: string;
+  project: string;
+  stack: string;
+  owner: string;
+  /** Creation time in ms since the epoch (0 when the engine does not say). */
+  createdAt: number;
+  /** Bytes used on disk; `null` when the engine cannot tell (or `size` was not requested). */
+  sizeBytes: number | null;
+  /** A sandbox (running or not) references the volume, so it cannot be removed. */
+  inUse: boolean;
+  /** Engine the volume lives on (`docker` | `podman`); one engine can be reached through several backends. */
+  engine: string;
+}
+
 /** Everything a provider needs to create one sandbox. Never persisted as-is (contains secrets). */
 export interface SandboxSpec {
   id: SandboxId;
@@ -293,6 +355,11 @@ export interface SandboxSpec {
   createdAt: number;
   expiresAt: number;
   labels: Record<string, string>;
+  /**
+   * Package cache volumes to mount (read-write, at their own paths only). Absent or empty: none.
+   * A provider without `capabilities().caches` rejects a non-empty list with `unsupported`.
+   */
+  caches?: CacheMount[];
 }
 
 /** Live sandbox information, as reported by the backend (source of truth for existence). */
@@ -475,6 +542,11 @@ export interface ProviderCapabilities {
   osFamilies: OsFamily[];
   /** Runs on a remote host (workspace `bind` impossible). */
   remote: boolean;
+  /**
+   * Can mount per-project package cache volumes (`SandboxSpec.caches`, `listCaches`, `removeCache`).
+   * Absent / false: the manager creates sandboxes without caches and says so.
+   */
+  caches?: boolean;
 }
 
 export interface BackendStatus {

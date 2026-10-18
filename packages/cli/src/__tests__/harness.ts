@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PassThrough } from 'node:stream';
 import { MemorySecretStore, type SecretStore } from '@abox/core';
-import { openAbox, type OpenAboxOptions } from '@abox/runtime';
+import { openAbox, type AboxRuntime, type OpenAboxOptions } from '@abox/runtime';
 import { runCli } from '../program.js';
 import type { CliIo, InStream, OutStream } from '../cli.js';
 
@@ -92,6 +92,8 @@ export interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   runtime?: Partial<OpenAboxOptions>;
+  /** Replaces the runtime (a stub manager for tests of what the CLI prints and asks). */
+  openRuntime?: (opts: OpenAboxOptions) => Promise<AboxRuntime>;
   /** Install SIGINT/SIGTERM handlers like the real binary. */
   signals?: boolean;
 }
@@ -120,8 +122,9 @@ export async function run(t: TestEnv, args: string[], o: RunOptions = {}): Promi
   const code = await runCli(args, {
     io,
     handleSignals: o.signals === true,
-    openRuntime: (opts) =>
-      openAbox({ secretStore: t.secrets as SecretStore, ...opts, ...o.runtime }),
+    openRuntime:
+      o.openRuntime ??
+      ((opts) => openAbox({ secretStore: t.secrets as SecretStore, ...opts, ...o.runtime })),
   });
   return { code, stdout, stderr, json: parseJson(stdout), ms: Date.now() - started };
 }

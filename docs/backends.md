@@ -35,6 +35,7 @@ deliver is rejected with `unsupported` instead of silently losing the feature.
 | workspace delivery             | none, bind, copy                         | none, bind, copy      | none, copy                               | none, copy       |
 | extra host mounts              | yes (read-only default)                  | yes                   | no                                       | no               |
 | snapshots                      | yes (committed image)                    | yes                   | yes (QEMU, disk and RAM)                 | yes              |
+| package caches (per project)   | yes (named volumes)                      | yes (container mode)  | no                                       | no               |
 | interactive terminal (`shell`) | yes                                      | yes                   | yes                                      | no               |
 | CPU / memory / pids limits     | yes                                      | yes                   | yes                                      | no               |
 | disk limit                     | only with a quota-capable storage driver | same                  | yes (virtual disk size, at least 10 GiB) | no               |
@@ -96,6 +97,15 @@ and tested with abox, so the `hardened` level itself is untested.
   `resources.disk` is rejected as `unsupported`.
 - Snapshots commit the container layer to an image `abox-snap/<id>:<name>`; volumes, tmpfs and
   bind mounts are not part of a snapshot, and snapshots do not work with a read-only root.
+- **Package caches** are named volumes `abox-cache-<instance>-<key>` (labels `abox.managed`,
+  `abox.role=cache`, `abox.instance`, `abox.cache=<key>`, plus project, template, cache name and
+  owner), created on first use, mounted read-write at the paths the template declares and kept when
+  the sandbox is removed. The engine creates a mount point and the directories above it owned by
+  root, so abox hands the mount point and the directories between the home and the cache to the
+  sandbox user at every create. A new volume starts as a copy of what the image has at the path. A
+  sandbox that runs as the host user (a writable bind mount, see above) gets a volume of its own
+  (`-u<uid>` suffix) so the owners of the files never mix. Sizes come from `GET /system/df`. See
+  [templates](templates.md#package-caches) and [security](security.md#package-caches).
 - Files that a template places under `/tmp` are re-copied at every start (`/tmp` is a tmpfs).
 - File reads and listings of a **stopped** sandbox apply the sandbox user's permissions (owner, group,
   mode of every directory on the path, symlinks resolved by abox), like a running one; the engine's
@@ -131,6 +141,7 @@ the code or the engine is known to differ, the table says so.
 | Image build (`prepare`, own Dockerfiles, `--force-rm` semantics), image cache by template hash, `gcImages`                                                   | Expected to work with Podman's compat build endpoint; build-log format and step caching differ (unverified)                                                                                  |
 | Network `none` and `open` (`abox-open` bridge)                                                                                                               | Expected to work                                                                                                                                                                             |
 | Network `allowlist` (internal network, proxy sidecar, `abox-egress`, alias `abox-proxy`)                                                                     | Needs container DNS on user-defined networks (netavark with aardvark-dns; the old CNI backend needs its dnsname plugin). Unverified, a likely first failure on a new Podman                  |
+| Package cache volumes (`abox-cache-*`, labels, `system df` sizes, ownership of the mount point through the archive API)                                      | Expected to work like Docker's volumes API; the `type=volume` filter of `system/df` and the volume sizes are unverified (a size can show as `?`)                                             |
 | Cleanup of the sidecar, its secret volume and the internal network at expiry                                                                                 | Expected to work (container and network removal)                                                                                                                                             |
 | `extendExpiry`, TTL entrypoint, `abox.expires` labels                                                                                                        | Expected to work                                                                                                                                                                             |
 | Snapshots (`commit`) and restore                                                                                                                             | Expected to work                                                                                                                                                                             |
@@ -181,9 +192,12 @@ by the sandbox user and first on `PATH`, is created in the image.
 - **Without `uv.lock`**: `uv sync` runs inside the sandbox at its first start, with the sandbox's
   network. With `network: none` that first start fails (`backend_error`). Prefer a lock file.
 
-_No shared package cache._ A cache shared between sandboxes would let one sandbox poison the next,
-so the uv cache is part of the image and filled only at build time; each sandbox gets its own
-copy-on-write layer. Rebuilds re-download.
+_Package cache._ The uv cache is part of the image (filled at build time). The `py-uv` template
+also declares it as a per-project [package cache](templates.md#package-caches): the volume starts
+as a copy of the one in the image and then keeps what the sandboxes of that project download. A
+cache is never shared between projects or between you and an agent, so one sandbox cannot poison
+another project's cache (see [security](security.md#package-caches)); `--no-cache` uses the cache
+of the image only. Rebuilds re-download.
 
 **Venv mode** is for machines where no container engine is possible. Commands are plain host
 processes with your rights; there is no filesystem boundary (only the file API is confined), no
@@ -261,7 +275,8 @@ for every use, a warning on every validation.
 - Commands start in a per-sandbox directory below abox's data directory with a redirected `HOME`;
   the _file API_ of abox (`read_file`, `copy`) is confined, but commands can touch anything you can.
 - `base`, `packages`, `tools` and `setup` are rejected.
-- Workspace delivery is `none` or `copy`; no mounts.
+- Workspace delivery is `none` or `copy`; no mounts, no package caches (`caches:` in a `process`
+  template is an error).
 
 ## What is verified
 

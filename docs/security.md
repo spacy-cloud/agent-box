@@ -180,6 +180,52 @@ Exceptions are possible only per destination and with approval.
 
 The proxy contract is in `docs/internal/proxy-contract.md`.
 
+### The network log and allowing a destination
+
+Requests the proxy denied are visible and can be allowed without editing YAML: `abox network log`, the GUI's
+Network tab and, for agents, `sandbox_network_log` and a hint in the result of `sandbox_exec`.
+
+**What is logged.** For every request the proxy records the destination host and port, the method (`CONNECT`
+for https tunnels, the HTTP method for plain http), the address it resolved and connected to, the decision and,
+for a denial, the reason (`not in allowlist`, `port not allowed`, `ip literal not allowed`, `blocked address ...`,
+`dns lookup failed`, ...). **Never** request or response bodies, paths, query strings, headers or any secret: the
+proxy does not write them (a request that goes through secret injection is logged like any other, host only), the
+provider copies only those fields, and the audit log masks known secret values on top. The log is the
+`network.egress` entries of the [audit log](#audit-log) (a flood is summarized as `network.egress.summary` with
+counts per destination, denials are always listed one by one), so it has the audit log's rules and no storage
+of its own: append-only, hash-chained, no deletion (there is no separate retention to configure), and the same
+late arrival (entries are copied from the proxy's own log when abox touches the sandbox, and a query of the log
+pulls in what is new). The log of a removed sandbox stays. What is bounded is the work for one answer: it
+aggregates at most the newest 10 000 entries of the sandbox and says when it left older ones out, and a
+collection copies at most 500 denials and 200 allowed requests individually.
+
+**Allow once** (`abox network allow`, the GUI button, `Abox.allowNetwork`) adds destinations to the allowlist of
+**that sandbox only** and updates its proxy live. It does not touch `policy.yaml`, other sandboxes or the profile.
+It is for humans only: an agent calling it is refused (`policy_denied`, audited as `network.allow`) and has to
+use `access_request`, which a human decides when the destination is beyond the profile. It can **not** allow:
+
+- IP addresses (also written as numbers), the names of the local machine and internal networks (`localhost`,
+  `*.local`, `*.internal`, `*.lan`, `*.home.arpa`, ...) and cloud metadata services (`metadata.google.internal`, ...).
+  Independently of the allowlist the proxy refuses every destination that **resolves** to a private, local,
+  link-local or metadata address; a name the log shows being refused for that reason is refused here too, with
+  the explanation. Only a private-address exception opens such a range, and that is a separate request that always
+  needs a human (see [Policy model](#policy-model)).
+- anything in a sandbox without an allowlist: network mode `none` or `open` cannot change on a running sandbox,
+  so there is nothing to allow (the error says so and how to create a sandbox that fits).
+- anything the human profile's own limits forbid: the request goes through the same evaluation as an
+  `access_request` (a destination beyond the profile needs the confirmation, a profile without any allowlist is
+  denied).
+
+Exact hosts are the default. A wildcard (`*.example.org`) is an explicit choice, always needs a confirmation
+(CLI `--yes` or the prompt, a dialog in the GUI) and is never offered for a name with only two labels or under
+a public suffix such as `co.uk` (a heuristic list, not the public suffix list).
+
+**Allow permanently** (`--permanent`, the GUI's "Allow permanently...", `Abox.proposeNetworkPolicy` then
+`setPolicy`) proposes adding the destinations to `network.allow` of the profile of the sandbox's owner. Nothing
+is written until you confirm the diff; the save is the normal policy edit (validated, revisioned, audited) and is
+refused when `policy.yaml` changed since the proposal. It affects every context that uses the profile, and from
+then on agents get the destination without a human decision, so read the diff.
+
 ## Secrets
 
 - Secrets live in the **host keyring** (libsecret via `secret-tool`). They never appear in
@@ -193,6 +239,81 @@ The proxy contract is in `docs/internal/proxy-contract.md`.
   in it can read it. They require approval and show a warning.
 - Output from sandboxes passes through a filter that masks known secret values. This is **best
   effort and no guarantee**.
+
+## Package caches
+
+A **package cache** is a volume that outlives the sandboxes and holds what a package manager
+downloaded (the pnpm store, the Cargo registry, the uv and pip caches, the Composer cache, the pub
+cache), so a second sandbox of the same project does not download everything again. Which
+directories are caches is declared by the template (`caches:`, see
+[templates](templates.md#package-caches)); the built-in stack templates declare theirs. This is the
+one place where a sandbox leaves something behind for the next one, so the rules are strict:
+
+- **Identity.** A cache belongs to exactly one combination of **project** (the canonical,
+  symlink-free source folder of the workspace), **owner** (`human`, or `agent:<context>`),
+  **template** (the stack, `node-dev`), **cache name** (`pnpm-store`) and **user id**, and the volume
+  is named after a hash of that combination plus the abox instance. Two projects never share a
+  cache, so a sandbox of one project cannot poison the downloads of another. The human and each
+  agent context have separate caches even for the same project, so what a (possibly manipulated)
+  agent's sandbox writes is never read by the sandboxes you create yourself, and an agent never
+  sees what you installed. A sandbox without a project folder (workspace mode `empty`) has no caches:
+  nothing identifies what they would belong to.
+- **Mounted where declared, nowhere else.** The volume is mounted read-write at the paths of the
+  template's `caches:` list and at no other place. The paths must lie outside the workspace and the
+  other mounts, not in `/tmp`, the home directory itself or a system directory; a spec file or a
+  secret file can never be placed inside a cache. Agents cannot pass a cache path, a volume name or
+  a mount: the only thing they can do is `cache: false` for one sandbox. A project template (from a
+  repository) can declare caches, but it is untrusted until a human has approved its content like
+  any other project template; the cache section is part of what the review shows.
+- **Not part of the project.** A cache is not below the workspace, so `abox export` (diff, patch,
+  branch, files), the workspace baseline and the size estimate never see it.
+- **Instances and hosts.** The volume carries the labels `abox.managed`, `abox.role=cache`,
+  `abox.instance` and `abox.cache=<key>`. Another abox installation on the same engine neither
+  lists, mounts nor removes it (`abox gc --orphans` can, deliberately, after the data directory of
+  its installation was deleted). On a remote host the volume lives on that host's engine, as the
+  sandboxes do. The `process`, `vm` and venv-mode backends have no volumes: a template that declares
+  caches for them is refused (`process`, `vm`), or the caches are not mounted (`isolation: none`).
+- **Concurrent sandboxes share.** Two sandboxes of the same project, template and owner that run at
+  the same time use the same cache, read-write. abox does not copy or lock it: pnpm, npm, Cargo, uv,
+  pip, pub and Composer write their caches with atomic renames or their own file locks (Cargo and uv
+  lock across processes, and flock works across containers on one host). Per-sandbox copy-on-write
+  caches would defeat the purpose and are not offered; use `--no-cache` for a sandbox that must not
+  touch the shared cache.
+- **No secrets by design.** A secret injected by the egress proxy (`inject: proxy`) is added to the
+  request outside the sandbox and never reaches the cache. A secret with `inject: env` or
+  `inject: file` is readable by code in the sandbox, and a tool could write it into its cache (an
+  authenticated registry URL in a Cargo or npm metadata cache, say): those caches are as secret as
+  the secret. Prefer `inject: proxy`; a cache never holds a spec file.
+- **Size and age.** `cache_max_bytes` of the profile (default `10g`, per project, owner and host) and
+  `caches.max_age` of `config.yaml` (default `30d`) are enforced by `abox gc`, which removes caches
+  that are too old or push a project over its cap, least recently used first. Between two runs of
+  `gc` a cache can grow past the cap; a runaway sandbox is limited by its own disk, not by this
+  setting. Caches in use are never removed.
+
+**What a cache can carry over between sandboxes of the same project.** Everything a sandbox's
+package manager can write: a hostile dependency's install script (`postinstall`, `build.rs`, a
+setup hook) can change the files in the project's own cache. abox does not inspect or verify the
+content of a cache. Several tools check what they download against the integrity values in the lock
+file, but a tool that trusts what it has already unpacked (the extracted `registry/src` of Cargo,
+an unpacked package in a store, a Composer or pub archive, any cache that is not content-addressed)
+will use a planted file as it is. So a malicious dependency of **this** project can plant something
+that a **later sandbox of this
+project** (of the same owner and template) runs. It cannot reach another project, another owner or
+the host. If you suspect a cache (a dependency was compromised, a sandbox ran code you did not
+trust), wipe it:
+
+```console
+$ abox cache ls                          # what exists
+$ abox --project ~/projects/app cache rm # every cache of one project
+$ abox cache rm 3f9a1c0b2d4e5f60         # one cache by key
+$ abox cache rm --all                    # everything
+```
+
+or use the Caches section of the GUI Settings. Stop or delete the sandboxes that use a cache first
+(it is not removed while one references it). Create a sandbox with `abox create --no-cache` (MCP
+`cache: false`, the checkbox in the GUI) for a single fresh install without touching the shared
+cache, and set `caches: false` in a profile to give an agent no caches at all. Every creation, use
+and removal is in the audit log (`cache.create`, `cache.use`, `cache.remove`).
 
 ## Policy model
 
@@ -214,8 +335,9 @@ bound to profile rights.
 
 A profile (in `policy.yaml`) groups the limits and rights for an agent context: allowed
 templates, limits (sandbox count, CPUs, memory, TTL), workspace roots and modes, network modes and
-presets, mounts, allowed secrets and injection methods, and minimum isolation per capability.
-Profiles can extend each other. The agent contexts themselves (which names exist and which profile
+presets, mounts, allowed secrets and injection methods, minimum isolation per capability, and the
+[package caches](#package-caches) (`caches: true|false`, `cache_max_bytes`). Profiles can extend
+each other. The agent contexts themselves (which names exist and which profile
 each one uses) are defined in the same `policy.yaml`; there is no separate `agents.yaml`. The
 tokens for HTTP agents are not in a file: they live in the state database (`state.db`), as SHA-256
 hashes only. Illustrative example:
@@ -240,6 +362,8 @@ profiles:
       inject: [proxy]
     min_isolation:
       network_open: vm
+    caches: true # per-project package caches (the default); false = none for this profile
+    cache_max_bytes: 10g # `abox gc` trims a project's caches to this (the default)
 ```
 
 ### Decision flow
@@ -319,6 +443,9 @@ the context files. A project template may only use a Dockerfile inside its own p
 - Command output is not stored in the audit log; it goes to rotating per-sandbox log files with
   configurable, short default retention.
 - Available through the GUI (with filters), `abox audit`, and export as JSON Lines.
+- Allowing destinations from the network log is audited as `network.allow` (scope `sandbox`; refusals with
+  decision `deny` and the reason) next to the usual `sandbox.access_applied`; a permanent change is a `policy.set`
+  revision.
 - **Egress entries (`network.egress`) arrive late.** The proxy sidecar keeps its own log; abox
   copies it into the audit log when it next touches the sandbox (exec, inspect, stop, remove, the
   TTL sweep) and when you query the audit log, never continuously. A connection made by a process
@@ -477,6 +604,11 @@ of this documentation; it will be published per release alongside the changelog.
   `mount` and `worktree` workspaces on the host (hooks, fsmonitor, pagers, editors and diff
   drivers are neutralised).
 - GUI applications, browsers, audio and GPU access inside sandboxes are out of scope.
+- **Package caches are shared state between sandboxes of one project.** A hostile dependency can
+  poison its own project's cache for later sandboxes of the same owner and template, see
+  [Package caches](#package-caches). Size and age limits are enforced by `abox gc`, not while a
+  sandbox writes. Cache sizes come from the engine (`system df`); the cache volumes were verified with
+  Docker only, not with Podman.
 
 ### Network and secrets
 

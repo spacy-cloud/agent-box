@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { posix } from 'node:path';
 import { AboxError, type ErrorIssue } from '../errors.js';
 import type {
   AccessMode,
@@ -10,6 +11,7 @@ import type {
   PackageManager,
   ResolvedTemplate,
   SecretInjection,
+  TemplateCache,
   TemplateSourceKind,
   TemplateSpec,
 } from '../types.js';
@@ -165,8 +167,8 @@ function unique<T>(items: T[]): T[] {
  * the result consistent: a child `base` replaces the parent's `base` as a whole (os and
  * dockerfile are alternatives), a child `tools` entry replaces the parent's entry for the
  * same preset (so `node@22` can be bumped to `node@24`), mounts/secrets are keyed by
- * target/ref, and a child `network.mode` other than `allowlist` drops inherited
- * allow/presets entries.
+ * target/ref, caches are keyed by name, and a child `network.mode` other than `allowlist` drops
+ * inherited allow/presets entries.
  */
 export function mergeTemplateSpecs(parent: TemplateSpec, child: TemplateSpec): TemplateSpec {
   const out: TemplateSpec = {
@@ -239,6 +241,13 @@ export function mergeTemplateSpecs(parent: TemplateSpec, child: TemplateSpec): T
     out.secrets = [
       ...(parent.secrets ?? []).filter((s) => !childRefs.has(s.ref)),
       ...(child.secrets ?? []),
+    ];
+  }
+  if (parent.caches || child.caches) {
+    const childNames = new Set((child.caches ?? []).map((c) => c.name));
+    out.caches = [
+      ...(parent.caches ?? []).filter((c) => !childNames.has(c.name)),
+      ...(child.caches ?? []),
     ];
   }
   if (parent.env || child.env) out.env = { ...parent.env, ...child.env };
@@ -557,6 +566,17 @@ export async function resolveTemplate(
       );
   }
 
+  // --- caches -------------------------------------------------------------
+  const caches = resolveCaches(
+    merged.caches ?? [],
+    backend,
+    user.name,
+    workspace.path,
+    mounts.map((m) => m.target),
+    secrets.flatMap((x) => (x.path ? [x.path] : [])),
+    problems,
+  );
+
   // --- python / vm --------------------------------------------------------
   let python: ResolvedTemplate['python'];
   if (backend === 'python') {
@@ -657,6 +677,7 @@ export async function resolveTemplate(
     env,
     secrets,
     labels: { ...(merged.labels ?? {}) },
+    caches,
     ...(python ? { python } : {}),
     ...(vm ? { vm } : {}),
     source: { kind: opts.source.kind, ...(opts.source.path ? { path: opts.source.path } : {}) },
@@ -664,6 +685,100 @@ export async function resolveTemplate(
     hash,
     contentHash,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Caches
+// ---------------------------------------------------------------------------
+
+/** Backends whose sandboxes can mount a cache (the others have no volumes to keep it in). */
+const CACHE_BACKENDS: BackendKind[] = ['docker', 'podman', 'python'];
+
+/** True when `a` and `b` are the same path or one is inside the other. */
+function pathsOverlap(a: string, b: string): boolean {
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+/**
+ * Expands `~/` (the home directory of the template user) and `${path}` in the environment values,
+ * normalizes the paths and rejects what cannot work: duplicate names, nested or equal paths, paths
+ * that overlap the workspace, a mount or a secret file, and conflicting environment variables.
+ */
+function resolveCaches(
+  declared: NonNullable<TemplateSpec['caches']>,
+  backend: BackendKind,
+  userName: string,
+  workspacePath: string,
+  mountTargets: string[],
+  secretPaths: string[],
+  problems: Problems,
+): TemplateCache[] {
+  if (declared.length === 0) return [];
+  if (!CACHE_BACKENDS.includes(backend)) {
+    problems.add(
+      'caches',
+      `backend "${backend}" has no volumes to keep a package cache in; remove caches (only docker, podman and python can use them)`,
+    );
+    return [];
+  }
+  const home = `/home/${userName}`;
+  const out: TemplateCache[] = [];
+  const names = new Set<string>();
+  const envOwner = new Map<string, { value: string; cache: string }>();
+  const workspace = posix.normalize(workspacePath);
+  for (const [i, c] of declared.entries()) {
+    const at = `caches[${i}]`;
+    if (names.has(c.name))
+      problems.add(`${at}.name`, `cache "${c.name}" is declared more than once`);
+    names.add(c.name);
+    const expanded = c.path.startsWith('~/') ? posix.join(home, c.path.slice(2)) : c.path;
+    const path = posix.normalize(expanded).replace(/(.)\/+$/, '$1');
+    if (path === home)
+      problems.add(`${at}.path`, `cache path "${c.path}" is the home directory itself`);
+    if (path === '/tmp' || path.startsWith('/tmp/'))
+      problems.add(
+        `${at}.path`,
+        `cache path "${c.path}" is inside /tmp, which is a memory filesystem that does not keep anything`,
+      );
+    if (pathsOverlap(path, workspace))
+      problems.add(
+        `${at}.path`,
+        `cache path "${c.path}" overlaps the workspace ${workspacePath}; a cache must live outside the project`,
+      );
+    for (const t of mountTargets) {
+      if (pathsOverlap(path, posix.normalize(t)))
+        problems.add(`${at}.path`, `cache path "${c.path}" overlaps the mount target ${t}`);
+    }
+    for (const sp of secretPaths) {
+      const norm = posix.normalize(sp);
+      if (norm === path || norm.startsWith(`${path}/`))
+        problems.add(
+          `${at}.path`,
+          `cache path "${c.path}" contains the secret file ${sp}; a cache must never hold a secret`,
+        );
+    }
+    for (const prev of out) {
+      if (pathsOverlap(path, prev.path))
+        problems.add(
+          `${at}.path`,
+          `cache path "${c.path}" overlaps the cache "${prev.name}" (${prev.path}); caches must not be nested`,
+        );
+    }
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(c.env ?? {})) {
+      const value = v.split('${path}').join(path);
+      env[k] = value;
+      const other = envOwner.get(k);
+      if (other && other.value !== value)
+        problems.add(
+          `${at}.env.${k}`,
+          `environment variable ${k} is set to different values by the caches "${other.cache}" and "${c.name}"`,
+        );
+      envOwner.set(k, { value, cache: c.name });
+    }
+    out.push({ name: c.name, path, env });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

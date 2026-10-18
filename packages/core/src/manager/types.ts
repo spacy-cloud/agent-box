@@ -263,6 +263,12 @@ export interface CreateSandboxRequest {
   requestId?: string;
   /** Directory with `.sandbox/*.yaml` project templates; default: workspace path, then the abox project dir. */
   projectDir?: string;
+  /**
+   * `false`: do not mount the package caches of the template for this sandbox (a fresh install).
+   * `true` / absent: use them when the policy, the backend and the workspace allow it. Never
+   * overrides a policy that switched the caches off.
+   */
+  cache?: boolean;
 }
 
 export interface CreateOptions {
@@ -431,8 +437,22 @@ export interface ExecCompleted {
   durationMs: number;
   /** Reference for `readLog` (full masked output, rotating retention). */
   logRef: string;
+  /**
+   * Set when the egress proxy denied requests while the command ran (allowlist sandboxes only): the agent
+   * and the human learn about it without reading the audit log. Absent when nothing was denied.
+   */
+  network?: NetworkDenials;
 }
 export type ExecOutcome = ExecCompleted | PendingApproval | ConfirmationRequired;
+
+/** Requests the egress proxy denied during one operation, per destination (most frequent first, at most 5). */
+export interface NetworkDenials {
+  /** Number of denied requests. */
+  denied: number;
+  hosts: Array<{ host: string; port: number; count: number }>;
+  /** Destinations beyond `hosts`. */
+  moreHosts: number;
+}
 
 export interface ExecCallOptions {
   waitForApprovalMs?: number;
@@ -766,10 +786,73 @@ export interface DoctorReport {
   };
   audit: ChainVerification;
   reconcile: ReconcileReport;
+  /** Package caches on all reachable hosts (sizes best effort). */
+  caches?: { count: number; totalBytes: number | null };
+}
+
+/** One package cache volume (`abox cache ls`). */
+export interface CacheView {
+  host: string;
+  /** Cache key; `abox cache rm <key>` removes it. */
+  key: string;
+  /** Cache name from the template (`pnpm-store`). */
+  name: string;
+  /** Canonical project path the cache belongs to. */
+  project: string;
+  /** Template name the cache belongs to (the stack). */
+  stack: string;
+  /** `human` or `agent:<context>`. */
+  owner: string;
+  /** Bytes on disk; `null` when the engine cannot tell. */
+  sizeBytes: number | null;
+  createdAt: number;
+  /** When a sandbox last mounted it (creation time when abox has no record). */
+  lastUsedAt: number;
+  /** A sandbox (running or stopped) still references it; it cannot be removed. */
+  inUse: boolean;
+}
+
+export interface CacheList {
+  caches: CacheView[];
+  /** Sum of the known sizes. */
+  totalBytes: number;
+  /** Hosts that could not be asked. */
+  unreachable: Array<{ host: string; error: string }>;
+}
+
+/** What `removeCaches` removes: exactly one of `keys`, `project` or `all`. */
+export interface CacheSelector {
+  /** Keys or unique prefixes (at least 4 characters). */
+  keys?: string[];
+  /** Project path: all caches of that project. */
+  project?: string;
+  all?: boolean;
+  /** Limit to one host (default: every host with caches). */
+  host?: string;
+}
+
+export interface CacheRemoveResult {
+  removed: CacheView[];
+  /** Selected caches left alone (in use by a sandbox). */
+  skipped: Array<{ cache: CacheView; reason: string }>;
+  errors: string[];
 }
 
 export interface GcOptions {
   dryRun?: boolean;
+}
+
+/** A package cache `abox gc` removed (or would remove). */
+export interface GcCacheEntry {
+  host: string;
+  key: string;
+  name: string;
+  project: string;
+  stack: string;
+  owner: string;
+  sizeBytes: number | null;
+  /** `age`: unused for longer than `caches.max_age`; `cap`: the project's caches were above `cache_max_bytes`. */
+  reason: 'age' | 'cap';
 }
 
 export interface GcReport {
@@ -777,6 +860,8 @@ export interface GcReport {
   sandboxes: SandboxId[];
   workspaces: string[];
   images: GcImagesResult['removed'];
+  /** Package caches removed for age or size. */
+  caches: GcCacheEntry[];
   logs: { files: number; bytes: number };
   approvalsExpired: number;
   errors: string[];
@@ -885,6 +970,104 @@ export interface WorkspaceEstimate {
   soft: WorkspaceEstimateLimits;
   hard: WorkspaceEstimateLimits;
   durationMs: number;
+}
+
+// -- network log -----------------------------------------------------------------------------------------
+
+/** Why the proxy decided as it did, in a form surfaces can act on (the proxy's wording is in `reason`). */
+export type NetworkReasonKind =
+  | 'not_in_allowlist'
+  | 'port_not_allowed'
+  | 'ip_literal'
+  | 'blocked_address'
+  | 'dns_failed'
+  | 'plain_http_injection'
+  | 'method_not_allowed'
+  | 'connect_failed'
+  | 'invalid_request'
+  | 'other';
+
+/** Whether a destination of the log can be allowed with one decision, and how. */
+export interface NetworkAllowAdvice {
+  /** A decision can add it to this sandbox. */
+  possible: boolean;
+  /** The exact destination to allow (`host`, or `host:port` for a port other than 80 / 443). */
+  pattern?: string;
+  /** The wildcard that covers the parent domain: an explicit choice with a warning, never the default. */
+  wildcard?: string;
+  /** Why it can not be allowed (when `possible` is false). */
+  why?: string;
+}
+
+/** All requests to one destination (host and port), newest decision first. */
+export interface NetworkLogEntry {
+  /** Host as the proxy saw it (lower case); empty when the request could not even be parsed. */
+  host: string;
+  port: number;
+  /** Decision of the most recent request. */
+  decision: 'allow' | 'deny';
+  allowed: number;
+  denied: number;
+  /** `allowed + denied`. */
+  count: number;
+  firstSeen: number;
+  lastSeen: number;
+  /** Reason of the most recent denial (the proxy's text, no headers or paths). */
+  reason?: string;
+  reasonKind?: NetworkReasonKind;
+  /** Request methods seen, `CONNECT` for https tunnels (at most 8). */
+  methods: string[];
+  /** Requests that are only known through an overflow summary (counted, without time and method). */
+  summarized: number;
+  /** The sandbox's allowlist covers this destination now. */
+  allowedNow: boolean;
+  /** For entries with denials that are not allowed now. */
+  allow?: NetworkAllowAdvice;
+}
+
+export interface NetworkLogOptions {
+  /** Only requests at or after this time (ms since epoch). */
+  since?: number;
+  /** Only denied requests. */
+  denied?: boolean;
+  /** At most this many destinations (default 200, at most 1000), most recently seen first. */
+  limit?: number;
+}
+
+export interface NetworkLogView {
+  sandboxId: string;
+  /** `allowlist`: the proxy decides and logs. `none`: no network at all. `open`: no proxy, nothing is logged. */
+  mode: NetworkMode;
+  entries: NetworkLogEntry[];
+  totals: { allowed: number; denied: number; destinations: number };
+  /** Older requests exist that are not part of the result (event cap or `limit`). */
+  truncated: boolean;
+  /** Most requests the log looks at per sandbox. */
+  maxEvents: number;
+}
+
+export interface NetworkAllowInput {
+  /** `host`, `host:port` or `*.host`. */
+  destinations: string[];
+}
+
+/** Human only: the change of `policy.yaml` that makes the destinations part of the owner's profile. */
+export interface NetworkPolicyProposal {
+  /** Context of the sandbox owner and the profile the change is made in. */
+  context: string;
+  profile: string;
+  /** Contexts that use the profile (the change applies to all of them). */
+  usedBy: string[];
+  /** Destinations the profile does not allow yet (what the change adds). */
+  added: string[];
+  /** Destinations the profile allows already. */
+  alreadyAllowed: string[];
+  /** Hash of the policy the proposal was made from (a changed file is refused on save). */
+  baseHash: string;
+  /** Current text of `policy.yaml` (the built-in default when there is no file). */
+  current: string;
+  /** The text with the change; `null` when there is nothing to add. */
+  proposed: string | null;
 }
 
 // -- host capacity and fit estimate --------------------------------------------------------------

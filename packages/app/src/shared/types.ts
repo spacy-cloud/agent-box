@@ -13,6 +13,9 @@ import type {
   CreateResult,
   DirEntry,
   BackendReport,
+  CacheList,
+  CacheRemoveResult,
+  CacheView,
   DoctorCheck,
   DoctorReport,
   DoctorSeverity,
@@ -20,6 +23,9 @@ import type {
   FitEstimate,
   HostCapacity,
   InspectResult,
+  NetworkLogEntry,
+  NetworkLogView,
+  NetworkPolicyProposal,
   PolicyRevisionDetail,
   PolicyRevisionSummary,
   PolicyValidation,
@@ -54,6 +60,9 @@ export type {
   CreateResult,
   DirEntry,
   BackendReport,
+  CacheList,
+  CacheRemoveResult,
+  CacheView,
   DoctorCheck,
   DoctorReport,
   DoctorSeverity,
@@ -61,6 +70,9 @@ export type {
   FitEstimate,
   HostCapacity,
   InspectResult,
+  NetworkLogEntry,
+  NetworkLogView,
+  NetworkPolicyProposal,
   PolicyValidation,
   PolicyView,
   ProcessLogsResult,
@@ -349,6 +361,9 @@ export interface Outputs {
   'processes:list': ProcessView[];
   'processes:logs': ProcessLogsResult;
   'sandboxes:logs': { content: string };
+  'network:log': NetworkLogView;
+  'network:allow': AccessResult;
+  'network:propose': NetworkPolicyProposal;
   'snapshots:list': SnapshotView[];
   'snapshots:create': { snapshotId: string };
   'snapshots:restore': { restored: string };
@@ -366,6 +381,8 @@ export interface Outputs {
   'policy:revisions': PolicyRevisionSummary[];
   'policy:revision': PolicyRevisionDetail;
   'doctor:run': DoctorReport;
+  'caches:list': CacheList;
+  'caches:remove': CacheRemoveResult;
   'reconcile:run': ReconcileReport;
   'tokens:list': AgentTokenView[];
   'tokens:create': TokenCreated;

@@ -29,5 +29,12 @@ network:
   mode: allowlist
   presets: [crates, github]
 
+# Package caches: one volume per project, kept between sandboxes of that project (see docs/templates.md).
+caches:
+  - name: cargo-registry
+    path: ~/.cargo/registry
+  - name: cargo-git
+    path: ~/.cargo/git
+
 labels:
   use-for: Rust crates (stable toolchain, crates.io and GitHub reachable)

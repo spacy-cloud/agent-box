@@ -195,6 +195,8 @@ limits:
   approvalTtlMs: 900000 # how long a request / an approval stays valid (15 min)
 logs:
   retentionDays: 3
+caches:
+  max_age: 30d # `abox gc` removes package caches that nobody used for this long (default 30d)
 defaults:
   template: node-dev # optional: used by `abox create` / `sandbox_create` without a template
 secrets: # per secret reference: how the proxy places it
@@ -209,7 +211,10 @@ its own backend (`backend:`); only the engine socket paths are configured here. 
 is optional; without it a template argument is required. `backends.docker.runtime` and `backends.podman.runtime` name an OCI runtime (for example `runsc`
 or `kata`) for isolation `hardened`; it is used only if the engine really lists it. Otherwise the
 backend stays at `container` and `abox doctor` warns (the Python backend uses the Docker setting).
-See [backends](backends.md#docker-and-podman).
+See [backends](backends.md#docker-and-podman). `caches.max_age` is a duration (`30d`, `12h`, `90m`);
+it only matters to `abox gc` (see [`abox cache`](#abox-cache) and
+[templates](templates.md#package-caches)). The size cap of the caches is not a config key but a
+property of the policy profile (`cache_max_bytes`, see [security](security.md#package-caches)).
 
 ## Command reference
 
@@ -300,6 +305,7 @@ Create a sandbox from a template
 | `--exclude <patterns>`   | leave these out of a copy/sync workspace (on top of .gitignore), comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)                  |
 | `--gitignore`            | copy/sync workspace: leave out what .gitignore files ignore (node_modules, build output, .env...); the default                                                   |
 | `--no-gitignore`         | copy/sync workspace: copy everything, ignored files included (needs --workspace)                                                                                 |
+| `--no-cache`             | do not mount the template's package caches (pnpm store, Cargo registry, ...): a clean install; see "abox cache"                                                  |
 | `--net <mode>`           | network mode (choices: "none", "allowlist", "open")                                                                                                              |
 | `--allow <domains>`      | extra allowed destinations, comma separated (with --net allowlist)                                                                                               |
 | `--ttl <duration>`       | lifetime, e.g. 2h                                                                                                                                                |
@@ -319,6 +325,13 @@ remains, and the progress output says how many entries were left out); `--exclud
 `--gitignore` / `--no-gitignore` with another mode than `copy`/`sync` is refused. See
 [templates](templates.md#gitignore) for the rules and
 [quickstart](quickstart.md#what-copy-and-sync-copy-and-how-big-it-may-be).
+
+With a project directory (`--workspace`), a template that declares `caches:` (the built-in stack
+templates do) gets a **package cache** per project: the pnpm store, the Cargo registry and so on
+live in volumes that outlive the sandbox, so the second sandbox of the project skips the download.
+`--no-cache` leaves them out for one sandbox (a clean install); without a project directory (empty
+workspace) there are no caches, and a profile with `caches: false` switches them off for good.
+See [`abox cache`](#abox-cache).
 
 On a terminal (and with `--json`) `abox create` first estimates how the sandbox fits on the host:
 `Fits ~3x on home-server (limited by a configured limit). With it: ~80% CPU and ~95% RAM reserved; in use now: 35% CPU, 60% RAM.`
@@ -634,6 +647,49 @@ Deny a request
 | --------------- | ----------------------------- |
 | `--note <text>` | note stored with the decision |
 
+### `abox network`
+
+`abox network [options] [command]`
+
+Egress log of an allowlist sandbox and allowing a denied destination
+
+#### `abox network log`
+
+`abox network log [options] <sandbox>`
+
+Show what the egress proxy allowed and denied, grouped by destination
+
+| Argument  | Meaning            |
+| --------- | ------------------ |
+| `sandbox` | sandbox id or name |
+
+| Option           | Meaning                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| `--denied`       | only denied requests                                               |
+| `--since <when>` | only newer requests: a duration (10m, 2h) or an ISO date           |
+| `--limit <n>`    | at most N destinations (most recently seen first) (default: "200") |
+
+#### `abox network allow`
+
+`abox network allow [options] <sandbox> <destination...>`
+
+Allow destinations for one sandbox (default) or, with --permanent, in the policy of its owner
+
+| Argument      | Meaning                                                 |
+| ------------- | ------------------------------------------------------- |
+| `sandbox`     | sandbox id or name                                      |
+| `destination` | host name, host:port or \*.example.org (all subdomains) |
+
+| Option        | Meaning                                                                                                                |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `--permanent` | also add the destinations to network.allow of the owner's profile in policy.yaml (shown as a diff and confirmed first) |
+| `-y, --yes`   | confirm without asking                                                                                                 |
+
+Without `--permanent` only this sandbox changes: its proxy is updated live and `policy.yaml` stays as it is.
+IP addresses, names of the local machine or internal networks and cloud metadata services are never allowed;
+the proxy refuses private addresses whatever the allowlist says. A sandbox with network mode `none` or `open` has
+nothing to allow. A wildcard (`*.example.org`) covers every subdomain and always asks for confirmation.
+
 ### `abox policy`
 
 `abox policy [options] [command]`
@@ -710,7 +766,9 @@ Every check has a severity:
 | `!`  | `warning` | something is degraded and you should probably act on it                         |
 | `✗`  | `failed`  | a check failed (the only severity that makes the exit code 1)                   |
 
-`--verbose` also prints the detail lines of checks that are ok or info. With `--json` each check
+`--verbose` also prints the detail lines of checks that are ok or info. The `caches` check shows
+how many package caches exist and how much disk they use (and warns about a project above its
+cap). With `--json` each check
 also has `severity`, `details` and `notes`, and the report a `summary` (counts per severity); `level`
 (`ok`/`warn`/`error`) is kept for scripts. See [troubleshooting](troubleshooting.md#abox-doctor).
 
@@ -729,7 +787,7 @@ Compare the registry with the backends; with --apply, clean up leftovers
 
 `abox gc [options]`
 
-Remove expired sandboxes, stale workspaces, unused images and old logs; with --orphans, find and remove leftovers of other abox homes
+Remove expired sandboxes, stale workspaces, unused images, package caches that are old or above their cap, and old logs; with --orphans, find and remove leftovers of other abox homes
 
 | Option             | Meaning                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -738,6 +796,63 @@ Remove expired sandboxes, stale workspaces, unused images and old logs; with --o
 | `--instance <id>`  | with --orphans: only resources of this abox.instance; naming an instance also selects it when it looks active                                                                                                                                                                                                                                                                                           |
 | `--include-active` | with --orphans: also remove instances that have running containers or resources created or started less than an hour ago (probably another abox home in use); on a terminal you must type "yes"                                                                                                                                                                                                         |
 | `-y, --yes`        | with --orphans: remove the stale instances listed without asking (needed when not on a terminal)                                                                                                                                                                                                                                                                                                        |
+
+Package caches are removed in two cases: a cache that no sandbox uses and that was last used longer
+ago than `caches.max_age` (config.yaml, default `30d`), and, for a project (per owner and host)
+whose caches together exceed `cache_max_bytes` of the owner's profile (default `10g`), the least
+recently used unused ones until the rest fits. A cache a sandbox still references is never removed.
+`--dry-run` lists them (`caches` in the JSON report) without removing anything.
+
+### `abox cache`
+
+`abox cache`
+
+Package caches kept per project (pnpm store, Cargo registry, uv cache, ...)
+
+A cache is a volume that outlives the sandboxes: a second sandbox of the same project (and the same
+template and owner) starts with the downloads of the first one. It is mounted only at the paths the
+template declares (`caches:`). Only a human can list or remove caches; agents have no tool for it.
+See [templates](templates.md#package-caches) for what a cache is and which templates have one, and
+[security](security.md#package-caches) for what it can carry over.
+
+#### `abox cache ls`
+
+`abox cache ls|list [options]`
+
+List the caches with project, template, size, last use and whether a sandbox uses them
+
+| Option      | Meaning                                         |
+| ----------- | ----------------------------------------------- |
+| `--no-size` | do not measure the sizes (faster on big caches) |
+
+Columns: `KEY` (what `rm` takes), `PROJECT` (the canonical source folder), `TEMPLATE` (the stack),
+`NAME` (the cache name from the template, for example `pnpm-store`), `SIZE`, `LAST USED` (when a
+sandbox last mounted it) and `IN USE` (a sandbox, running or stopped, still references it). `HOST`
+and `OWNER` columns appear when a cache lives on a remote host or belongs to an agent. `--json`
+prints `{caches: [{host, key, name, project, stack, owner, sizeBytes, createdAt, lastUsedAt,
+inUse}], totalBytes, unreachable}`; `--quiet` prints the keys. A size shows as `?` when the engine
+cannot tell.
+
+#### `abox cache rm`
+
+`abox cache rm|remove [options] [key...]`
+
+Remove caches by key, by project, or all of them (caches a sandbox uses are kept)
+
+| Argument | Meaning                                                                              |
+| -------- | ------------------------------------------------------------------------------------ |
+| `key`    | cache keys from "abox cache ls" (a unique prefix of at least 4 characters is enough) |
+
+| Option  | Meaning            |
+| ------- | ------------------ |
+| `--all` | remove every cache |
+
+Exactly one of: keys, the global option `--project <dir>` (every cache of that project folder; the
+current directory is **not** assumed), or `--all`. A cache a sandbox uses is not removed: naming it
+is an error (exit 2, `conflict`), `--project` and `--all` report it as skipped. Removing a cache
+loses nothing but the download time of the next install. Every removal is an audit entry
+(`cache.remove`, with the reason); caches are also created and used under `cache.create` and
+`cache.use`.
 
 ### `abox token`
 
@@ -986,6 +1101,26 @@ Print a shell completion script (bash, zsh or fish)
   pipes. Output is capped (64 KiB per stream for agents; humans get more) and the full masked
   output is kept in the log directory. Known secret values are masked as `***` in output, logs and
   audit entries.
+- **`abox exec`** in an allowlist sandbox adds a note on standard error when the egress proxy denied
+  requests while the command ran (`network: 2 requests to registry.example.org denied; see "abox network
+log <id> --denied", allow with "abox network allow <id> <domain>"`); with `--json` the result has
+  `network {denied, hosts[], moreHosts}`. The exit code stays the command's.
+- **`abox network log`** groups the proxy's decisions by destination (host and port) with counts, the
+  first and last time, the newest decision, the reason of a denial and, for a denied destination, what
+  can be done about it (the exact `abox network allow` line, or why it cannot be allowed). `--json` prints
+  the same data (`entries[]` with `host`, `port`, `decision`, `allowed`, `denied`, `count`, `firstSeen`,
+  `lastSeen`, `reason`, `reasonKind`, `methods`, `allowedNow`, `allow`). It looks at the newest 10 000 log
+  entries of the sandbox and says when older ones were left out. A sandbox with network mode `none` or
+  `open` has no log; the command says why. See [security](security.md#the-network-log-and-allowing-a-destination).
+- **`abox network allow`** has two scopes. Without `--permanent` it is "allow once": the destinations are
+  added to the allowlist of this sandbox only (`updateNetwork`, applied live, audited as `network.allow`
+  and `sandbox.access_applied`), for as long as the sandbox exists; `policy.yaml` and new sandboxes are
+  not affected. With `--permanent` it first adds them to `network.allow` of the profile of the sandbox's
+  owner, exactly like the GUI's "Allow permanently": the change to `policy.yaml` is shown as a diff and
+  needs your confirmation (`--yes` without a terminal), is validated, revisioned and audited, is refused
+  when the file changed meanwhile, and applies to every context that uses the profile; then the sandbox
+  itself is updated. If the profile allows the destination already, only the sandbox changes. Agents
+  cannot use it (they ask with `access_request`).
 - **`abox shell`** needs an interactive terminal and fails with exit code 2 otherwise.
 - **`abox export`** never applies anything; see [quickstart](quickstart.md#workspace-modes).
 - **`abox snapshot` / `restore`** depend on the backend. `restore` accepts the snapshot name or its id

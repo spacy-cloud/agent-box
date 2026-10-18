@@ -594,3 +594,143 @@ describe('create request builder: gitignore', () => {
     expect(buildCreateInput(t, 'mount').workspace).toEqual({ path: '/work/p' });
   });
 });
+
+describe('New sandbox: package cache', () => {
+  async function createCall(r: Rig): Promise<{ input: Record<string, unknown> }> {
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Check and create' }));
+    return waitFor(() => {
+      const c = r.calls.find((x) => x.channel === 'sandboxes:create');
+      if (!c) throw new Error('not yet');
+      return { input: c.input as Record<string, unknown> };
+    });
+  }
+
+  it('is on by default, with a one-line explanation, and sends nothing special', async () => {
+    const r = rig({ estimate: () => estimate({}) });
+    mount();
+    await toOptions();
+    const box = (await screen.findByLabelText('Use package cache')) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(box.disabled).toBe(false);
+    expect(box.getAttribute('aria-describedby')).toBe('opt-cache-hint');
+    expect(document.getElementById('opt-cache-hint')!.textContent).toContain(
+      'Downloaded packages (e.g. the pnpm store) are kept per project',
+    );
+    typeFolder('/work/proj');
+    const { input } = await createCall(r);
+    expect(input).not.toHaveProperty('cache');
+  });
+
+  it('sends cache: false when it is unticked, and the summary shows the choice', async () => {
+    const r = rig({ estimate: () => estimate({}) });
+    mount();
+    await toOptions();
+    typeFolder('/work/proj');
+    fireEvent.click(await screen.findByLabelText('Use package cache'));
+    expect((screen.getByLabelText('Use package cache') as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByRole('button', { name: 'Check and create' });
+    expect(screen.getByText('Use package cache').nextElementSibling!.textContent).toBe(
+      'no (clean install)',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Check and create' }));
+    const c = await waitFor(() => {
+      const x = r.calls.find((y) => y.channel === 'sandboxes:create');
+      if (!x) throw new Error('not yet');
+      return x.input as Record<string, unknown>;
+    });
+    expect(c['cache']).toBe(false);
+  });
+
+  it('ticking it again sends nothing', async () => {
+    const r = rig({ estimate: () => estimate({}) });
+    mount();
+    await toOptions();
+    typeFolder('/work/proj');
+    const box = await screen.findByLabelText('Use package cache');
+    fireEvent.click(box);
+    fireEvent.click(box);
+    const { input } = await createCall(r);
+    expect(input).not.toHaveProperty('cache');
+  });
+
+  it('needs a project folder: disabled with the reason for an empty workspace, and never sent', async () => {
+    const r = rig({ estimate: () => estimate({}) });
+    mount();
+    await toOptions();
+    typeFolder('/work/proj');
+    fireEvent.click(await screen.findByLabelText('Use package cache'));
+    fireEvent.change(screen.getByLabelText('Workspace mode'), { target: { value: 'empty' } });
+    const box = screen.getByLabelText('Use package cache') as HTMLInputElement;
+    expect(box.disabled).toBe(true);
+    expect(box.checked).toBe(false);
+    expect(document.getElementById('opt-cache-hint')!.textContent).toBe(
+      'Needs a project folder: the cache belongs to the project.',
+    );
+    const { input } = await createCall(r);
+    expect(input).not.toHaveProperty('cache');
+    expect(screen.queryByText('no (clean install)')).toBeNull();
+  });
+
+  it('is disabled as well when the template has an empty workspace by default', async () => {
+    rig({ estimate: () => estimate({}), template: { workspace: { mode: 'empty' } } });
+    mount();
+    await toOptions();
+    await waitFor(() =>
+      expect((screen.getByLabelText('Use package cache') as HTMLInputElement).disabled).toBe(true),
+    );
+  });
+
+  it('says so when the template declares no caches', async () => {
+    rig({ estimate: () => estimate({}), template: { caches: [] } });
+    mount();
+    await toOptions();
+    await waitFor(() =>
+      expect((screen.getByLabelText('Use package cache') as HTMLInputElement).disabled).toBe(true),
+    );
+    expect(document.getElementById('opt-cache-hint')!.textContent).toBe(
+      'The template declares no package caches.',
+    );
+  });
+
+  it('is available in German', async () => {
+    rig({ estimate: () => estimate({}) });
+    renderApp(<NewSandboxDialog onClose={() => undefined} onCreated={() => undefined} />, {
+      locale: 'de',
+    });
+    fireEvent.click(await screen.findByRole('radio', { name: /alpine-min/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Weiter' }));
+    expect(await screen.findByLabelText('Paket-Cache verwenden')).toBeTruthy();
+  });
+});
+
+describe('create request builder: package cache', () => {
+  const base = {
+    template: 't',
+    name: '',
+    workspaceMode: 'copy',
+    workspacePath: '/work/p',
+    cpus: '',
+    memory: '',
+    ttl: '',
+    networkMode: '',
+    allow: '',
+    presets: [] as string[],
+  };
+  it('sends only the opt-out, and not for an empty workspace', () => {
+    expect(buildCreateInput(base)).not.toHaveProperty('cache');
+    expect(buildCreateInput({ ...base, cache: true })).not.toHaveProperty('cache');
+    expect(buildCreateInput({ ...base, cache: false })).toMatchObject({ cache: false });
+    expect(buildCreateInput({ ...base, cache: false, workspaceMode: 'empty' })).not.toHaveProperty(
+      'cache',
+    );
+    // the template's mode counts when the form has none
+    expect(
+      buildCreateInput({ ...base, cache: false, workspaceMode: '' }, 'empty'),
+    ).not.toHaveProperty('cache');
+    expect(buildCreateInput({ ...base, cache: false, workspaceMode: '' }, 'mount')).toMatchObject({
+      cache: false,
+    });
+  });
+});

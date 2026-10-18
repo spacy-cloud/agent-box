@@ -48,6 +48,8 @@ export const BUILTIN_HUMAN_PROFILE: RawProfile = {
 /** Default soft limits of a `copy` / `sync` workspace (`workspace.max_copy_bytes` / `max_copy_entries`). */
 export const DEFAULT_MAX_COPY_BYTES = '1g';
 export const DEFAULT_MAX_COPY_ENTRIES = 50_000;
+/** Default `cache_max_bytes`: what the package caches of one project may hold. */
+export const DEFAULT_CACHE_MAX_BYTES = '10g';
 
 /** Agent context ids of the built-in default policy (all use profile `default`). */
 export const BUILTIN_AGENT_CONTEXTS: readonly string[] = [
@@ -392,7 +394,7 @@ function resolveChain(
 /** Child fields override parent fields; arrays are replaced, objects merged one level deep. */
 export function mergeProfiles(parent: RawProfile, child: RawProfile): RawProfile {
   const out: RawProfile = { ...parent };
-  for (const key of ['approval', 'templates', 'hosts'] as const) {
+  for (const key of ['approval', 'templates', 'hosts', 'caches', 'cache_max_bytes'] as const) {
     if (child[key] !== undefined) (out as Record<string, unknown>)[key] = child[key];
   }
   for (const key of [
@@ -421,6 +423,7 @@ function applyDefaults(name: string, p: RawProfile): ResolvedProfile {
   const memory = p.limits?.memory ?? '8g';
   const ttl = p.limits?.ttl ?? '4h';
   const maxCopy = p.workspace?.max_copy_bytes ?? DEFAULT_MAX_COPY_BYTES;
+  const cacheMax = p.cache_max_bytes ?? DEFAULT_CACHE_MAX_BYTES;
   const mounts: ResolvedProfile['mounts'] =
     p.mounts === undefined || p.mounts === 'deny'
       ? null
@@ -463,6 +466,9 @@ function applyDefaults(name: string, p: RawProfile): ResolvedProfile {
     },
     hosts: [...(p.hosts ?? ['local'])],
     exec: { approval: p.exec?.approval ?? false },
+    caches: p.caches ?? true,
+    cache_max_bytes: cacheMax,
+    cacheMaxBytes: parseSize(cacheMax),
   };
 }
 

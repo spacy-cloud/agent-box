@@ -97,6 +97,8 @@ export const createRequestSchema = z
       })
       .strict()
       .optional(),
+    /** `false`: do not mount the template's package caches (clean install). Absent: use them where allowed. */
+    cache: z.boolean().optional(),
     /** The human saw the `confirmation_required` summary and confirmed it. */
     confirmed: z.boolean().optional(),
     /** Correlates `evt:progress` lines with this call. */
@@ -113,6 +115,8 @@ const sessionId = z.string().uuid();
 const hostId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'host id like my-server');
 const progressKey = z.string().min(1).max(64);
 const yamlText = z.string().max(300_000);
+/** Key of a package cache (16 hex digits, the manager accepts shorter unique prefixes: the GUI sends full keys). */
+const cacheKey = z.string().regex(/^[0-9a-f]{16}$/, '16 hex digits');
 
 const portForward = z
   .object({
@@ -322,6 +326,30 @@ export const IPC = {
       sinceTs: z.number().int().nonnegative().optional(),
     })
     .strict(),
+  /** The egress log of an allowlist sandbox, grouped by destination (a view of the audit log). */
+  'network:log': z
+    .object({
+      id,
+      since: z.number().int().nonnegative().optional(),
+      denied: z.boolean().optional(),
+      limit: z.number().int().min(1).max(1000).optional(),
+    })
+    .strict(),
+  /**
+   * "Allow once": destinations (host, host:port, *.host) for this sandbox only. The manager refuses what can not be
+   * allowed and asks for the confirmation (`confirmed`) of a wildcard; "allow permanently" is `policy:set` first.
+   */
+  'network:allow': z
+    .object({
+      id,
+      destinations: z.array(z.string().min(1).max(260)).min(1).max(32),
+      confirmed: z.boolean().optional(),
+    })
+    .strict(),
+  /** "Allow permanently": the proposed edit of policy.yaml (text, base hash); writes nothing, the save is `policy:set`. */
+  'network:propose': z
+    .object({ id, destinations: z.array(z.string().min(1).max(260)).min(1).max(32) })
+    .strict(),
   'snapshots:list': z.object({ id }).strict(),
   'snapshots:create': z
     .object({ id, name: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, 'letters, digits . _ -') })
@@ -356,6 +384,16 @@ export const IPC = {
   'policy:revision': z.object({ rev: z.number().int().nonnegative() }).strict(),
 
   'doctor:run': none,
+  /** Package caches of all hosts with their sizes (human only; the sizes can take a moment). */
+  'caches:list': none,
+  /**
+   * Removes package caches: the ones named by `keys` (the manager refuses a cache a sandbox uses), or all of
+   * them (those in use are skipped). `host` limits the removal to one host. The renderer names no path or volume.
+   */
+  'caches:remove': z.union([
+    z.object({ keys: z.array(cacheKey).min(1).max(200), host: hostId.optional() }).strict(),
+    z.object({ all: z.literal(true), host: hostId.optional() }).strict(),
+  ]),
   'reconcile:run': z
     .object({ apply: z.boolean().optional(), removeOrphans: z.boolean().optional() })
     .strict()

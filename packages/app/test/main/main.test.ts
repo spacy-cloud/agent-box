@@ -94,11 +94,16 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       createSandbox: rec('createSandbox', { status: 'created' }),
       extendTtl: rec('extendTtl'),
       sandboxStats: rec('sandboxStats', { usage: {} }),
+      listCaches: rec('listCaches', { caches: [], totalBytes: 0, unreachable: [] }),
+      removeCaches: rec('removeCaches', { removed: [], skipped: [], errors: [] }),
       hostCapacity: rec('hostCapacity', { host: 'srv' }),
       estimateFit: rec('estimateFit', { host: 'srv', fits: 3 }),
       approve: rec('approve'),
       deny: rec('deny'),
       queryAudit: rec('queryAudit', []),
+      networkLog: rec('networkLog', { entries: [] }),
+      allowNetwork: rec('allowNetwork', { status: 'applied' }),
+      proposeNetworkPolicy: rec('proposeNetworkPolicy', { proposed: null }),
       exportSandbox: rec('exportSandbox'),
       showPolicy: rec('showPolicy', {
         contexts: {
@@ -150,6 +155,40 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       overrides: { network: { mode: 'none' } },
     });
     expect(calls[1]!.args[1]).toEqual({ template: 'node-dev' });
+  });
+
+  it('create forwards the package cache opt-out only, as an absent member otherwise', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await h['sandboxes:create']({ template: 'node-dev', cache: false }, {});
+    await h['sandboxes:create']({ template: 'node-dev', cache: true }, {});
+    await h['sandboxes:create']({ template: 'node-dev' }, {});
+    expect(calls[0]!.args[1]).toEqual({ template: 'node-dev', cache: false });
+    expect(calls[1]!.args[1]).toEqual({ template: 'node-dev' });
+    expect(calls[2]!.args[1]).toEqual({ template: 'node-dev' });
+  });
+
+  it('package caches are listed with sizes and removed as the human, by key or all', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await h['caches:list'](undefined, {});
+    await h['caches:remove']({ keys: ['0123456789abcdef'], host: 'local' }, {});
+    await h['caches:remove']({ keys: ['0123456789abcdef'] }, {});
+    await h['caches:remove']({ all: true }, {});
+    expect(calls.map((c) => c.fn)).toEqual([
+      'listCaches',
+      'removeCaches',
+      'removeCaches',
+      'removeCaches',
+    ]);
+    expect(calls[0]!.args).toEqual([{ contextId: 'human' }, { size: true }]);
+    expect(calls[1]!.args).toEqual([
+      { contextId: 'human' },
+      { keys: ['0123456789abcdef'], host: 'local' },
+    ]);
+    // undefined members are dropped: the manager schemas are strict
+    expect(calls[2]!.args[1]).toEqual({ keys: ['0123456789abcdef'] });
+    expect(calls[3]!.args[1]).toEqual({ all: true });
   });
 
   it('progress lines are forwarded with the correlation key', async () => {
@@ -282,6 +321,35 @@ describe('manager handlers are thin: always the human caller, confirmation only 
     expect(calls[1]!.args[0]).toEqual({ contextId: 'human', humanConfirmed: true });
     expect(calls[2]!.args).toEqual([{ contextId: 'human' }, 'a1', 'ok']);
     expect(calls[3]!.args[0]).toEqual({ contextId: 'human' });
+  });
+
+  it('network log and allow: the human caller, a wildcard confirmation only when given, undefined members stripped', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await h['network:log']({ id: 'local/x', limit: 500 }, {});
+    await h['network:log']({ id: 'local/x', denied: true, since: 5 }, {});
+    await h['network:allow']({ id: 'local/x', destinations: ['a.example.org'] }, {});
+    await h['network:allow'](
+      { id: 'local/x', destinations: ['*.example.org'], confirmed: true },
+      {},
+    );
+    await h['network:propose']({ id: 'local/x', destinations: ['a.example.org'] }, {});
+    expect(calls.map((c) => c.fn)).toEqual([
+      'networkLog',
+      'networkLog',
+      'allowNetwork',
+      'allowNetwork',
+      'proposeNetworkPolicy',
+    ]);
+    expect(calls[0]!.args).toEqual([{ contextId: 'human' }, 'local/x', { limit: 500 }]);
+    expect(calls[1]!.args[2]).toEqual({ denied: true, since: 5 });
+    expect(calls[2]!.args).toEqual([
+      { contextId: 'human' },
+      'local/x',
+      { destinations: ['a.example.org'] },
+    ]);
+    expect(calls[3]!.args[0]).toEqual({ contextId: 'human', humanConfirmed: true });
+    expect(calls[4]!.args[0]).toEqual({ contextId: 'human' });
   });
 
   it('policy set refuses when the file changed since the edit started', async () => {

@@ -10,6 +10,36 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
+  denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
+  denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):
+  no storage of its own, the audit log's retention, never paths, headers, bodies or secrets, at most the newest
+  10 000 entries per call. `abox network log <sandbox> [--denied] [--since 10m] [--json]` prints it; the GUI has a
+  **Network** ("Netz") tab on the sandbox detail view (table by domain with a decision badge, count, last seen
+  and reason, "only blocked" filter, live refresh) with **Allow for this sandbox**, **Allow permanently...** (the
+  policy diff dialog, revisioned `policy:set`) and an explicit, warned **All subdomains...** choice.
+  `abox network allow <sandbox> <destination...> [--permanent]` does the same on the command line (`--permanent`
+  shows the `policy.yaml` diff and asks). "Allow once" adds the destination to that sandbox's allowlist only
+  (`updateNetwork`, audited as `network.allow`); it refuses IP addresses, internal and metadata names,
+  destinations the proxy refuses as private addresses, sandboxes with network `none` / `open` and what the
+  human profile forbids, and says why. Agents get a `network:` line in the result of `sandbox_exec` (and
+  `abox exec`) when the proxy denied requests during the command, can read their own sandbox's log with the new
+  MCP tool `sandbox_network_log` (21 tools now), and still can not allow anything (they use `access_request`).
+  `Abox.setPolicy` takes an optional `baseHash` and refuses a policy that changed meanwhile.
+- Per-project package caches (Closes #14): a template's `caches:` list (name, `path`, optional
+  `env`) is mounted as an abox-managed Docker/Podman named volume per project, owner (you or the
+  agent context) and template, so a second sandbox of the same project skips the dependency
+  downloads. `node-dev` and `tauri-dev` (pnpm store, npm), `py-dev` (uv, pip), `py-uv` (uv),
+  `rust-dev` (cargo registry and git), `flutter-dev` (pub) and `php-dev` (Composer) declare theirs. Volumes are
+  labelled `abox.managed`, `abox.instance` and `abox.cache=<key>`; a new volume starts as a copy of
+  the image's directory. Policy `caches: true|false` (default true) and `cache_max_bytes` (default
+  10g per project), `caches.max_age` (default 30 days) in the config; `abox create --no-cache`, MCP
+  `cache: false` and the GUI checkbox "Paket-Cache verwenden" opt out for one sandbox. `abox cache
+ls [--json]`, `abox cache rm <key>|--project <path>|--all` (human only), `abox gc` removes caches
+  past the age or over the cap (never one in use), `abox doctor` shows the total size, and the
+  Settings view lists the caches with a confirmed remove. Create, use and remove are audited. MCP
+  agents can neither list nor remove caches. The `process`, `vm` and venv backends have no caches;
+  `docs/security.md` describes what a cache can carry over between sandboxes. State migration 7.
 - Host limits can be changed after the fact: `abox host set <id>` with `--max-sandboxes`, `--cpus`
   and `--memory` (a value or `none`; also for `local`), and the host dialog of the app has a "Limits" section
   (Max. sandboxes, CPUs in total, Memory in total; empty = no limit) plus a "Limits" button for this
@@ -151,6 +181,8 @@ export` leaves out ignored paths the sandbox created (`stats.ignored`).
 
 ### Changed
 
+- GUI: dialogs keep their title and buttons in place; only the content between them scrolls (e.g. the
+  long template list in New sandbox).
 - The built-in default policy lets agents use every built-in template except `host-shell`
   (adds `py-uv`, `rust-dev`, `tauri-dev`, `flutter-dev`, `php-dev`, `shell-dev`) and the registry
   presets `crates`, `pub` and `packagist`; limits and approval mode are unchanged.

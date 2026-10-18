@@ -58,6 +58,9 @@ export type ManagerChannel =
   | 'processes:list'
   | 'processes:logs'
   | 'sandboxes:logs'
+  | 'network:log'
+  | 'network:allow'
+  | 'network:propose'
   | 'snapshots:list'
   | 'snapshots:create'
   | 'snapshots:restore'
@@ -74,6 +77,8 @@ export type ManagerChannel =
   | 'policy:revisions'
   | 'policy:revision'
   | 'doctor:run'
+  | 'caches:list'
+  | 'caches:remove'
   | 'reconcile:run'
   | 'tokens:list'
   | 'tokens:create'
@@ -140,9 +145,11 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     'sandboxes:remove': (i) => abox.removeSandbox(HUMAN, i.id),
     'sandboxes:extend': (i) => abox.extendTtl(confirmedHuman(i.confirmed), i.id, i.ttl),
     'sandboxes:create': async (i, ctx) => {
-      const { confirmed, progressKey, projectDir, ...req } = i;
+      const { confirmed, progressKey, projectDir, cache, ...req } = i;
       const request: CreateSandboxRequest = clean({
         ...req,
+        // only the opt-out is sent: absent means "use the template's caches where policy allows"
+        cache: cache === false ? false : undefined,
         ...(await projectOption(projectDir)),
         workspace: req.workspace ? clean(req.workspace) : undefined,
         overrides: req.overrides
@@ -214,6 +221,12 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         clean({ tail: i.tail ?? 300, sinceTs: i.sinceTs }),
       ),
     }),
+    'network:log': (i) =>
+      abox.networkLog(HUMAN, i.id, clean({ since: i.since, denied: i.denied, limit: i.limit })),
+    'network:allow': (i) =>
+      abox.allowNetwork(confirmedHuman(i.confirmed), i.id, { destinations: i.destinations }),
+    'network:propose': (i) =>
+      abox.proposeNetworkPolicy(HUMAN, i.id, { destinations: i.destinations }),
     'snapshots:list': (i) => abox.listSnapshots(HUMAN, i.id),
     'snapshots:create': (i) => abox.snapshot(HUMAN, i.id, i.name),
     'snapshots:restore': (i) => abox.restore(HUMAN, i.id, i.snapshotId),
@@ -284,6 +297,14 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     },
     'policy:revision': (i) => abox.getPolicyRevision(HUMAN, i.rev),
     'doctor:run': () => abox.doctor(HUMAN),
+    'caches:list': () => abox.listCaches(HUMAN, { size: true }),
+    'caches:remove': (i) =>
+      abox.removeCaches(
+        HUMAN,
+        'keys' in i
+          ? clean({ keys: i.keys, host: i.host })
+          : clean({ all: true as const, host: i.host }),
+      ),
     'reconcile:run': (i) => abox.reconcile(HUMAN, clean({ ...(i ?? {}) })),
     'tokens:list': () => abox.listAgentTokens(HUMAN),
     'tokens:create': async (i) => {

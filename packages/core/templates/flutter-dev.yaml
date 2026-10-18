@@ -49,5 +49,10 @@ network:
   mode: allowlist
   presets: [pub, github]
 
+# Package cache: the pub cache. The volume starts as a copy of the packages baked into the image.
+caches:
+  - name: pub-cache
+    path: /opt/pub-cache
+
 labels:
   use-for: Flutter and Dart apps (analyze, test, format, web and Linux builds; no Android, pub.dev and GitHub reachable)

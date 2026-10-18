@@ -33,13 +33,13 @@ it).
 | View               | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Sandboxes**      | table of all sandboxes (agents' and yours) with state, backend and isolation, owner, resources (live CPU and memory next to the limit, see below), workspace and time left; filter by state, template, agent and text; start, stop, **Shell** (opens the Terminal tab of that sandbox; only for a running sandbox on a reachable host), extend the lifetime, export a diff, delete (the dialog warns that unexported changes are lost). The header says **"as of hh:mm:ss"** for the data on screen; after 20 seconds without a successful refresh, or after a failed one, it is marked **outdated**, and a row the backend no longer reports says so. Orphaned backend objects and stale sandboxes are announced in a banner; nothing is deleted automatically. A wizard (**New sandbox**) walks through template (with an optional **project folder** whose project templates are listed too, see below), options (network, resources, workspace) and a summary; risky settings need your explicit confirmation before anything is created. |
-| **Sandbox detail** | tabs for the overview (effective options with deviations from the template highlighted), **Files** (the workspace as a tree, see below; review the changes since start, flagged files that can run code on the host, save the diff or a patch, export to a branch), **Logs** (background processes), **Snapshots**, **Activity** (the audit entries for this sandbox) and an interactive **Terminal**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Sandbox detail** | tabs for the overview (effective options with deviations from the template highlighted), **Files** (the workspace as a tree, see below; review the changes since start, flagged files that can run code on the host, save the diff or a patch, export to a branch), **Logs** (background processes), **Snapshots**, **Activity** (the audit entries for this sandbox), **Network** (the egress log, see [below](#network-tab)) and an interactive **Terminal**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **Templates**      | list of builtin (read-only) and user templates, and the project templates of a **project folder** you pick (marked "project", with their trust state), with a form editor and a YAML editor, live validation with line numbers, duplicate, export as YAML, **Build** (with a note that builds have network access) and, for a project template, **Review …** (what it adds and its risks, see below). A project template is read-only here and is neither built nor tested from this view: it is built when a sandbox is created from it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Hosts**          | host profiles: add, edit, remove, test, confirm the host key by fingerprint, create a sandbox on a host (opens the New sandbox wizard with that host preselected), import from `~/.ssh/config`, saved port forwards, and an SSH terminal. Per host: the **utilisation** against its limits and its live load, the **Limits** to edit, the **engine** (rootless or rootful) and the hardened **runtimes** that were found, and groups (see [Hosts: utilisation, groups, engine](#hosts-utilisation-groups-engine)). See [hosts and SSH](hosts-ssh.md). There are no fields for passwords or keys; an ssh passphrase is asked in a dialog (see below).                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Approvals**      | the queue of requests from agents, see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **Audit**          | the audit log with filters (time, actor, sandbox, action, decision), verification of the hash chain and export as JSON Lines.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **Policy**         | the profiles and agent contexts in force as cards (isolation `none` in red), an editor with a **form** for profiles and limits next to the **YAML** text, live validation by the manager, a diff and a confirmation before saving, and the revision history. See [The Policy view](#the-policy-view).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| **Settings**       | language, closing the window to the tray (optional), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Settings**       | language, closing the window to the tray (optional), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **package caches** (see [Package caches](#package-caches)), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## Approvals
 
@@ -106,13 +106,45 @@ is an untrusted project template (it is shown before anything is created, togeth
 image when that lies outside the allowed registries), and as **Review …** in the Templates view for
 a project template. Looking at a review never trusts anything.
 
+## Network tab
+
+The **Network** tab ("Netz" in the German app) of a sandbox shows what its egress proxy allowed and denied,
+grouped by destination (host and port): a decision badge (**Allowed**, **Blocked**, **Allowed now** for
+what was blocked before and has been allowed since, **Connection failed**), the number of requests (with the
+blocked / allowed split when both happened), the time of the last one and the reason in words with the proxy's
+own text below it. **Only blocked** filters to the denials. The list refreshes every few seconds and on every
+change, like the Activity tab. It is a view of the audit log: only host, port, method and reason are
+recorded, never paths, headers or contents, and the entries are in **Audit** as well.
+
+For a blocked destination the app offers what the manager says is possible, and explains what is not:
+
+- **Allow for this sandbox** is one click: the exact host (or `host:port` for a port other than 80 and 443)
+  is added to this sandbox's allowlist at once and the log shows it as allowed now. Nothing else changes: the
+  policy stays as it is and new sandboxes do not get it. It is audited (`network.allow`,
+  `sandbox.access_applied`).
+- **Allow permanently...** opens the same dialog as [Allow permanently](#allow-permanently) in an approval,
+  with the profile of the sandbox's owner, the contexts that use it, the proposed change to `network.allow`
+  and the diff of `policy.yaml`. Nothing is written before **Change policy**; the write is the revisioned,
+  validated, audited `policy:set`. Right after it the destination is allowed for this sandbox too. If the profile allows
+  it already the dialog says so and offers only the sandbox.
+- **All subdomains...** is a separate choice with a warning: `*.example.org` also covers subdomains other
+  people can register. It always asks for a confirmation and is never the default.
+- **Cannot be allowed** (a short explanation in place of the buttons): an IP address, a name that resolves to
+  a private, local or cloud-metadata address (the proxy never connects there; only a private-address exception,
+  which a human approves as its own request, opens a range), internal names such as `*.local`, a name that does not
+  resolve, a malformed request.
+
+A sandbox created with network mode `none` or `open` has no log: the tab says so and why (the mode of a sandbox
+cannot change; create a new one with an allowlist).
+
 ## New sandbox: big folders
 
 The **Options** step has **Name** and **Host** on top (one row), then two titled sections. **Workspace**
 holds the mode, the project folder and **Choose …** in one row, and, for a `copy`/`sync` workspace,
 the checkbox **Respect .gitignore** (ticked unless the template says otherwise; "Ignored files (e.g.
 build/, .dart_tool/) are not copied"), then **Also exclude** (patterns like `*.log coverage`, applied
-on top of `.gitignore`; as wide as the section), then the size note. **Resources and network** holds
+on top of `.gitignore`; as wide as the section), then the checkbox **Use package cache** (see
+[Package caches](#package-caches)), then the size note. **Resources and network** holds
 CPUs, memory, lifetime and network mode in one row, with the limits of your profile as a short hint
 under the title ("At most 64 CPUs, 512g RAM, 30d (profile "human")"). Empty fields use the template's
 values, which are shown as placeholders (e.g. `4`, `6g`, `2h`; the first network option reads "Template
@@ -178,7 +210,7 @@ The view has three modes.
   Isolation settings of `none` are shown as a red "No isolation" badge (text and colour), in the
   cards, in the form and in the review.
 - **Editing.** Two columns that edit the same text: a **form** (profile selector, approval mode,
-  `exec.approval`, limits, the four isolation minimums, network modes, presets, allowed
+  `exec.approval`, the package caches switch and size cap, limits, the four isolation minimums, network modes, presets, allowed
   destinations and image registries, workspace modes, templates and hosts) and the **YAML** editor.
   A change in the form is written into the text, keeping comments and layout, so the diff contains
   only the lines that changed; a change in the YAML shows in the form. An empty form field means
@@ -273,6 +305,40 @@ Settings shows what is observable about the MCP side: the agent contexts defined
 of the last action of each agent, with a link to its audit entries. The MCP server is a separate
 process (stdio per agent, or HTTP with tokens) that does not report to the manager, so the app cannot
 tell whether it is running right now; it shows the activity and tokens instead.
+
+## Package caches
+
+A package cache keeps downloaded packages (the pnpm store, the cargo registry, ...) per project in a
+Docker or Podman volume, so the next sandbox for that project does not download everything again.
+A cache belongs to the project folder, to the owner (you or an agent context) and to the template,
+and it is mounted only at the paths the template declares under `caches:`. Sandboxes without a
+project folder (workspace mode `empty`) get none. See [templates](templates.md) and the CLI command
+`abox cache` for the same operations in a terminal.
+
+**New sandbox.** The checkbox **Use package cache** in the Workspace section is ticked by default; the
+line under it says what it does. Untick it for a clean install: the sandbox then gets no cache, and
+nothing is shared with it. The checkbox is disabled, with the reason below it, when the workspace mode
+is `empty` ("Needs a project folder: the cache belongs to the project.") or when the template declares
+no caches. The policy profile can switch caches off (`caches: false`) and cap them
+(`cache_max_bytes`); both are fields in the Policy form.
+
+**Settings, Package caches.** The section explains the above in a few sentences and lists every cache
+of every reachable host: the project, the template, the cache name, its size, when a sandbox last
+used it and whether a sandbox (running or stopped) still uses it. Above the table are the number of
+caches and their total size. Hosts that could not be asked are named in a warning with the error, so
+a missing cache is never mistaken for "no caches". Sizes are measured by the engine and can take a
+moment, so the list is read when the page opens and on **Refresh**, not continuously.
+
+- **Remove** deletes one cache. It is disabled while a sandbox uses the cache (the tooltip says why);
+  delete that sandbox first.
+- **Remove all** deletes every cache that no sandbox uses. Caches in use are kept.
+
+Both ask first. The confirmation names what goes (project, cache, size) and says that only download
+time is lost: the next install downloads the packages again and fills the cache. Afterwards the list
+is read again and a banner shows how many caches were removed and how much space that freed, which
+caches were skipped (and why) and any errors. Caches are also removed by `abox gc`: unused ones after
+`caches.max_age` (default 30 days) and the least recently used ones when a project is above
+`cache_max_bytes` (default 10g). **Diagnostics** shows the number and size of the caches as a check.
 
 ## The SSH passphrase dialog
 
