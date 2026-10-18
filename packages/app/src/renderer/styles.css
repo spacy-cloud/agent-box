@@ -627,15 +627,20 @@ td.path {
 }
 
 /* dialog (native <dialog>) */
+/* title and footer stay put, only the body scrolls */
 dialog.modal {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 1rem 1.25rem;
+  padding: 0;
   width: min(560px, 92vw);
   max-height: 90vh;
-  overflow: auto;
+  overflow: hidden;
+}
+dialog.modal[open] {
+  display: flex;
+  flex-direction: column;
 }
 dialog.modal.wide {
   width: min(720px, 94vw);
@@ -644,13 +649,24 @@ dialog.modal::backdrop {
   background: rgb(0 0 0 / 0.5);
 }
 dialog.modal h2 {
-  margin-top: 0;
+  margin: 0;
+  padding: 1rem 1.25rem 0.5rem;
+  flex: none;
+}
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.25rem 1.25rem 1rem;
 }
 .modal-footer {
+  flex: none;
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
-  margin-top: 1rem;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
 }
 
 /* tabs */
