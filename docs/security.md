@@ -180,6 +180,52 @@ Exceptions are possible only per destination and with approval.
 
 The proxy contract is in `docs/internal/proxy-contract.md`.
 
+### The network log and allowing a destination
+
+Requests the proxy denied are visible and can be allowed without editing YAML: `abox network log`, the GUI's
+Network tab and, for agents, `sandbox_network_log` and a hint in the result of `sandbox_exec`.
+
+**What is logged.** For every request the proxy records the destination host and port, the method (`CONNECT`
+for https tunnels, the HTTP method for plain http), the address it resolved and connected to, the decision and,
+for a denial, the reason (`not in allowlist`, `port not allowed`, `ip literal not allowed`, `blocked address ...`,
+`dns lookup failed`, ...). **Never** request or response bodies, paths, query strings, headers or any secret: the
+proxy does not write them (a request that goes through secret injection is logged like any other, host only), the
+provider copies only those fields, and the audit log masks known secret values on top. The log is the
+`network.egress` entries of the [audit log](#audit-log) (a flood is summarized as `network.egress.summary` with
+counts per destination, denials are always listed one by one), so it has the audit log's rules and no storage
+of its own: append-only, hash-chained, no deletion (there is no separate retention to configure), and the same
+late arrival (entries are copied from the proxy's own log when abox touches the sandbox, and a query of the log
+pulls in what is new). The log of a removed sandbox stays. What is bounded is the work for one answer: it
+aggregates at most the newest 10 000 entries of the sandbox and says when it left older ones out, and a
+collection copies at most 500 denials and 200 allowed requests individually.
+
+**Allow once** (`abox network allow`, the GUI button, `Abox.allowNetwork`) adds destinations to the allowlist of
+**that sandbox only** and updates its proxy live. It does not touch `policy.yaml`, other sandboxes or the profile.
+It is for humans only: an agent calling it is refused (`policy_denied`, audited as `network.allow`) and has to
+use `access_request`, which a human decides when the destination is beyond the profile. It can **not** allow:
+
+- IP addresses (also written as numbers), the names of the local machine and internal networks (`localhost`,
+  `*.local`, `*.internal`, `*.lan`, `*.home.arpa`, ...) and cloud metadata services (`metadata.google.internal`, ...).
+  Independently of the allowlist the proxy refuses every destination that **resolves** to a private, local,
+  link-local or metadata address; a name the log shows being refused for that reason is refused here too, with
+  the explanation. Only a private-address exception opens such a range, and that is a separate request that always
+  needs a human (see [Policy model](#policy-model)).
+- anything in a sandbox without an allowlist: network mode `none` or `open` cannot change on a running sandbox,
+  so there is nothing to allow (the error says so and how to create a sandbox that fits).
+- anything the human profile's own limits forbid: the request goes through the same evaluation as an
+  `access_request` (a destination beyond the profile needs the confirmation, a profile without any allowlist is
+  denied).
+
+Exact hosts are the default. A wildcard (`*.example.org`) is an explicit choice, always needs a confirmation
+(CLI `--yes` or the prompt, a dialog in the GUI) and is never offered for a name with only two labels or under
+a public suffix such as `co.uk` (a heuristic list, not the public suffix list).
+
+**Allow permanently** (`--permanent`, the GUI's "Allow permanently...", `Abox.proposeNetworkPolicy` then
+`setPolicy`) proposes adding the destinations to `network.allow` of the profile of the sandbox's owner. Nothing
+is written until you confirm the diff; the save is the normal policy edit (validated, revisioned, audited) and is
+refused when `policy.yaml` changed since the proposal. It affects every context that uses the profile, and from
+then on agents get the destination without a human decision, so read the diff.
+
 ## Port forwards (previews)
 
 A port forward publishes one TCP port of a running sandbox on `127.0.0.1` of the machine that
@@ -388,6 +434,9 @@ the context files. A project template may only use a Dockerfile inside its own p
 - Command output is not stored in the audit log; it goes to rotating per-sandbox log files with
   configurable, short default retention.
 - Available through the GUI (with filters), `abox audit`, and export as JSON Lines.
+- Allowing destinations from the network log is audited as `network.allow` (scope `sandbox`; refusals with
+  decision `deny` and the reason) next to the usual `sandbox.access_applied`; a permanent change is a `policy.set`
+  revision.
 - **Egress entries (`network.egress`) arrive late.** The proxy sidecar keeps its own log; abox
   copies it into the audit log when it next touches the sandbox (exec, inspect, stop, remove, the
   TTL sweep) and when you query the audit log, never continuously. A connection made by a process

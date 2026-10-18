@@ -40,6 +40,7 @@ const INSTRUCTIONS = [
   'To show the human a dev server that runs in your sandbox (Vite, Flutter web, php -S), listen on 0.0.0.0 there and call sandbox_port_forward.',
   'Policy is a boundary: on policy_denied or approval_denied do not work around it; use access_request or tell the human.',
   'status=pending_approval means a human must run `abox approvals approve <approval_id>`; then repeat the identical call.',
+  'A download or install that fails in an allowlist sandbox was probably denied by the egress proxy: sandbox_exec says so, sandbox_network_log shows what; ask for the destination with access_request kind=network.',
   "You cannot change policy, approve requests or see other agents' sandboxes.",
 ].join('\n');
 

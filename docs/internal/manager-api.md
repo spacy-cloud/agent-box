@@ -299,6 +299,33 @@ land exactly once, also when CLI, MCP server and GUI collect concurrently. A bur
 is written one-by-one up to those caps and summarized as one `network.egress.summary` entry (counts per host/port). A
 backend that cannot be reached never fails the triggering operation; the events stay in the proxy log and are picked up next time.
 
+### Network log and allow
+
+The network log is a view of those entries, with no storage of its own (retention = the audit log's).
+
+- `networkLog(caller, id, {since?, denied?, limit?}) -> NetworkLogView` (owner or human; an agent's foreign id is
+  `not_found`; removed sandboxes are readable): collects first (throttled to 1 s), then aggregates the newest
+  10 000 `network.egress` / `network.egress.summary` entries of the sandbox by `host:port`. Entry: `decision` of the
+  newest request, `allowed`, `denied`, `count`, `firstSeen`, `lastSeen` (event time, `since` cuts on it),
+  `reason` (newest denial, else newest reason), `reasonKind` (`classifyReason`), `methods` (at most 8), `summarized`
+  (requests known only from an overflow summary), `allowedNow` (the sandbox's allowlist covers it) and, for a denied
+  destination that is not allowed now, `allow: {possible, pattern?, wildcard?, why?}`. `mode` is the sandbox's network
+  mode (`none` / `open` have no log); `truncated` says that older entries or more destinations than `limit` (default 200,
+  at most 1000) were left out.
+- `allowNetwork(caller, id, {destinations[]}) -> AccessResult` (human only; an agent gets `policy_denied` and an audit
+  entry): "allow once". Refuses (`invalid_input` / `unsupported` / `policy_denied`, audited as `network.allow` with decision
+  `deny`) invalid patterns, IP addresses, internal and metadata names (`networkDestinationProblem`), sandboxes with mode
+  `none` / `open`, and names the log shows being refused for a blocked address. A wildcard returns `confirmation_required`
+  unless `caller.humanConfirmed`. Otherwise it is `accessRequest({kind: 'network', details: {domains}})`, so the profile
+  limits and the human confirmation of that path apply, plus a `network.allow` audit entry (scope `sandbox`).
+- `proposeNetworkPolicy(caller, id, {destinations[]}) -> NetworkPolicyProposal` (human only, same refusals): the edit of
+  `policy.yaml` (`current`, `proposed`, `baseHash`; `proposed: null` when the owner's profile covers everything already)
+  adding the destinations to `network.allow` of the owner's profile (`proposeNetworkAllow`). Writes nothing: the caller
+  saves with `setPolicy(caller, text, {baseHash})`, which refuses (`conflict`) a policy that changed since, and then calls
+  `allowNetwork`.
+- `ExecCompleted.network` (`{denied, hosts[{host, port, count}], moreHosts}`) is set when the proxy denied requests
+  between the start and the end of an `exec` (read from the audit entries written meanwhile, by any process).
+
 ### Network destinations
 
 `*.example.org` means subdomains only, not the apex `example.org` (as in the proxy; template validation uses the same rule).
@@ -318,7 +345,7 @@ covered when both are (by `host`, or by `host:80` plus `host:443`); `host:8443` 
 ### Policy
 
 `showPolicy(caller) -> PolicyView` (agents: own resolved profile + hosts + policy hash only; humans also all
-profiles/contexts), `validatePolicy(text)` (pure, no caller), `setPolicy(caller, text)` (human: validates,
+profiles/contexts), `validatePolicy(text)` (pure, no caller), `setPolicy(caller, text, {baseHash?})` (human: validates,
 writes `policy.yaml` atomically with mode 0600, records a `PolicyRevision`, audits `policy.set`; any agent
 attempt -> `policy_denied` **and** audit `policy_change_denied`), `listPolicyRevisions(caller)` /
 `getPolicyRevision(caller, rev)` (human only, see above). `auditUnknownTool(caller, tool, argNames?)` is for

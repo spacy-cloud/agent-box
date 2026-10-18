@@ -307,6 +307,30 @@ export const IPC = {
       sinceTs: z.number().int().nonnegative().optional(),
     })
     .strict(),
+  /** The egress log of an allowlist sandbox, grouped by destination (a view of the audit log). */
+  'network:log': z
+    .object({
+      id,
+      since: z.number().int().nonnegative().optional(),
+      denied: z.boolean().optional(),
+      limit: z.number().int().min(1).max(1000).optional(),
+    })
+    .strict(),
+  /**
+   * "Allow once": destinations (host, host:port, *.host) for this sandbox only. The manager refuses what can not be
+   * allowed and asks for the confirmation (`confirmed`) of a wildcard; "allow permanently" is `policy:set` first.
+   */
+  'network:allow': z
+    .object({
+      id,
+      destinations: z.array(z.string().min(1).max(260)).min(1).max(32),
+      confirmed: z.boolean().optional(),
+    })
+    .strict(),
+  /** "Allow permanently": the proposed edit of policy.yaml (text, base hash); writes nothing, the save is `policy:set`. */
+  'network:propose': z
+    .object({ id, destinations: z.array(z.string().min(1).max(260)).min(1).max(32) })
+    .strict(),
   'snapshots:list': z.object({ id }).strict(),
   'snapshots:create': z
     .object({ id, name: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, 'letters, digits . _ -') })

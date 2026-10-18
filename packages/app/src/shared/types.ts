@@ -18,6 +18,9 @@ import type {
   DoctorSeverity,
   ExportSandboxResult,
   InspectResult,
+  NetworkLogEntry,
+  NetworkLogView,
+  NetworkPolicyProposal,
   PolicyRevisionDetail,
   PolicyRevisionSummary,
   PolicyValidation,
@@ -58,6 +61,9 @@ export type {
   DoctorSeverity,
   ExportSandboxResult,
   InspectResult,
+  NetworkLogEntry,
+  NetworkLogView,
+  NetworkPolicyProposal,
   PolicyValidation,
   PolicyView,
   ProcessLogsResult,
@@ -345,6 +351,9 @@ export interface Outputs {
   'processes:list': ProcessView[];
   'processes:logs': ProcessLogsResult;
   'sandboxes:logs': { content: string };
+  'network:log': NetworkLogView;
+  'network:allow': AccessResult;
+  'network:propose': NetworkPolicyProposal;
   'snapshots:list': SnapshotView[];
   'snapshots:create': { snapshotId: string };
   'snapshots:restore': { restored: string };

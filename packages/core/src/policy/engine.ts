@@ -324,7 +324,7 @@ function maxIsolation(levels: IsolationLevel[]): IsolationLevel {
   return best;
 }
 
-function profileDomains(ctx: AgentContext): string[] {
+export function profileDomains(ctx: AgentContext): string[] {
   const out: string[] = [...expandNetworkPresets(ctx.profile.network.allow_presets)];
   for (const a of ctx.profile.network.allow) {
     if (a.trim() === '*') out.push('*');

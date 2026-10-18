@@ -50,6 +50,7 @@ import {
   sandboxLogs,
 } from './interactive.js';
 import { estimateWorkspace } from './estimate.js';
+import { allowNetwork, networkLog, proposeNetworkPolicy } from './network-log.js';
 import { listPortForwards, removePortForward } from './ports.js';
 import { Internals } from './internals.js';
 import type { AboxOptions } from './internals.js';
@@ -99,6 +100,10 @@ import type {
   GcOrphansReport,
   GcReport,
   InspectResult,
+  NetworkAllowInput,
+  NetworkLogOptions,
+  NetworkLogView,
+  NetworkPolicyProposal,
   PolicyRevisionDetail,
   PolicyRevisionSummary,
   PolicyValidation,
@@ -309,6 +314,35 @@ export class Abox {
     return applyApprovedAccess(this.I, caller, approvalId);
   }
 
+  // -- network log -----------------------------------------------------------------------------------------
+  /**
+   * What the egress proxy allowed and denied for a sandbox, grouped by destination (host and port) with counts,
+   * first / last time, the reason of a denial and whether it can be allowed. A view of the audit log (retention
+   * and secret rules are the audit log's). Owner or human; an agent never sees another agent's sandbox.
+   */
+  networkLog(caller: Caller, id: string, o: NetworkLogOptions = {}): Promise<NetworkLogView> {
+    return networkLog(this.I, caller, id, o);
+  }
+  /**
+   * Human only. "Allow once": add destinations (`host`, `host:port`, `*.host`) to the allowlist of this sandbox
+   * only. policy.yaml stays as it is. Refuses IP addresses, internal names, metadata services, sandboxes without
+   * an allowlist and everything the human's profile forbids; a wildcard needs `humanConfirmed`.
+   */
+  allowNetwork(caller: Caller, id: string, input: NetworkAllowInput): Promise<AccessResult> {
+    return allowNetwork(this.I, caller, id, input);
+  }
+  /**
+   * Human only. "Allow permanently": the proposed change of policy.yaml (text and base hash) that adds the
+   * destinations to the profile of the sandbox owner. Writes nothing; save it with `setPolicy`.
+   */
+  proposeNetworkPolicy(
+    caller: Caller,
+    id: string,
+    input: NetworkAllowInput,
+  ): Promise<NetworkPolicyProposal> {
+    return proposeNetworkPolicy(this.I, caller, id, input);
+  }
+
   // -- exec, processes, files ---------------------------------------------------------------------------
   exec(
     caller: Caller,
@@ -442,9 +476,12 @@ export class Abox {
   getPolicyRevision(caller: Caller, rev: number): Promise<PolicyRevisionDetail> {
     return getPolicyRevision(this.I, caller, rev);
   }
-  /** Human only. An attempt by an agent is audited as `policy_change_denied`. */
-  setPolicy(caller: Caller, text: string): Promise<SetPolicyResult> {
-    return setPolicy(this.I, caller, text);
+  /**
+   * Human only. An attempt by an agent is audited as `policy_change_denied`. `baseHash`: the policy hash the
+   * edit started from; when the policy changed since, the save is refused with `conflict`.
+   */
+  setPolicy(caller: Caller, text: string, o: { baseHash?: string } = {}): Promise<SetPolicyResult> {
+    return setPolicy(this.I, caller, text, o);
   }
 
   /**

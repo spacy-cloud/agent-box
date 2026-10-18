@@ -7,6 +7,7 @@ import { TerminalPane } from '../components/Terminal';
 import { FileTree } from '../components/FileTree';
 import type { TreeSelection } from '../components/FileTree';
 import { UsageLines } from '../components/usage';
+import { NetworkTab } from '../components/NetworkLog';
 import { PortsPanel } from '../components/PortsPanel';
 import { UnifiedDiff } from '../components/review';
 import {
@@ -35,7 +36,7 @@ import {
 } from '../../shared/format';
 import { ExtendDialog } from './Sandboxes';
 
-const TABS = ['overview', 'terminal', 'activity', 'files', 'logs', 'snapshots'] as const;
+const TABS = ['overview', 'terminal', 'activity', 'network', 'files', 'logs', 'snapshots'] as const;
 type Tab = (typeof TABS)[number];
 
 export function DetailView(props: { id: string }) {
@@ -157,6 +158,7 @@ export function DetailView(props: { id: string }) {
               <TerminalTab id={s.id} name={s.name} state={s.state} owner={s.owner} />
             ) : null}
             {tab === 'activity' ? <ActivityTab id={s.id} /> : null}
+            {tab === 'network' ? <NetworkTab id={s.id} /> : null}
             {tab === 'files' ? <FilesTab id={s.id} /> : null}
             {tab === 'logs' ? <LogsTab id={s.id} /> : null}
             {tab === 'snapshots' ? <SnapshotsTab id={s.id} /> : null}

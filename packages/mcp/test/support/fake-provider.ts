@@ -8,6 +8,7 @@ import type {
   ExecRequest,
   ExecResult,
   HostConnection,
+  NetworkEvent,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
@@ -31,6 +32,8 @@ export interface FakeOptions {
   kind?: SandboxProvider['kind'];
   capabilities?: Partial<ProviderCapabilities>;
   updateNetwork?: boolean;
+  /** Provide `networkEvents`: push the proxy's decisions to `fake.netEvents`. */
+  networkEvents?: boolean;
   /** Provide port forwards for allowlist and open sandboxes (like the container backends). */
   portForward?: boolean;
   /** Called for every exec; return a partial result. */
@@ -55,11 +58,14 @@ export class FakeProvider implements SandboxProvider {
   readonly prepareCalls: Array<{ hash: string; opts: PrepareOptions }> = [];
   readonly networkUpdates: Array<{ id: SandboxId; allow: string[]; injections: number }> = [];
   readonly gcCalls: string[][] = [];
+  /** Egress events the fake proxy "recorded" per sandbox. */
+  readonly netEvents = new Map<SandboxId, NetworkEvent[]>();
   private readonly seenHashes = new Set<string>();
   private pinCounter = 0;
   readonly opts: FakeOptions;
   private readonly caps: ProviderCapabilities;
   updateNetwork?: SandboxProvider['updateNetwork'];
+  networkEvents?: SandboxProvider['networkEvents'];
   extendExpiry?: SandboxProvider['extendExpiry'];
   addPortForward?: SandboxProvider['addPortForward'];
   listPortForwards?: SandboxProvider['listPortForwards'];
@@ -141,6 +147,14 @@ export class FakeProvider implements SandboxProvider {
         return Promise.resolve();
       };
     }
+    if (opts.networkEvents) {
+      this.networkEvents = (id, sinceTs) => {
+        this.get(id);
+        return Promise.resolve(
+          (this.netEvents.get(id) ?? []).filter((e) => e.ts >= (sinceTs ?? 0)),
+        );
+      };
+    }
     if (this.caps.snapshots) {
       this.snapshot = (id, name) => {
         const sb = this.get(id);
@@ -155,6 +169,10 @@ export class FakeProvider implements SandboxProvider {
         return Promise.resolve();
       };
     }
+  }
+
+  addNetEvents(id: SandboxId, ...events: NetworkEvent[]): void {
+    this.netEvents.set(id, [...(this.netEvents.get(id) ?? []), ...events]);
   }
 
   private now(): number {
