@@ -14,6 +14,7 @@ import { exportWorkspace } from '../workspace/index.js';
 import type { WorkspaceRecord } from '../workspace/index.js';
 import { confirmationRequired, consumeApproval, gate } from './approvals.js';
 import { NET_POLL_THROTTLE_MS, collectNetworkEvents } from './network-audit.js';
+import { denialsSince } from './network-log.js';
 import type { Internals } from './internals.js';
 import { SNAPSHOT_NAME_RE, execSchema, exportSchema, processStartSchema } from './schemas.js';
 import { requireNotTakenOver } from './takeover.js';
@@ -206,6 +207,8 @@ export async function execCommand(
 
   const provider = await I.providerForRecord(rec);
   const started = Date.now();
+  // what the proxy denies from here on is shown to the caller (entries other processes collect meanwhile count)
+  const auditMark = I.state.audit.head()?.seq ?? 0;
   let res;
   try {
     res = await provider.exec(id, {
@@ -271,6 +274,7 @@ export async function execCommand(
     },
   });
   await collectNetworkEvents(I, rec);
+  const network = denialsSince(I, rec, auditMark);
   return {
     status: 'completed',
     exitCode: res.exitCode,
@@ -280,6 +284,7 @@ export async function execCommand(
     timedOut: res.timedOut,
     durationMs,
     logRef,
+    ...(network ? { network } : {}),
   };
 }
 

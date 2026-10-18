@@ -3,6 +3,8 @@ import type {
   AccessRequestInput,
   CreateSandboxRequest,
   ExecParams,
+  NetworkDenials,
+  NetworkLogEntry,
   PendingApproval,
   ProcessView,
   SandboxView,
@@ -190,6 +192,44 @@ export function pendingOutcome(p: PendingApproval, tool: string, requestId?: str
     },
     text: lines.join('\n'),
   };
+}
+
+const destinationLabel = (host: string, port: number): string =>
+  host === ''
+    ? '(unreadable request)'
+    : port === 443 || port === 80 || port < 1
+      ? host
+      : `${host}:${port}`;
+
+/** One line for the result of a command that ran into the proxy's denials. */
+export function networkHint(n: NetworkDenials): string {
+  const shown = n.hosts.slice(0, 3).map((h) => destinationLabel(h.host, h.port));
+  const more = n.hosts.length - shown.length + n.moreHosts;
+  const where = `${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}`;
+  return `network: ${n.denied} request${n.denied === 1 ? '' : 's'} to ${where} denied; ask with access_request kind=network (details.domains) or check sandbox_network_log`;
+}
+
+const networkData = (n: NetworkDenials): Record<string, unknown> => ({
+  denied: n.denied,
+  hosts: n.hosts,
+  moreHosts: n.moreHosts,
+});
+
+function logLine(e: NetworkLogEntry): string {
+  const where = destinationLabel(e.host, e.port);
+  const what =
+    e.denied > 0
+      ? `denied ${e.denied}${e.allowed > 0 ? `, allowed ${e.allowed}` : ''}`
+      : `allowed ${e.allowed}`;
+  const why = e.denied > 0 && e.reason ? ` (${e.reason})` : '';
+  const now = e.allowedNow && e.denied > 0 ? ' [allowed now]' : '';
+  const ask =
+    e.allow?.possible === true
+      ? ` -> access_request kind=network domains=["${e.allow.pattern}"]`
+      : e.allow?.why
+        ? ` -> cannot be requested: ${e.allow.why}`
+        : '';
+  return `${where}  ${what}${why}${now}${ask}`;
 }
 
 function unexpectedStatus(status: string): ToolOutcome {
@@ -628,6 +668,7 @@ export function registerTools(register: Register): void {
       if (res.status !== 'completed') return unexpectedStatus(res.status);
       const out = capStreams(res.stdout, res.stderr, rt.limits.maxOutputBytes);
       const truncated = res.truncated || out.truncated;
+      const netHint = res.network ? networkHint(res.network) : undefined;
       const data = {
         status: 'completed',
         exitCode: res.exitCode,
@@ -636,6 +677,7 @@ export function registerTools(register: Register): void {
         truncated,
         timedOut: res.timedOut,
         durationMs: res.durationMs,
+        ...(res.network ? { network: networkData(res.network), networkHint: netHint } : {}),
         ...(truncated
           ? {
               hint: 'Output was cut. Do not re-run to see more: redirect to a file (cmd "... > /tmp/out.txt 2>&1") and use sandbox_read_file, or run it with sandbox_process_start and read sandbox_process_logs with tail/since.',
@@ -648,6 +690,7 @@ export function registerTools(register: Register): void {
         truncated
           ? '[output truncated: redirect to a file and use sandbox_read_file, or use sandbox_process_logs]'
           : '',
+        netHint ? `[${netHint}]` : '',
       ]
         .filter(Boolean)
         .join('\n');
@@ -880,6 +923,71 @@ export function registerTools(register: Register): void {
               `${e.type === 'dir' ? 'd' : e.type === 'symlink' ? 'l' : '-'} ${String(e.size).padStart(10)} ${e.name}`,
           )
           .join('\n'),
+      );
+    },
+  });
+
+  register({
+    name: 'sandbox_network_log',
+    title: 'Network log',
+    description:
+      'What the egress proxy of one of your allowlist sandboxes allowed and denied, grouped by destination (counts, times, reason). Use it when a download fails or sandbox_exec reports denied network requests. You cannot allow anything yourself: ask with access_request kind=network (details.domains). No request contents, paths or headers.',
+    input: {
+      id: sandboxId,
+      since: duration
+        .optional()
+        .describe('Only requests from the last N seconds or duration, e.g. "10m", "2h".'),
+      denied: z.boolean().optional().describe('Only denied requests.'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe('At most this many destinations, most recent first (default 50).'),
+    },
+    annotations: READ,
+    async handler(args, rt) {
+      const log = await rt.abox.networkLog(rt.caller, args.id, {
+        ...(args.since !== undefined
+          ? { since: Date.now() - durationMs(args.since, 'since') }
+          : {}),
+        ...(args.denied ? { denied: true } : {}),
+        limit: args.limit ?? 50,
+      });
+      const entries = log.entries.map((e) => ({
+        host: e.host,
+        port: e.port,
+        decision: e.decision,
+        allowed: e.allowed,
+        denied: e.denied,
+        count: e.count,
+        firstSeenAt: e.firstSeen,
+        lastSeenAt: e.lastSeen,
+        ...(e.reason ? { reason: e.reason } : {}),
+        ...(e.reasonKind ? { reasonKind: e.reasonKind } : {}),
+        methods: e.methods,
+        allowedNow: e.allowedNow,
+        ...(e.allow
+          ? {
+              canRequest: e.allow.possible,
+              ...(e.allow.pattern ? { requestDomain: e.allow.pattern } : {}),
+              ...(e.allow.why ? { whyNot: e.allow.why } : {}),
+            }
+          : {}),
+      }));
+      const head =
+        log.mode === 'none'
+          ? 'Network is off for this sandbox (mode none): there is nothing to log and nothing to allow. Create a new sandbox with network mode allowlist if it needs the internet.'
+          : log.mode === 'open'
+            ? 'This sandbox has open network access: no proxy decides, so nothing is logged.'
+            : log.entries.length === 0
+              ? 'No network requests in the log.'
+              : `${log.totals.denied} denied and ${log.totals.allowed} allowed request(s) to ${log.totals.destinations} destination(s)${log.truncated ? ' (older or more destinations were left out)' : ''}`;
+      return ok(
+        head,
+        { mode: log.mode, totals: log.totals, truncated: log.truncated, entries },
+        log.entries.map(logLine).join('\n'),
       );
     },
   });

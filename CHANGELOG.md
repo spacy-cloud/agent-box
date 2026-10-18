@@ -10,6 +10,22 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
+  denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
+  denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):
+  no storage of its own, the audit log's retention, never paths, headers, bodies or secrets, at most the newest
+  10 000 entries per call. `abox network log <sandbox> [--denied] [--since 10m] [--json]` prints it; the GUI has a
+  **Network** ("Netz") tab on the sandbox detail view (table by domain with a decision badge, count, last seen
+  and reason, "only blocked" filter, live refresh) with **Allow for this sandbox**, **Allow permanently...** (the
+  policy diff dialog, revisioned `policy:set`) and an explicit, warned **All subdomains...** choice.
+  `abox network allow <sandbox> <destination...> [--permanent]` does the same on the command line (`--permanent`
+  shows the `policy.yaml` diff and asks). "Allow once" adds the destination to that sandbox's allowlist only
+  (`updateNetwork`, audited as `network.allow`); it refuses IP addresses, internal and metadata names,
+  destinations the proxy refuses as private addresses, sandboxes with network `none` / `open` and what the
+  human profile forbids, and says why. Agents get a `network:` line in the result of `sandbox_exec` (and
+  `abox exec`) when the proxy denied requests during the command, can read their own sandbox's log with the new
+  MCP tool `sandbox_network_log` (21 tools now), and still can not allow anything (they use `access_request`).
+  `Abox.setPolicy` takes an optional `baseHash` and refuses a policy that changed meanwhile.
 - Logo: the README shows it (light and dark variant), the GUI uses the mark in the sidebar, as
   window and tray icon (with a red dot while approvals wait) and the AppImage gets icons from 16 to
   512 px (`packages/app/build/icons`).

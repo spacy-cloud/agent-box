@@ -6,6 +6,7 @@ import type { Cli } from '../cli.js';
 import { CliError, CliExit } from '../errors.js';
 import { formatDuration, formatTime, renderTable } from '../format.js';
 import { resolveSandboxId } from '../ids.js';
+import { denialNote } from './network.js';
 import { collect, durationMs, invalid, parseEnvPairs, positiveInt } from '../parse.js';
 
 const HUMAN_MAX_OUTPUT = 16 * 1024 * 1024;
@@ -76,6 +77,7 @@ export function registerRun(program: Command, cli: Cli): void {
           if (r.truncated) {
             cli.warn(`output was truncated; the full output is in the log ${r.logRef}`);
           }
+          if (r.network) cli.warn(denialNote(id, r.network));
         }
         if (r.exitCode !== 0) throw new CliExit(r.exitCode);
       },
