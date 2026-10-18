@@ -627,6 +627,49 @@ Deny a request
 | --------------- | ----------------------------- |
 | `--note <text>` | note stored with the decision |
 
+### `abox network`
+
+`abox network [options] [command]`
+
+Egress log of an allowlist sandbox and allowing a denied destination
+
+#### `abox network log`
+
+`abox network log [options] <sandbox>`
+
+Show what the egress proxy allowed and denied, grouped by destination
+
+| Argument  | Meaning            |
+| --------- | ------------------ |
+| `sandbox` | sandbox id or name |
+
+| Option           | Meaning                                                            |
+| ---------------- | ------------------------------------------------------------------ |
+| `--denied`       | only denied requests                                               |
+| `--since <when>` | only newer requests: a duration (10m, 2h) or an ISO date           |
+| `--limit <n>`    | at most N destinations (most recently seen first) (default: "200") |
+
+#### `abox network allow`
+
+`abox network allow [options] <sandbox> <destination...>`
+
+Allow destinations for one sandbox (default) or, with --permanent, in the policy of its owner
+
+| Argument      | Meaning                                                 |
+| ------------- | ------------------------------------------------------- |
+| `sandbox`     | sandbox id or name                                      |
+| `destination` | host name, host:port or \*.example.org (all subdomains) |
+
+| Option        | Meaning                                                                                                                |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `--permanent` | also add the destinations to network.allow of the owner's profile in policy.yaml (shown as a diff and confirmed first) |
+| `-y, --yes`   | confirm without asking                                                                                                 |
+
+Without `--permanent` only this sandbox changes: its proxy is updated live and `policy.yaml` stays as it is.
+IP addresses, names of the local machine or internal networks and cloud metadata services are never allowed;
+the proxy refuses private addresses whatever the allowlist says. A sandbox with network mode `none` or `open` has
+nothing to allow. A wildcard (`*.example.org`) covers every subdomain and always asks for confirmation.
+
 ### `abox policy`
 
 `abox policy [options] [command]`
@@ -955,6 +998,26 @@ Print a shell completion script (bash, zsh or fish)
   pipes. Output is capped (64 KiB per stream for agents; humans get more) and the full masked
   output is kept in the log directory. Known secret values are masked as `***` in output, logs and
   audit entries.
+- **`abox exec`** in an allowlist sandbox adds a note on standard error when the egress proxy denied
+  requests while the command ran (`network: 2 requests to registry.example.org denied; see "abox network
+log <id> --denied", allow with "abox network allow <id> <domain>"`); with `--json` the result has
+  `network {denied, hosts[], moreHosts}`. The exit code stays the command's.
+- **`abox network log`** groups the proxy's decisions by destination (host and port) with counts, the
+  first and last time, the newest decision, the reason of a denial and, for a denied destination, what
+  can be done about it (the exact `abox network allow` line, or why it cannot be allowed). `--json` prints
+  the same data (`entries[]` with `host`, `port`, `decision`, `allowed`, `denied`, `count`, `firstSeen`,
+  `lastSeen`, `reason`, `reasonKind`, `methods`, `allowedNow`, `allow`). It looks at the newest 10 000 log
+  entries of the sandbox and says when older ones were left out. A sandbox with network mode `none` or
+  `open` has no log; the command says why. See [security](security.md#the-network-log-and-allowing-a-destination).
+- **`abox network allow`** has two scopes. Without `--permanent` it is "allow once": the destinations are
+  added to the allowlist of this sandbox only (`updateNetwork`, applied live, audited as `network.allow`
+  and `sandbox.access_applied`), for as long as the sandbox exists; `policy.yaml` and new sandboxes are
+  not affected. With `--permanent` it first adds them to `network.allow` of the profile of the sandbox's
+  owner, exactly like the GUI's "Allow permanently": the change to `policy.yaml` is shown as a diff and
+  needs your confirmation (`--yes` without a terminal), is validated, revisioned and audited, is refused
+  when the file changed meanwhile, and applies to every context that uses the profile; then the sandbox
+  itself is updated. If the profile allows the destination already, only the sandbox changes. Agents
+  cannot use it (they ask with `access_request`).
 - **`abox shell`** needs an interactive terminal and fails with exit code 2 otherwise.
 - **`abox export`** never applies anything; see [quickstart](quickstart.md#workspace-modes).
 - **`abox snapshot` / `restore`** depend on the backend. `restore` accepts the snapshot name or its id

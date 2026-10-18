@@ -56,6 +56,9 @@ export type ManagerChannel =
   | 'processes:list'
   | 'processes:logs'
   | 'sandboxes:logs'
+  | 'network:log'
+  | 'network:allow'
+  | 'network:propose'
   | 'snapshots:list'
   | 'snapshots:create'
   | 'snapshots:restore'
@@ -200,6 +203,12 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         clean({ tail: i.tail ?? 300, sinceTs: i.sinceTs }),
       ),
     }),
+    'network:log': (i) =>
+      abox.networkLog(HUMAN, i.id, clean({ since: i.since, denied: i.denied, limit: i.limit })),
+    'network:allow': (i) =>
+      abox.allowNetwork(confirmedHuman(i.confirmed), i.id, { destinations: i.destinations }),
+    'network:propose': (i) =>
+      abox.proposeNetworkPolicy(HUMAN, i.id, { destinations: i.destinations }),
     'snapshots:list': (i) => abox.listSnapshots(HUMAN, i.id),
     'snapshots:create': (i) => abox.snapshot(HUMAN, i.id, i.name),
     'snapshots:restore': (i) => abox.restore(HUMAN, i.id, i.snapshotId),
