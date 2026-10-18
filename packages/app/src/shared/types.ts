@@ -20,6 +20,8 @@ import type {
   DoctorReport,
   DoctorSeverity,
   ExportSandboxResult,
+  FitEstimate,
+  HostCapacity,
   InspectResult,
   NetworkLogEntry,
   NetworkLogView,
@@ -66,6 +68,8 @@ export type {
   DoctorReport,
   DoctorSeverity,
   ExportSandboxResult,
+  FitEstimate,
+  HostCapacity,
   InspectResult,
   NetworkLogEntry,
   NetworkLogView,
@@ -344,6 +348,8 @@ export interface Outputs {
   'sandboxes:create': CreateResult;
   'workspace:estimate': WorkspaceEstimate;
   'jobs:cancel': { cancelled: boolean };
+  'capacity:host': HostCapacity;
+  'capacity:estimate': FitEstimate;
   'templates:list': TemplateList;
   'templates:show': TemplateDetails;
   'templates:review': TemplateReview;

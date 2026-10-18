@@ -50,6 +50,7 @@ import {
   sandboxLogs,
 } from './interactive.js';
 import { listCaches, removeCaches } from './caches.js';
+import { estimateFit, hostCapacity } from './capacity.js';
 import { estimateWorkspace } from './estimate.js';
 import { allowNetwork, networkLog, proposeNetworkPolicy } from './network-log.js';
 import { listPortForwards, removePortForward } from './ports.js';
@@ -93,16 +94,19 @@ import type {
   CreateSandboxRequest,
   CreateResult,
   DoctorReport,
+  EstimateFitInput,
   ExecCallOptions,
   ExecParams,
   ExecOutcome,
   ExportParams,
   ExportSandboxResult,
+  FitEstimate,
   GcImagesResult,
   GcOptions,
   GcOrphansOptions,
   GcOrphansReport,
   GcReport,
+  HostCapacity,
   InspectResult,
   NetworkAllowInput,
   NetworkLogOptions,
@@ -254,6 +258,23 @@ export class Abox {
     opts: { signal?: AbortSignal; onProgress?: (line: string, info?: ProgressInfo) => void } = {},
   ): Promise<WorkspaceEstimate> {
     return estimateWorkspace(this.I, caller, input, opts);
+  }
+  /**
+   * Human only, read-only. Capacity of a host (cpus and memory of the machine the engine runs on), what the
+   * whole machine uses right now (`/proc` numbers; over the hardened ssh connection for remote hosts), what
+   * abox's sandboxes reserve and use there, and the host limits. Unknown parts are `null`; measured parts are
+   * cached for a few seconds. Agents are refused.
+   */
+  hostCapacity(caller: Caller, hostId: string): Promise<HostCapacity> {
+    return hostCapacity(this.I, caller, hostId);
+  }
+  /**
+   * Human only, read-only. How many sandboxes of the planned size fit on a host (by limits, by reservations
+   * against the machine, by what is free now), what the host looks like with it and whether a create would be
+   * refused. A ceiling from limits, not a performance prediction.
+   */
+  estimateFit(caller: Caller, input: EstimateFitInput): Promise<FitEstimate> {
+    return estimateFit(this.I, caller, input);
   }
   listSandboxes(caller: Caller, filter: SandboxFilterInput = {}): Promise<SandboxList> {
     return listSandboxes(this.I, caller, filter);

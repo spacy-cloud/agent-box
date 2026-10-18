@@ -3,7 +3,7 @@ import { call } from './api';
 import { useApp } from './context';
 import type { IpcChannel, IpcError, IpcInput } from '../shared/ipc';
 import type { IpcOutput } from '../shared/types';
-import type { ResourceUsage } from '@abox/core';
+import type { HostCapacity, ResourceUsage } from '@abox/core';
 
 export interface QueryState<T> {
   data: T | undefined;
@@ -134,4 +134,75 @@ export function useSandboxUsage(ids: string[], intervalMs = 5000): UsageMap {
     };
   }, [key, intervalMs]);
   return usage;
+}
+
+export interface CapacityState {
+  data: HostCapacity | undefined;
+  /** Why there is no (new) answer: the host cannot be reached, the manager refused. */
+  error: string | undefined;
+  /** No answer yet. */
+  loading: boolean;
+}
+
+/**
+ * Capacity and live utilisation of the given hosts (`capacity:host`, read-only), one independent call per
+ * host so a slow ssh host does not hold up the others. Polls every `intervalMs` while the window is visible; a
+ * hidden window stops and refreshes once when it comes back. No overlapping calls per host. The last answer
+ * stays while the next is on its way; a failure keeps the old numbers out (they would be stale) and reports why.
+ */
+export function useHostCapacity(ids: string[], intervalMs = 10_000): Record<string, CapacityState> {
+  const [state, setState] = useState<Record<string, CapacityState>>({});
+  const key = [...new Set(ids)].sort().join('\n');
+  useEffect(() => {
+    const wanted = key === '' ? [] : key.split('\n');
+    let cancelled = false;
+    const inFlight = new Set<string>();
+    /** A host that fails is asked less and less often (up to once a minute): an unreachable or untrusted host must not be hammered. */
+    const failures = new Map<string, number>();
+    const nextAt = new Map<string, number>();
+    const visible = (): boolean => document.visibilityState !== 'hidden';
+    const sample = async (id: string): Promise<void> => {
+      if (inFlight.has(id) || cancelled || !visible() || Date.now() < (nextAt.get(id) ?? 0)) return;
+      inFlight.add(id);
+      try {
+        const data = await call('capacity:host', { id });
+        failures.delete(id);
+        nextAt.delete(id);
+        if (!cancelled)
+          setState((s) => ({ ...s, [id]: { data, error: undefined, loading: false } }));
+      } catch (e) {
+        const n = (failures.get(id) ?? 0) + 1;
+        failures.set(id, n);
+        nextAt.set(id, Date.now() + Math.min(60_000, intervalMs * 2 ** (n - 1)) - 1000);
+        if (!cancelled)
+          setState((s) => ({
+            ...s,
+            [id]: { data: undefined, error: (e as Error).message, loading: false },
+          }));
+      } finally {
+        inFlight.delete(id);
+      }
+    };
+    setState((s) => {
+      const next: Record<string, CapacityState> = {};
+      for (const id of wanted)
+        next[id] = s[id] ?? { data: undefined, error: undefined, loading: true };
+      return next;
+    });
+    const all = (): void => {
+      for (const id of wanted) void sample(id);
+    };
+    all();
+    const timer = setInterval(all, intervalMs);
+    const onVisibility = (): void => {
+      if (visible()) all();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [key, intervalMs]);
+  return state;
 }

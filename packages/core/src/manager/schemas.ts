@@ -57,6 +57,23 @@ export const createRequestSchema = z.strictObject({
   cache: z.boolean().optional(),
 });
 
+const hostIdStr = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'invalid host id');
+
+export const hostCapacitySchema = z.strictObject({ hostId: hostIdStr });
+
+export const estimateFitSchema = z.strictObject({
+  hostId: hostIdStr.optional(),
+  template: z.string().min(1).max(64),
+  overrides: z
+    .strictObject({
+      cpus: z.number().positive().max(1024).optional(),
+      memory: sizeOrBytes.optional(),
+    })
+    .optional(),
+  projectDir: hostPathStr.optional(),
+  workspacePath: hostPathStr.optional(),
+});
+
 export const workspaceEstimateSchema = z.strictObject({
   path: hostPathStr,
   mode: z.enum(WORKSPACE_MODES).optional(),

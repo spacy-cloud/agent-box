@@ -6,6 +6,7 @@ import type { AboxConfig } from '../config/config.js';
 import { loadConfig } from '../config/config.js';
 import { ensureDirs, resolvePaths } from '../config/paths.js';
 import type { AboxPaths } from '../config/paths.js';
+import type { HostLiveResult } from '../hosts/live.js';
 import type { ProviderFactory, SandboxProvider } from '../provider.js';
 import { LibsecretStore } from '../secrets/libsecret.js';
 import type { SecretStore } from '../secrets/store.js';
@@ -48,6 +49,12 @@ export interface AboxOptions {
   secretStore?: SecretStore;
   /** Default: only host `local` (zone `workstation`) with every registered backend. */
   hostResolver?: HostResolver;
+  /**
+   * Live utilisation (`/proc`) of a host, for `hostCapacity` / `estimateFit`. The runtime supplies one that
+   * reads the numbers of an ssh host over the hardened connection; default: this machine is read directly and
+   * every other host is reported as unknown.
+   */
+  hostLive?: HostLiveSource;
   now?: () => number;
   /** Project directory searched for `.sandbox/*.yaml` and used as the default workspace path. */
   projectDir?: string;
@@ -60,6 +67,9 @@ export interface AboxOptions {
   /** Use this policy text instead of reading `policy.yaml` (tests). */
   policyText?: string;
 }
+
+/** Reads the live utilisation of a host; resolves with a reason instead of throwing when it is not available. */
+export type HostLiveSource = (hostId: string) => Promise<HostLiveResult>;
 
 /** What the manager stores in `SandboxRecord.effective` (never any secret value). */
 export interface StoredEffective {
@@ -115,6 +125,10 @@ export class Internals {
   policy: Policy;
   policyText: string;
   private readonly hostResolverFn: HostResolver | undefined;
+  /** See `AboxOptions.hostLive`; undefined = this machine only. */
+  readonly hostLiveFn: HostLiveSource | undefined;
+  /** Measured part of `hostCapacity` per host, shared for a few seconds (see capacity.ts). */
+  readonly capacityCache = new Map<string, { at: number; value: Promise<unknown> }>();
   private readonly policyOverride: string | undefined;
   private policyStamp = '';
   /**
@@ -166,6 +180,7 @@ export class Internals {
     this.providerFactories = opts.providers;
     this.secretStore = opts.secretStore ?? new LibsecretStore();
     this.hostResolverFn = opts.hostResolver;
+    this.hostLiveFn = opts.hostLive;
     this.policyOverride = opts.policyText;
     this.ttlIntervalMs = Math.max(0, (opts.ttlCheckIntervalSec ?? 5) * 1000);
     const loaded = this.loadPolicyOrDegrade();

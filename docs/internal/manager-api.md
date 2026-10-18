@@ -20,6 +20,8 @@ const abox = await Abox.open({
   now?,                // clock (tests)
   projectDir?,         // searched for .sandbox/*.yaml; default workspace path of creates
   home?,               // home for `~` and the forbidden-path list (default $HOME)
+  hostLive?,           // (hostId) => Promise<HostLiveResult>: live cpu/memory of a host (/proc numbers); default: none
+                       //   (live values are then "unavailable"); the runtime wires readLocalLive / readRemoteLive
   ttlCheckIntervalSec? // default 5; 0 = sweep on every call
   reconcileOnOpen?,    // default true: TTL sweep + mark ghosts stale (deletes nothing)
   config?, policyText? // tests
@@ -386,6 +388,31 @@ unknown/revoked tokens or contexts no longer in the policy), `revokeAgentToken(c
   directories without a live row, unreferenced images, logs past retention, overdue approvals.
 - `sweepTtl(caller)`: the TTL sweep also runs (rate limited) inside every call: overdue sandboxes become
   `expired` and are stopped; removal is left to `gc`.
+
+### Host capacity and fit estimate (human only)
+
+- `hostCapacity(caller, hostId) -> HostCapacity`: read-only. `capacity` (`cpus`, `memoryBytes`, `source`
+  `engine` | `proc` | `os` | `unknown`): `NCPU`/`MemTotal` from the provider's optional `hostResources()`
+  (engine facts), else the live reading (`/proc`), else the OS for `local`; `null` when none is known. `live`
+  (`available`, `cpuPercent`, `memoryUsedBytes`/`memoryAvailableBytes`/`memoryTotalBytes`, `load`, `reason`) comes
+  from the injected `hostLive` (local: `/proc` with a 300 ms cpu sample; ssh: one fixed read-only command over
+  the hardened ssh, see `hosts/live.ts`). `abox` has the sandboxes of the host, how many run, what they reserve
+  and, sampled via `sandboxStats` for at most 24 sandboxes, what they use. `limits` are the configured host limits
+  with the reserved part. `at` is the timestamp. Unknown is `null`/`available: false`, never a guess.
+  Measurements are cached 5 s per host (`CAPACITY_CACHE_MS`; failures are not cached); reservations are always
+  read fresh. A remote read is audited as `host.capacity` once per 10 min and host; local reads are not.
+- `estimateFit(caller, {hostId, template, overrides?}) -> FitEstimate`: how often a sandbox of the resolved
+  template and overrides fits. `bounds` are the ceilings in whole sandboxes (the planned one counts as the first):
+  `limit` (host limits minus reserved), `profile` (the owner's sandbox count against the profile), `reservation`
+  (reserved against the machine) and `live` (free memory against the sandbox's memory). The live cpu bound is
+  `advisory`: it is not part of `fits` (the load changes every second) and only raises the `cpu_busy` warning.
+  `fits` is the minimum over the other bounds (`null` when none is known), `limitedBy` the bound that decides.
+  `blocked` lists what a create would be refused for (the same checks as the create: `hostQuotaViolations` and
+  the profile limits); `warnings` has `memory_overcommit`, `cpu_overcommit`, `memory_high` (> 90 % of the
+  machine), `memory_not_free`, `cpu_busy`, `capacity_unknown`; `tone` is `info` | `warn` | `error`. It is a ceiling
+  from limits and reservations, not a performance prediction. Pure part: `computeFit`, `describeFit` (fit.ts).
+- Both refuse agents (`policy_denied`): the machine's load is not for agents, and a coarse version for them was
+  deliberately not added.
 
 ### Events
 

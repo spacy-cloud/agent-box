@@ -24,6 +24,7 @@ abox stores no secrets: `identity_file` is a path, auth is ssh-agent / keys / FI
 | `engine-info.ts`        | `getEngineInfo` (`/info`: rootless, runtimes), `isSystemEngineSocket`                        |
 | `resolver.ts`           | `createHostResolver` for the manager (rootless check on shared/restricted zones)             |
 | `control.ts`            | `closeSshConnection` (ControlMaster)                                                         |
+| `live.ts`               | `/proc` parsers, `readLocalLive`, `readRemoteLive` (one fixed read-only ssh command)         |
 
 ## Decisions
 

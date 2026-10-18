@@ -59,6 +59,21 @@ ls [--json]`, `abox cache rm <key>|--project <path>|--all` (human only), `abox g
   browser for http(s) loopback URLs only, close) and agent requests in Approvals. New provider
   capability `portForward`. See `docs/cli.md`, `docs/mcp.md`, `docs/gui.md`, `docs/security.md`
   and `docs/backends.md`.
+- Host limits can be changed after the fact: `abox host set <id>` with `--max-sandboxes`, `--cpus`
+  and `--memory` (a value or `none`; also for `local`), and the host dialog of the app has a "Limits" section
+  (Max. sandboxes, CPUs in total, Memory in total; empty = no limit) plus a "Limits" button for this
+  computer. `abox host ls` shows the limits.
+- Host capacity and utilisation: `Abox.hostCapacity` (size of the machine from the engine or `/proc`, what
+  it uses right now, what abox's sandboxes reserve and use, configured limits; unknown values are never
+  guessed; human only). Remote hosts are read with one fixed read-only ssh command (only `/proc` numbers).
+  Shown by `abox host test`, `abox host ls --usage` / `--json` and as live CPU and RAM bars in the Hosts view
+  (amber above 80 %, red above 95 %).
+- Fit estimate when creating: `Abox.estimateFit` says how often a sandbox fits on the host (by the host
+  limits, the reservations against the machine and the memory free now), the resulting reserved share of CPU
+  and RAM, warnings (memory over-commit and others) and refusals by host or profile limits. `abox create`
+  prints it on stderr on a terminal (`estimate` with `--json`); the New sandbox dialog shows it on the
+  Options step and does not allow "Next" when a limit would refuse the sandbox. It is a ceiling, not a
+  performance prediction.
 - Logo: the README shows it (light and dark variant), the GUI uses the mark in the sidebar, as
   window and tray icon (with a red dot while approvals wait) and the AppImage gets icons from 16 to
   512 px (`packages/app/build/icons`).

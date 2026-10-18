@@ -6,6 +6,8 @@
 //                    (default: a rootless engine with runc); "none" answers 404
 //   FAKE_SSH_MASTER  "1": `ssh -O exit` reports a live master (exit 0), else 255
 //   FAKE_SSH_ENV_LOG file; the environment variable names of the process are appended (one line)
+//   FAKE_SSH_LIVE    file whose content is printed as the answer to the live utilisation read (the remote command
+//                    that mentions `abox.stat1`), as the output of the real fixed script would be
 //   FAKE_SSH_CONF_COPY / FAKE_SSH_SCAN_KEY  a host key scan (`-F <conf> ... true`): the -F config is
 //                    copied to the first, and the second (`<type> <base64>`) is stored for the scanned
 //                    host in the throwaway known_hosts the config names, like a handshake would
@@ -39,6 +41,11 @@ if (f >= 0 && env.FAKE_SSH_SCAN_KEY && argv.at(-1) === 'true') {
 }
 const o = argv.indexOf('-O');
 if (o >= 0) process.exit(argv[o + 1] === 'exit' && env.FAKE_SSH_MASTER === '1' ? 0 : 255);
+
+if (env.FAKE_SSH_LIVE && (argv.at(-1) ?? '').includes('abox.stat1')) {
+  process.stdout.write(readFileSync(env.FAKE_SSH_LIVE, 'utf8'));
+  process.exit(0);
+}
 
 const l = argv.indexOf('-L');
 if (argv.includes('-N') && l >= 0) {

@@ -65,6 +65,8 @@ export interface FakeOptions {
   caches?: boolean;
   /** Provide port forwards for these network modes (`true` = allowlist and open, like the container backends). */
   portForward?: boolean | NetworkMode[];
+  /** Provide `hostResources` (cpus and memory of the machine the engine runs on). */
+  hostResources?: { cpus: number; memoryBytes: number };
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -117,6 +119,9 @@ export class FakeProvider implements SandboxProvider {
   addPortForward?: SandboxProvider['addPortForward'];
   listPortForwards?: SandboxProvider['listPortForwards'];
   removePortForward?: SandboxProvider['removePortForward'];
+  hostResources?: SandboxProvider['hostResources'];
+  /** Every `hostResources` call. */
+  hostResourcesCalls = 0;
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
   networkEvents?: SandboxProvider['networkEvents'];
@@ -262,6 +267,13 @@ export class FakeProvider implements SandboxProvider {
           open.filter((p) => p !== gone),
         );
         return Promise.resolve(gone ? { ...gone } : undefined);
+      };
+    }
+    if (opts.hostResources) {
+      const r = opts.hostResources;
+      this.hostResources = () => {
+        this.hostResourcesCalls++;
+        return Promise.resolve({ ...r });
       };
     }
     if (opts.updateNetwork) {
