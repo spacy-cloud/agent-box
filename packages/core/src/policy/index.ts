@@ -1,6 +1,7 @@
 export * from './model.js';
 export * from './units.js';
 export * from './domains.js';
+export * from './edit.js';
 export * from './images.js';
 export { ProfileSchema, PolicyFileSchema, ContextSchema, isValidRootSyntax } from './schema.js';
 export type { RawPolicy, RawProfile } from './schema.js';

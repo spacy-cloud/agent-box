@@ -39,6 +39,7 @@ const INSTRUCTIONS = [
   'Flow: template_list -> sandbox_create (fresh request_id) -> sandbox_exec -> sandbox_export format=diff (show it to the human, point out flagged paths) -> sandbox_delete.',
   'Policy is a boundary: on policy_denied or approval_denied do not work around it; use access_request or tell the human.',
   'status=pending_approval means a human must run `abox approvals approve <approval_id>`; then repeat the identical call.',
+  'A download or install that fails in an allowlist sandbox was probably denied by the egress proxy: sandbox_exec says so, sandbox_network_log shows what; ask for the destination with access_request kind=network.',
   "You cannot change policy, approve requests or see other agents' sandboxes.",
 ].join('\n');
 

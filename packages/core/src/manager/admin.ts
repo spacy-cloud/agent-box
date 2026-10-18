@@ -178,6 +178,7 @@ export async function setPolicy(
   I: Internals,
   caller: Caller,
   text: string,
+  o: { baseHash?: string } = {},
 ): Promise<SetPolicyResult> {
   const ctx = await I.context(caller);
   if (ctx.kind !== 'human') {
@@ -198,6 +199,12 @@ export async function setPolicy(
       'invalid_input',
       `policy must be text of at most ${MAX_POLICY_BYTES} bytes`,
     );
+  }
+  if (o.baseHash !== undefined) I.refreshPolicy(true); // the file as it is now, not as polled up to 0.5 s ago
+  if (o.baseHash !== undefined && I.policy.contentHash !== o.baseHash) {
+    throw new AboxError('conflict', 'policy.yaml changed while it was being edited', {
+      hint: 'Reload the policy, redo your change on the current version, and save again.',
+    });
   }
   const policy = parsePolicy(text, { kind: 'file', path: I.paths.policyFile });
   const tmp = join(I.paths.configDir, `.policy.${randomBytes(4).toString('hex')}.tmp`);

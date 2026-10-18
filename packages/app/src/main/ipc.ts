@@ -72,6 +72,7 @@ const WRITE_CHANNELS = new Set<IpcChannel>([
   'sandboxes:remove',
   'sandboxes:extend',
   'sandboxes:create',
+  'network:allow',
   'snapshots:create',
   'snapshots:restore',
   'approvals:approve',

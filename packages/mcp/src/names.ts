@@ -16,6 +16,7 @@ export const TOOL_NAMES = [
   'sandbox_read_file',
   'sandbox_write_file',
   'sandbox_list_dir',
+  'sandbox_network_log',
   'sandbox_snapshot',
   'sandbox_restore',
   'sandbox_export',

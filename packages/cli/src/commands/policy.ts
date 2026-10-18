@@ -248,7 +248,7 @@ function runEditor(editor: string, file: string, cli: Cli): Promise<void> {
   });
 }
 
-async function unifiedDiff(label: string, before: string, after: string): Promise<string> {
+export async function unifiedDiff(label: string, before: string, after: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'abox-diff-'));
   try {
     const a = join(dir, 'a');

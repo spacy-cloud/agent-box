@@ -99,6 +99,9 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       approve: rec('approve'),
       deny: rec('deny'),
       queryAudit: rec('queryAudit', []),
+      networkLog: rec('networkLog', { entries: [] }),
+      allowNetwork: rec('allowNetwork', { status: 'applied' }),
+      proposeNetworkPolicy: rec('proposeNetworkPolicy', { proposed: null }),
       exportSandbox: rec('exportSandbox'),
       showPolicy: rec('showPolicy', {
         contexts: {
@@ -289,6 +292,35 @@ describe('manager handlers are thin: always the human caller, confirmation only 
     expect(calls[1]!.args[0]).toEqual({ contextId: 'human', humanConfirmed: true });
     expect(calls[2]!.args).toEqual([{ contextId: 'human' }, 'a1', 'ok']);
     expect(calls[3]!.args[0]).toEqual({ contextId: 'human' });
+  });
+
+  it('network log and allow: the human caller, a wildcard confirmation only when given, undefined members stripped', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await h['network:log']({ id: 'local/x', limit: 500 }, {});
+    await h['network:log']({ id: 'local/x', denied: true, since: 5 }, {});
+    await h['network:allow']({ id: 'local/x', destinations: ['a.example.org'] }, {});
+    await h['network:allow'](
+      { id: 'local/x', destinations: ['*.example.org'], confirmed: true },
+      {},
+    );
+    await h['network:propose']({ id: 'local/x', destinations: ['a.example.org'] }, {});
+    expect(calls.map((c) => c.fn)).toEqual([
+      'networkLog',
+      'networkLog',
+      'allowNetwork',
+      'allowNetwork',
+      'proposeNetworkPolicy',
+    ]);
+    expect(calls[0]!.args).toEqual([{ contextId: 'human' }, 'local/x', { limit: 500 }]);
+    expect(calls[1]!.args[2]).toEqual({ denied: true, since: 5 });
+    expect(calls[2]!.args).toEqual([
+      { contextId: 'human' },
+      'local/x',
+      { destinations: ['a.example.org'] },
+    ]);
+    expect(calls[3]!.args[0]).toEqual({ contextId: 'human', humanConfirmed: true });
+    expect(calls[4]!.args[0]).toEqual({ contextId: 'human' });
   });
 
   it('policy set refuses when the file changed since the edit started', async () => {
