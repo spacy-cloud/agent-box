@@ -489,6 +489,7 @@ export async function resolveTemplate(
     path: merged.workspace?.path ?? TEMPLATE_DEFAULTS.workspace.path,
     access: (merged.workspace?.access ?? TEMPLATE_DEFAULTS.workspace.access) as AccessMode,
     ...(merged.workspace?.ref !== undefined ? { ref: merged.workspace.ref } : {}),
+    ...(merged.workspace?.gitignore !== undefined ? { gitignore: merged.workspace.gitignore } : {}),
   };
   const resources = {
     cpus: merged.resources?.cpus ?? TEMPLATE_DEFAULTS.resources.cpus,

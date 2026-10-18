@@ -169,6 +169,12 @@ describe('templateRisks', () => {
     expect(risks).toContain('secret gh (injected by the proxy for github.com)');
   });
 
+  it('flags a template that switches .gitignore off for the copy', async () => {
+    const t = await resolve(`${BASE}workspace:\n  gitignore: false\n`);
+    expect(templateRisks(t).join('\n')).toContain('workspace.gitignore is off');
+    expect(templateRisks(await resolve(`${BASE}workspace:\n  gitignore: true\n`))).toEqual([]);
+  });
+
   it('flags foreign registries and the process backend', async () => {
     const foreign = await resolve(BASE.replace('ubuntu:24.04', 'ghcr.io/someone/tools:1'));
     expect(templateRisks(foreign).join('\n')).toContain('outside Docker Hub');

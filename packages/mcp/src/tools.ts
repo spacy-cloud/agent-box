@@ -61,7 +61,14 @@ const envSchema = z
  */
 function resolveWorkspace(
   w:
-    | { mode?: string; path?: string; ref?: string; access?: 'ro' | 'rw'; exclude?: string[] }
+    | {
+        mode?: string;
+        path?: string;
+        ref?: string;
+        access?: 'ro' | 'rw';
+        exclude?: string[];
+        gitignore?: boolean;
+      }
     | undefined,
 ): NonNullable<CreateSandboxRequest['workspace']> {
   if (!w || (w.mode === undefined && w.path === undefined && w.ref === undefined)) {
@@ -353,7 +360,13 @@ export function registerTools(register: Register): void {
             .array(z.string().min(1).max(512))
             .max(256)
             .optional()
-            .describe('Exclude patterns for copy/sync.'),
+            .describe('Exclude patterns for copy/sync, on top of .gitignore.'),
+          gitignore: z
+            .boolean()
+            .optional()
+            .describe(
+              'copy/sync only (an error for other modes): leave out what the project .gitignore files ignore (node_modules, build output, .env). Default true; false copies everything.',
+            ),
         })
         .optional(),
       overrides: z

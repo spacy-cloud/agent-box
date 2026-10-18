@@ -2,6 +2,7 @@ import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AboxError } from '../errors.js';
 import { formatBytesHuman } from '../policy/units.js';
+import type { GitignoreSession, IgnoreLayer } from './gitignore.js';
 import type { ExcludeMatcher } from './glob.js';
 import { isDotGitLike } from './safefs.js';
 
@@ -27,6 +28,17 @@ export interface ScanProgress {
 
 export interface ScanOptions {
   exclude?: ExcludeMatcher;
+  /**
+   * Leave out what `.gitignore` files ignore, like the copy does. The session carries the budgets
+   * and collects warnings (`.gitignore` that is a link, too large…).
+   */
+  gitignore?: GitignoreSession;
+  /**
+   * With `gitignore`: also measure what lies below the ignored entries (`ScanResult.ignoredTotals`),
+   * for the "x GiB ignored" part of an estimate. Costs a walk of those trees (bounded, see
+   * {@link IGNORED_MEASURE_ENTRIES}); never counts towards the totals or limits.
+   */
+  measureIgnored?: boolean;
   /** `visit` (default, as the copy does) counts `.git`; `skip` leaves it out. */
   gitMode?: 'skip' | 'visit';
   /** Files above this size are skipped by the copy and therefore not counted. Default: the copy limit. */
@@ -47,6 +59,10 @@ export interface ScanResult extends ScanProgress {
   /** Entries a copy would not take (special files, too large, unreadable, invalid names). */
   skipped: number;
   excluded: number;
+  /** Entries left out by `.gitignore` (an ignored directory counts once, not its contents). */
+  ignored: number;
+  /** With `measureIgnored`: the files below the ignored entries. `partial`: measuring stopped at its bound. */
+  ignoredTotals?: { files: number; bytes: number; partial: boolean };
   /**
    * Set when the walk stopped early because a limit was exceeded; the counts are then lower bounds
    * ("at least").
@@ -57,10 +73,24 @@ export interface ScanResult extends ScanProgress {
 
 const LSTAT_BATCH = 32;
 
+/** Entries visited below ignored directories at most, when they are measured. */
+export const IGNORED_MEASURE_ENTRIES = 1_000_000;
+
+interface Pending {
+  path: string;
+  rel: string;
+  depth: number;
+  /** Rules in force (`undefined`: none, e.g. inside `.git`). */
+  ignore?: IgnoreLayer;
+  /** Below an ignored directory: only measured, never counted as workspace. */
+  ignoredTree?: boolean;
+}
+
 /**
  * Fast, read-only size estimate of a directory tree: `readdir` + `lstat` only. File contents are
- * never opened and symbolic links are never followed (a link counts as one entry). It applies the
- * same exclude patterns and entry rules as the copy, so the numbers are what the copy will move.
+ * never opened (except the `.gitignore` files, when asked to apply them) and symbolic links are
+ * never followed (a link counts as one entry). It applies the same exclude patterns, `.gitignore`
+ * rules and entry rules as the copy, so the numbers are what the copy will move.
  * Sparse files count with their apparent size, like the copy. The walk is advisory (no race
  * protection); the copy itself enforces its limits again.
  */
@@ -73,6 +103,8 @@ export async function scanTree(root: string, opts: ScanOptions = {}): Promise<Sc
   const gitMode = opts.gitMode ?? 'visit';
   const exclude = opts.exclude ?? (() => false);
   const interval = opts.progressIntervalMs ?? 1000;
+  const session = opts.gitignore;
+  const measure = session !== undefined && opts.measureIgnored === true;
   const r: ScanResult = {
     entries: 0,
     files: 0,
@@ -81,8 +113,11 @@ export async function scanTree(root: string, opts: ScanOptions = {}): Promise<Sc
     symlinks: 0,
     skipped: 0,
     excluded: 0,
+    ignored: 0,
+    ...(measure ? { ignoredTotals: { files: 0, bytes: 0, partial: false } } : {}),
     durationMs: 0,
   };
+  let measured = 0;
   let lastReport = started;
   const report = (force: boolean): void => {
     if (!opts.onProgress) return;
@@ -97,12 +132,16 @@ export async function scanTree(root: string, opts: ScanOptions = {}): Promise<Sc
     return r.stoppedBy !== undefined;
   };
 
-  const stack: Array<{ path: string; rel: string; depth: number }> = [
-    { path: root, rel: '', depth: 0 },
+  const stack: Pending[] = [
+    { path: root, rel: '', depth: 0, ...(session ? { ignore: await session.root(root) } : {}) },
   ];
   while (stack.length > 0) {
     if (opts.signal?.aborted) throw new AboxError('internal', 'create cancelled');
-    const dir = stack.pop() as { path: string; rel: string; depth: number };
+    const dir = stack.pop() as Pending;
+    if (dir.ignoredTree) {
+      await measureIgnoredDir(dir);
+      continue;
+    }
     if (dir.depth > maxDepth) {
       r.stoppedBy = 'depth';
       break;
@@ -115,7 +154,16 @@ export async function scanTree(root: string, opts: ScanOptions = {}): Promise<Sc
       r.skipped++;
       continue;
     }
+    const ignore =
+      dir.ignore && session
+        ? await session.load(
+            dir.ignore,
+            dir.rel,
+            names.some((n) => n.name === '.gitignore') ? join(dir.path, '.gitignore') : undefined,
+          )
+        : undefined;
     const files: Array<{ path: string }> = [];
+    const ignoredFiles: string[] = [];
     for (const ent of names) {
       const name = ent.name;
       const rel = dir.rel ? `${dir.rel}/${name}` : name;
@@ -129,10 +177,35 @@ export async function scanTree(root: string, opts: ScanOptions = {}): Promise<Sc
         r.excluded++;
         continue;
       }
+      let childIgnore = ignore;
+      const verdict = ignore && session ? session.decide(ignore, rel, name, isDir) : 'keep';
+      if (verdict === 'forced') childIgnore = ignore?.forcedView();
+      else if (verdict === 'keep' && isDotGitLike(name)) childIgnore = undefined;
+      if (verdict === 'ignore') {
+        r.ignored++;
+        if (measure) {
+          if (isDir) {
+            stack.push({
+              path: join(dir.path, name),
+              rel,
+              depth: dir.depth + 1,
+              ignoredTree: true,
+            });
+          } else if (ent.isFile()) {
+            ignoredFiles.push(join(dir.path, name));
+          }
+        }
+        continue;
+      }
       r.entries++;
       if (isDir) {
         r.directories++;
-        stack.push({ path: join(dir.path, name), rel, depth: dir.depth + 1 });
+        stack.push({
+          path: join(dir.path, name),
+          rel,
+          depth: dir.depth + 1,
+          ...(childIgnore ? { ignore: childIgnore } : {}),
+        });
       } else if (ent.isSymbolicLink()) {
         r.symlinks++;
       } else if (ent.isFile()) {
@@ -141,6 +214,7 @@ export async function scanTree(root: string, opts: ScanOptions = {}): Promise<Sc
         r.skipped++;
       }
     }
+    if (ignoredFiles.length > 0) await measureIgnoredFiles(ignoredFiles);
     // sizes: lstat in small parallel batches (a directory can hold hundreds of thousands of files)
     for (let i = 0; i < files.length; i += LSTAT_BATCH) {
       if (opts.signal?.aborted) throw new AboxError('internal', 'create cancelled');
@@ -167,6 +241,53 @@ export async function scanTree(root: string, opts: ScanOptions = {}): Promise<Sc
   r.durationMs = Date.now() - started;
   report(true);
   return r;
+
+  /** Sizes of files below ignored entries: only added to `ignoredTotals`. */
+  async function measureIgnoredFiles(paths: string[]): Promise<void> {
+    const totals = r.ignoredTotals as NonNullable<ScanResult['ignoredTotals']>;
+    for (let i = 0; i < paths.length; i += LSTAT_BATCH) {
+      const stats = await Promise.all(
+        paths.slice(i, i + LSTAT_BATCH).map((p) => lstat(p).catch(() => undefined)),
+      );
+      for (const st of stats) {
+        if (!st || !st.isFile()) continue;
+        totals.files++;
+        totals.bytes += st.size;
+      }
+    }
+  }
+
+  async function measureIgnoredDir(dir: Pending): Promise<void> {
+    const totals = r.ignoredTotals as NonNullable<ScanResult['ignoredTotals']>;
+    if (totals.partial || dir.depth > maxDepth) {
+      totals.partial = true;
+      return;
+    }
+    let names;
+    try {
+      names = await readdir(dir.path, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const files: string[] = [];
+    for (const ent of names) {
+      if (++measured > IGNORED_MEASURE_ENTRIES) {
+        totals.partial = true;
+        break;
+      }
+      if (ent.isDirectory()) {
+        stack.push({
+          path: join(dir.path, ent.name),
+          rel: `${dir.rel}/${ent.name}`,
+          depth: dir.depth + 1,
+          ignoredTree: true,
+        });
+      } else if (ent.isFile()) {
+        files.push(join(dir.path, ent.name));
+      }
+    }
+    await measureIgnoredFiles(files);
+  }
 }
 
 /** `12 345` style number for messages (thin grouping is avoided: plain ASCII space). */
@@ -205,7 +326,7 @@ export function copyLimitError(
   }
   const hint =
     purpose === 'copy'
-      ? 'Choose the project folder itself, use workspace mode "mount" or "clone" for big repositories, or exclude large directories (create option exclude: abox create --exclude node_modules, MCP workspace.exclude, "Exclude" field in the GUI).'
+      ? 'Choose the project folder itself, use workspace mode "mount" or "clone" for big repositories, or exclude large directories (create option exclude: abox create --exclude node_modules, MCP workspace.exclude, "Exclude" field in the GUI). What .gitignore ignores is already left out unless gitignore is switched off.'
       : 'Mount a git repository instead (its HEAD commit is the baseline, no snapshot is taken), choose a smaller folder, or use workspace mode "empty".';
   return new AboxError(
     'invalid_input',

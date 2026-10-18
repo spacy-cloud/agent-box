@@ -84,7 +84,14 @@ export interface TemplateSpec {
   tools?: string[];
   setup?: Array<{ run: string }>;
   user?: { name?: string; uid?: number; sudo?: boolean };
-  workspace?: { mode?: WorkspaceMode; path?: string; access?: AccessMode; ref?: string };
+  workspace?: {
+    mode?: WorkspaceMode;
+    path?: string;
+    access?: AccessMode;
+    ref?: string;
+    /** `copy` / `sync`: leave out what `.gitignore` files ignore (default true). */
+    gitignore?: boolean;
+  };
   resources?: {
     cpus?: number;
     /** Size string like `4g`, `512m`. */
@@ -134,7 +141,14 @@ export interface ResolvedTemplate {
   /** Tool presets with their verification command (used by `template test`). */
   tools: Array<{ name: string; version?: string; check: string }>;
   user: { name: string; uid: number; sudo: boolean };
-  workspace: { mode: WorkspaceMode; path: string; access: AccessMode; ref?: string };
+  workspace: {
+    mode: WorkspaceMode;
+    path: string;
+    access: AccessMode;
+    ref?: string;
+    /** Only present when the template sets it; the default for `copy` / `sync` is true. */
+    gitignore?: boolean;
+  };
   resources: {
     cpus: number;
     memoryBytes: number;

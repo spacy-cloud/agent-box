@@ -141,6 +141,10 @@ export function templateRisks(t: ResolvedTemplate): string[] {
     out.push(`mounts ${m.source} from the host at ${m.target} (${m.access})`);
   if (t.workspace.mode === 'mount' && t.workspace.access === 'rw')
     out.push('workspace mode mount with write access: changes land in your project directly');
+  if (t.workspace.gitignore === false)
+    out.push(
+      'workspace.gitignore is off: files the project .gitignore lists (.env files, node_modules) are copied into the sandbox as well',
+    );
   for (const s of t.secrets)
     out.push(
       s.inject === 'proxy'

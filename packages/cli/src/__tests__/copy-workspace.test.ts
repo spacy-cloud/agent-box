@@ -82,6 +82,93 @@ describe('create --mode copy of a large folder', () => {
   });
 });
 
+describe('create --gitignore / --no-gitignore', () => {
+  let proj: string;
+  beforeAll(() => {
+    proj = join(t.home, 'gi-proj');
+    mkdirSync(join(proj, 'node_modules'), { recursive: true });
+    writeFileSync(join(proj, '.gitignore'), 'node_modules/\n*.log\n');
+    writeFileSync(join(proj, 'main.txt'), 'code\n');
+    writeFileSync(join(proj, 'debug.log'), 'log\n');
+    writeFileSync(join(proj, 'node_modules', 'blob.txt'), 'x\n');
+  });
+
+  it('respects .gitignore by default and says what it left out', async () => {
+    const r = await run(t, [
+      'create',
+      'host-shell',
+      '-w',
+      proj,
+      '--mode',
+      'copy',
+      '--yes',
+      '--name',
+      'gi-default',
+    ]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/\(2 entries ignored by \.gitignore\)/);
+    const ls = await run(t, ['exec', 'gi-default', '--', 'ls', '-a']);
+    expect(ls.stdout).toContain('main.txt');
+    expect(ls.stdout).not.toContain('node_modules');
+    expect(ls.stdout).not.toContain('debug.log');
+    await run(t, ['rm', '--force', 'gi-default']);
+  });
+
+  it('--no-gitignore copies everything, --gitignore is the explicit default', async () => {
+    const all = await run(t, [
+      'create',
+      'host-shell',
+      '-w',
+      proj,
+      '--mode',
+      'copy',
+      '--no-gitignore',
+      '--yes',
+      '--name',
+      'gi-off',
+    ]);
+    expect(all.code, all.stderr).toBe(0);
+    const ls = await run(t, ['exec', 'gi-off', '--', 'ls', '-a']);
+    expect(ls.stdout).toContain('node_modules');
+    expect(ls.stdout).toContain('debug.log');
+    await run(t, ['rm', '--force', 'gi-off']);
+    const on = await run(t, [
+      'create',
+      'host-shell',
+      '-w',
+      proj,
+      '--mode',
+      'copy',
+      '--gitignore',
+      '--yes',
+      '--name',
+      'gi-on',
+    ]);
+    expect(on.code, on.stderr).toBe(0);
+    expect(on.stderr).toMatch(/entries ignored by \.gitignore/);
+    await run(t, ['rm', '--force', 'gi-on']);
+  });
+
+  it('needs a project directory, and a mode that copies', async () => {
+    const none = await run(t, ['create', 'host-shell', '--no-gitignore', '--json']);
+    expect(none.code).toBe(2);
+    expect(none.json.message).toContain('--no-gitignore needs a project directory');
+    const mount = await run(t, [
+      'create',
+      'host-shell',
+      '-w',
+      proj,
+      '--mode',
+      'mount',
+      '--gitignore',
+      '--yes',
+      '--json',
+    ]);
+    expect(mount.code).toBe(2);
+    expect(mount.json.message).toContain('only applies to the workspace modes copy and sync');
+  });
+});
+
 describe('create of a folder beyond the hard copy limit', () => {
   it('fails within seconds with the copy-direction message and hint (exit 2)', async () => {
     const huge = join(t.home, 'huge');

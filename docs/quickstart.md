@@ -148,13 +148,22 @@ Things to know:
 
 ### What `copy` and `sync` copy, and how big it may be
 
-`copy` and `sync` put the **whole directory** into the sandbox:
+`copy` and `sync` put the directory (minus what `.gitignore` and `--exclude` leave out) into the sandbox:
 
-- **Nothing is left out by default.** `.gitignore` is **not** read: `node_modules`, build output,
-  virtual environments and the `.git` directory are copied like everything else. Leave things out
-  with `--exclude` (`abox create ... --exclude node_modules,dist`; MCP `workspace.exclude`; the
-  **Exclude** field of the GUI's New sandbox). Patterns are gitignore-like (`name` anywhere,
-  `/name` at the top, `dir/`, `*`, `?`, `**`; no `!`), see [templates](templates.md#workspace).
+- **What `.gitignore` ignores is left out.** The project's `.gitignore` files (nested ones, `!`
+  negation and `**` included) and its `.git/info/exclude` are applied, so `node_modules`, build
+  output, virtual environments and `.env` files do not travel into the sandbox; files git tracks are
+  always kept. It is on by default. To copy everything, use `abox create ... --no-gitignore`, the
+  MCP field `workspace.gitignore` set to `false`, the **Respect .gitignore** checkbox of the GUI or
+  `workspace: { gitignore: false }` in a template. The rules, what is not applied (your global git
+  ignore file, `.gitignore` files above the folder) and the caps are in
+  [templates](templates.md#gitignore).
+- **`.git` is copied** (history, remote URLs, hooks) and never treated as ignorable content; keep
+  it out with `--exclude .git`.
+- **More can be left out with `--exclude`** (`abox create ... --exclude generated,*.bak`; MCP
+  `workspace.exclude`; the **Also exclude** field of the GUI's New sandbox). Patterns are
+  gitignore-like (`name` anywhere, `/name` at the top, `dir/`, `*`, `?`, `**`; no `!`), see
+  [templates](templates.md#exclude-patterns).
 - **Symlinks are not followed**; they are copied as links. Sockets, FIFOs and devices are skipped.
 - **Size is checked before anything is copied.** A fast read-only scan (it only lists directories
   and looks at file sizes, no content is read) runs first and prints `workspace: N files, X` on
@@ -169,7 +178,7 @@ Things to know:
 - **Hard limit: 64 GiB or 2 000 000 entries** (4 GiB per file; larger files are skipped and
   listed). Beyond it `abox create` fails within seconds with `invalid_input` ("workspace folder ...
   is larger than the copy limit"). Choose the project folder itself, use `mount` or `clone` for big
-  repositories, or exclude the big directories.
+  repositories, or exclude the big directories. The limits count what remains after `.gitignore`.
 - The copy needs free disk space several times the size (staging copy, baseline, the sandbox).
 
 An end-to-end example with a git repository:

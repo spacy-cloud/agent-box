@@ -226,6 +226,11 @@ export interface WorkspaceRequest {
   access?: AccessMode;
   /** Exclude patterns for copy/sync. */
   exclude?: string[];
+  /**
+   * copy/sync: leave out what the project's `.gitignore` files ignore (default: the template's
+   * `workspace.gitignore`, else true). Giving it for another mode is an error.
+   */
+  gitignore?: boolean;
 }
 
 export interface CreateOverrides {
@@ -845,6 +850,8 @@ export interface WorkspaceEstimateInput {
   mode?: WorkspaceMode;
   /** Exclude patterns of the workspace (as for a create). */
   exclude?: string[];
+  /** Apply `.gitignore` rules (default true), as the create would. */
+  gitignore?: boolean;
 }
 
 export interface WorkspaceEstimateLimits {
@@ -867,6 +874,10 @@ export interface WorkspaceEstimate {
   entries: number;
   files: number;
   truncated: boolean;
+  /** Entries left out by `.gitignore` (a directory counts once). Absent when `.gitignore` was not applied. */
+  ignored?: number;
+  /** What lies below them (files and bytes); `partial` = measuring stopped at its bound, so "at least". */
+  ignoredTotals?: { files: number; bytes: number; partial: boolean };
   /** Above the profile's `workspace.max_copy_bytes` / `max_copy_entries`: a human has to confirm, agents are denied. */
   overSoftLimit: boolean;
   /** Above the hard copy limit: the create fails. */

@@ -15,7 +15,15 @@ export type EstimateState =
 /** Pause after the last keystroke before the folder is measured. */
 const DEBOUNCE_MS = 400;
 
-const fmtCount = (n: number): string => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+/** Thousands grouping by language: a space in German (`1 240`), a comma in English (`1,240`). */
+const fmtCount = (n: number, locale: string): string =>
+  String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, locale === 'de' ? ' ' : ',');
+
+/** `2.1 GiB` -> `2,1 GiB` in German. */
+const fmtSize = (n: number, locale: string): string => {
+  const s = formatBytes(n);
+  return locale === 'de' ? s.replace(/^(\d+)\.(\d)/, '$1,$2') : s;
+};
 
 /**
  * Measures the picked workspace folder with the manager's fast read-only pre-scan (`workspace:estimate`).
@@ -27,10 +35,13 @@ export function useWorkspaceEstimate(input: {
   /** Effective workspace mode (the form's choice, else the template's). */
   mode: string;
   exclude: string[];
+  /** False = copy everything (the core default is to leave out what .gitignore ignores). */
+  gitignore?: boolean;
 }): EstimateState {
   const [state, setState] = useState<EstimateState>({ status: 'idle' });
   const key = useRef(`estimate-${Math.random().toString(36).slice(2)}`);
   const excludeKey = JSON.stringify(input.exclude);
+  const gitignore = input.gitignore !== false;
   const wanted = input.path.startsWith('/') && (input.mode === 'copy' || input.mode === 'sync');
 
   useEffect(() => {
@@ -50,6 +61,7 @@ export function useWorkspaceEstimate(input: {
         path: input.path,
         mode: input.mode as 'copy' | 'sync',
         ...(input.exclude.length > 0 ? { exclude: input.exclude } : {}),
+        ...(gitignore ? {} : { gitignore: false }),
         progressKey: key.current,
       }).then(
         (estimate) => {
@@ -66,7 +78,7 @@ export function useWorkspaceEstimate(input: {
       off();
       if (started) void call('jobs:cancel', { key: key.current }).catch(() => undefined);
     };
-  }, [wanted, input.path, input.mode, excludeKey]);
+  }, [wanted, input.path, input.mode, excludeKey, gitignore]);
 
   return state;
 }
@@ -87,7 +99,7 @@ export function WorkspaceEstimateNote(props: {
   onUseMode?(mode: string): void;
   compact?: boolean;
 }) {
-  const { t } = useApp();
+  const { t, locale } = useApp();
   const { state } = props;
   if (state.status === 'idle') return null;
   if (state.status === 'scanning') {
@@ -107,9 +119,20 @@ export function WorkspaceEstimateNote(props: {
   }
   const e = state.estimate;
   if (!e.applicable) return null;
-  const size = `${e.truncated ? '≥ ' : '≈ '}${formatBytes(e.bytes)}`;
-  const files = fmtCount(e.files);
+  const size = `${e.truncated ? '≥ ' : '≈ '}${fmtSize(e.bytes, locale)}`;
+  const files = fmtCount(e.files, locale);
   const summary = t('new.estimate.summary', { size, files });
+  // what .gitignore left out, as the second line of the note
+  const left = e.ignoredTotals;
+  const leftOut =
+    left && left.bytes > 0 ? (
+      <p className="small" data-testid="estimate-left-out">
+        {t('new.estimate.leftOut', {
+          size: `${left.partial ? '≥ ' : ''}${fmtSize(left.bytes, locale)}`,
+          files: fmtCount(left.files, locale),
+        })}
+      </p>
+    ) : null;
   const alternatives = (['mount', 'clone'] as const).filter((m) => props.modes.includes(m));
   const suggest =
     props.onUseMode && !props.compact && alternatives.length > 0 ? (
@@ -127,10 +150,11 @@ export function WorkspaceEstimateNote(props: {
         <strong data-testid="estimate-too-large">
           {t('new.estimate.tooLarge', {
             size: formatBytes(e.hard.bytes),
-            entries: fmtCount(e.hard.entries),
+            entries: fmtCount(e.hard.entries, locale),
           })}
         </strong>
         <p>{summary}</p>
+        {leftOut}
         <p>{t('new.estimate.advice')}</p>
         {suggest}
       </Banner>
@@ -140,14 +164,16 @@ export function WorkspaceEstimateNote(props: {
     return (
       <Banner tone="warn">
         <strong data-testid="estimate-large">{t('new.estimate.large', { summary })}</strong>
+        {leftOut}
         <p>{t('new.estimate.advice')}</p>
         {suggest}
       </Banner>
     );
   }
   return (
-    <p className="muted small" role="status" data-testid="estimate-ok">
-      {summary}
-    </p>
+    <Banner tone="info">
+      <strong data-testid="estimate-ok">{t('new.estimate.willCopy', { size, files })}</strong>
+      {leftOut}
+    </Banner>
   );
 }

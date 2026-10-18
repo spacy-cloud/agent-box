@@ -36,6 +36,7 @@ import type {
 import {
   cleanupWorkspace,
   compileExcludes,
+  GitignoreSession,
   copyLimitError,
   describeScan,
   prepareWorkspace,
@@ -389,6 +390,21 @@ export async function createSandbox(
 
   const wsMode: WorkspaceMode = wsRequested?.mode ?? template.workspace.mode;
   const wsAccess: AccessMode = wsRequested?.access ?? template.workspace.access;
+  // `.gitignore` only matters for the modes that copy the folder. A template may set it for every
+  // mode (the request can change the mode); a request that sets it for another mode is a mistake.
+  const wsCopies = wsMode === 'copy' || wsMode === 'sync';
+  if (wsRequested?.gitignore !== undefined && !wsCopies) {
+    throw new AboxError(
+      'invalid_input',
+      `workspace.gitignore only applies to the workspace modes copy and sync (this sandbox uses '${wsMode}')`,
+      {
+        hint: "Leave it out; 'mount' and 'worktree' use the files as they are and 'clone' only has what git tracks.",
+      },
+    );
+  }
+  const wsGitignore: boolean | undefined = wsCopies
+    ? (wsRequested?.gitignore ?? template.workspace.gitignore ?? true)
+    : undefined;
   let wsHostPath: string | undefined;
   let wsLexicalPath: string | undefined;
   if (wsMode !== 'empty') {
@@ -418,6 +434,8 @@ export async function createSandbox(
       hostPath: wsHostPath ?? null,
       ref: wsRequested?.ref ?? null,
       exclude: [...(wsRequested?.exclude ?? [])].sort(),
+      // only the deviation from the default, so requests that did not use it keep their key
+      ...(wsGitignore === false ? { gitignore: false } : {}),
     },
     resources: { cpus, memoryBytes, ttlMs },
     network: {
@@ -524,6 +542,7 @@ export async function createSandbox(
       copyScan = await scanTree(wsHostPath, {
         exclude: compileExcludes(wsRequested?.exclude),
         gitMode: 'visit',
+        ...(wsGitignore ? { gitignore: new GitignoreSession() } : {}),
         ...(opts.signal ? { signal: opts.signal } : {}),
         onProgress: (p) =>
           onProgress?.(`scanning workspace … ${describeScan(p)}`, { phase: 'scan', done: p.bytes }),
@@ -601,6 +620,7 @@ export async function createSandbox(
           ref: wsRequested?.ref ?? null,
           access: wsAccess,
           exclude: wsRequested?.exclude ?? [],
+          ...(wsGitignore === false ? { gitignore: false } : {}),
         },
         backend: template.backend,
       },
@@ -784,6 +804,7 @@ export async function createSandbox(
         : {}),
       remote: caps.remote,
       ...(wsRequested?.exclude ? { exclude: wsRequested.exclude } : {}),
+      ...(wsGitignore !== undefined ? { gitignore: wsGitignore } : {}),
       short,
     });
     wsRecord = prepared.record;
@@ -922,6 +943,14 @@ export async function createSandbox(
           hostPath: wsHostPath,
           access: wsAccess,
           ref: wsRequested?.ref ?? template.workspace.ref,
+          ...(wsRecord.gitignore
+            ? {
+                gitignore: {
+                  enabled: wsRecord.gitignore.enabled,
+                  ignored: wsRecord.gitignore.ignored,
+                },
+              }
+            : {}),
         },
         network: { mode: netMode, allow: network.allow },
         mounts,

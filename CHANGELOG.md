@@ -22,6 +22,17 @@ release. Nothing has been released yet.
   `repo.packagist.org`). The destinations were measured with the egress audit.
 - `ABOX_TEST_HEAVY_TEMPLATES=1` enables the build of `flutter-dev` (about 5 minutes, 3-4 GB) in
   the Docker template tests; the other new templates are built with `ABOX_TEST_DOCKER=1`.
+- `.gitignore` for `copy` and `sync` workspaces, on by default: what the project's `.gitignore`
+  files (nested ones, `!` negation, anchoring, `**`) and `.git/info/exclude` ignore is not copied, so
+  `node_modules`, build output and `.env` files stay out of the sandbox. The rules are applied by abox
+  itself (git is not run), files git tracks are always kept, `.git` is still copied, and the global
+  git ignore file and `.gitignore` files above the folder are not read. Links, huge and unusable
+  `.gitignore` files are skipped with a warning; matching is bounded. Switch it off with `abox create
+--no-gitignore`, MCP `workspace.gitignore: false`, template `workspace.gitignore: false` or the
+  GUI checkbox "Respect .gitignore"; `--exclude` patterns apply on top. The size estimate, the soft
+  and hard limits and the progress numbers count what is copied, the GUI estimate shows how much
+  `.gitignore` left out, the create audit entry records the setting and the count, and `abox
+export` leaves out ignored paths the sandbox created (`stats.ignored`).
 - Remote hosts: a hardened runtime is configured per host (`runtimes: { docker: runsc }` in
   hosts.yaml, `abox host add --runtime docker=runsc`) and checked against the remote engine, so
   `shared` and `restricted` hosts can be used; `abox host test` shows rootless mode and runtimes.
