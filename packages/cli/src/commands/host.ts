@@ -26,6 +26,13 @@ import type { Cli } from '../cli.js';
 import { CliExit } from '../errors.js';
 import { formatRelative, renderKeyValues, renderTable, safe } from '../format.js';
 import { collect, commaList, invalid, positiveNumber, sizeBytes } from '../parse.js';
+import {
+  capacityLines,
+  gatherCapacity,
+  limitsText,
+  usageCell,
+  type CapacityOutcome,
+} from './host-capacity.js';
 
 /** `--max-sandboxes`, `--cpus`, `--memory` -> the `limits` of hosts.yaml (same bounds as its schema). */
 export function parseHostLimits(o: {
@@ -52,6 +59,35 @@ export function parseHostLimits(o: {
     limits.memory = o.memory.trim();
   }
   return Object.keys(limits).length > 0 ? limits : undefined;
+}
+
+const NONE = 'none';
+
+/**
+ * `abox host set`: each of `--max-sandboxes`, `--cpus`, `--memory` is a value (same bounds as `host add`) or
+ * `none` to remove that limit; a limit that is not mentioned stays as it is. Returns the new limits.
+ */
+export function applyHostLimitsPatch(
+  current: HostLimits | undefined,
+  o: { maxSandboxes?: string; cpus?: string; memory?: string },
+): HostLimits {
+  const next: HostLimits = { ...current };
+  const flags = [
+    ['--max-sandboxes', 'sandboxes', o.maxSandboxes, 'maxSandboxes'],
+    ['--cpus', 'cpus', o.cpus, 'cpus'],
+    ['--memory', 'memory', o.memory, 'memory'],
+  ] as const;
+  for (const [flag, key, value, opt] of flags) {
+    if (value === undefined) continue;
+    if (value.trim().toLowerCase() === NONE) {
+      delete next[key];
+      continue;
+    }
+    const parsed = parseHostLimits({ [opt]: value } as Parameters<typeof parseHostLimits>[0]);
+    if (parsed === undefined) throw invalid(`${flag}: expected a value or "${NONE}"`);
+    Object.assign(next, parsed);
+  }
+  return next;
 }
 
 /** `--runtime docker=runsc` (repeatable) -> the `runtimes` of the host profile. */
@@ -84,11 +120,15 @@ export function registerHost(program: Command, cli: Cli): void {
   host
     .command('ls')
     .alias('list')
-    .description('List host profiles')
-    .action(async () => {
+    .description(
+      'List host profiles with their limits (--json also has capacity and utilisation of every host)',
+    )
+    .option('--usage', 'show the utilisation of each host (reads it; ssh hosts take a moment)')
+    .action(async (o: { usage?: boolean }) => {
       const rt = await open();
       const hosts = rt.hostRegistry.list();
       const now = Date.now();
+      // the status is what the last test found: read it before the utilisation read touches the cache
       const rows = hosts.map((h) => {
         const c = h.kind === 'local' ? undefined : rt.hostCache.get(h.id, Number.POSITIVE_INFINITY);
         const status =
@@ -99,8 +139,27 @@ export function registerHost(program: Command, cli: Cli): void {
               : 'not tested';
         return { h, status };
       });
+      // Utilisation is measured (ssh for remote hosts), so it is read only when it is shown.
+      const capacity: Map<string, CapacityOutcome> =
+        cli.json || o.usage
+          ? await gatherCapacity(
+              rt.abox,
+              cli.caller(),
+              hosts.map((h) => h.id),
+            )
+          : new Map();
       cli.success(
-        { hosts: rows.map(({ h, status }) => ({ ...h, status })) },
+        {
+          hosts: rows.map(({ h, status }) => {
+            const cap = capacity.get(h.id);
+            return {
+              ...h,
+              status,
+              ...(cap?.capacity ? { capacity: cap.capacity } : {}),
+              ...(cap?.error ? { capacityError: cap.error } : {}),
+            };
+          }),
+        },
         () =>
           renderTable(
             [
@@ -109,6 +168,8 @@ export function registerHost(program: Command, cli: Cli): void {
               { header: 'ADDRESS' },
               { header: 'ZONE' },
               { header: 'BACKENDS' },
+              { header: 'LIMITS' },
+              ...(o.usage ? [{ header: 'USAGE' }] : []),
               { header: 'STATUS' },
             ],
             rows.map(({ h, status }) => [
@@ -117,6 +178,10 @@ export function registerHost(program: Command, cli: Cli): void {
               address(h),
               h.zone,
               h.backends.join(',') || '-',
+              limitsText(h.limits),
+              ...(o.usage
+                ? [usageCell(capacity.get(h.id)?.capacity, capacity.get(h.id)?.error)]
+                : []),
               status,
             ]),
             cli.width,
@@ -241,6 +306,45 @@ export function registerHost(program: Command, cli: Cli): void {
     );
 
   host
+    .command('set')
+    .description(
+      'Change the limits of a host profile ("none" removes one); the sandboxes already there are not touched',
+    )
+    .argument('<id>', 'host id ("local" is this machine; its limits are kept in hosts.yaml too)')
+    .option('--max-sandboxes <n|none>', 'limit: sandboxes on this host in total (0..10000)')
+    .option('--cpus <n|none>', 'limit: CPUs for all sandboxes on this host together (up to 1024)')
+    .option(
+      '--memory <size|none>',
+      'limit: memory for all sandboxes on this host together, e.g. 16g',
+    )
+    .action(async (id: string, o: { maxSandboxes?: string; cpus?: string; memory?: string }) => {
+      const rt = await open();
+      const current = rt.hostRegistry.require(id);
+      if (o.maxSandboxes === undefined && o.cpus === undefined && o.memory === undefined) {
+        throw invalid(
+          'nothing to change',
+          'Pass --max-sandboxes, --cpus and/or --memory; use "none" to remove a limit, e.g. "abox host set vps --max-sandboxes 3".',
+        );
+      }
+      const limits = applyHostLimitsPatch(current.limits, o);
+      const p = rt.hostRegistry.update(id, {
+        limits: Object.keys(limits).length > 0 ? limits : null,
+      });
+      rt.audit('host.update', {
+        host: p.id,
+        limits: p.limits ?? null,
+        previous: current.limits ?? null,
+      });
+      cli.success(
+        p,
+        () =>
+          `host ${p.id}: limits are now ${limitsText(p.limits, 'none')}\n` +
+          '  They cap all sandboxes on the host together and are checked on every create; sandboxes that exist already keep running.',
+        () => p.id,
+      );
+    });
+
+  host
     .command('rm')
     .alias('remove')
     .description('Remove a host profile (its sandboxes are not touched)')
@@ -294,7 +398,16 @@ export function registerHost(program: Command, cli: Cli): void {
           },
         );
       }
-      cli.success(r, () => describeHostTest(cli, r));
+      // size and utilisation of the machine, as the manager sees it (a failure here does not fail the test)
+      const cap = (await gatherCapacity(rt.abox, cli.caller(), [id])).get(id);
+      cli.success(
+        {
+          ...r,
+          ...(cap?.capacity ? { capacity: cap.capacity } : {}),
+          ...(cap?.error ? { capacityError: cap.error } : {}),
+        },
+        () => describeHostTest(cli, r, cap),
+      );
     });
 
   host
@@ -454,7 +567,11 @@ export function registerHost(program: Command, cli: Cli): void {
     });
 }
 
-function describeHostTest(cli: Cli, r: Awaited<ReturnType<typeof testHost>>): string {
+function describeHostTest(
+  cli: Cli,
+  r: Awaited<ReturnType<typeof testHost>>,
+  cap?: CapacityOutcome,
+): string {
   const lines = [
     renderKeyValues([
       ['host', r.host],
@@ -507,6 +624,13 @@ function describeHostTest(cli: Cli, r: Awaited<ReturnType<typeof testHost>>): st
               .join('; ')
           : undefined,
       ],
+      ...(cap?.capacity
+        ? capacityLines(cap.capacity)
+        : cap
+          ? ([['capacity', `unknown${cap.error ? ` (${safe(cap.error)})` : ''}`]] as Array<
+              [string, string]
+            >)
+          : []),
     ]),
   ];
   for (const w of r.warnings) lines.push(`${cli.style('yellow', 'warning:')} ${safe(w)}`);

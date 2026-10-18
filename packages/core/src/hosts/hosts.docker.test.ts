@@ -25,6 +25,7 @@ import { parseSshG } from './effective.js';
 import { HostRegistry } from './registry.js';
 import { createHostResolver } from './resolver.js';
 import { buildSshArgs, sshBinary, sshSessionArgs, type HostsEnv } from './ssh-args.js';
+import { readRemoteLive } from './live.js';
 import { testHost } from './test-host.js';
 import { getEngineInfo } from './engine-info.js';
 import { TUNNEL_SUPERVISOR, TunnelManager, openEngineTunnel } from './tunnel.js';
@@ -322,6 +323,44 @@ describe.skipIf(!DOCKER)('hosts against a real sshd (docker)', () => {
           a.action === 'host.test' && a.details['host'] === 'sbx' && a.details['authOk'] === true,
       ),
     ).toBe(true);
+  });
+
+  it('readRemoteLive: the fixed command returns the real /proc numbers of the server over the hardened connection', async () => {
+    const r = await readRemoteLive(profile, env);
+    expect(r.ok, r.ok ? '' : r.reason).toBe(true);
+    if (!r.ok) return;
+    const u = r.usage;
+    expect(u.source).toBe('ssh');
+    // two stat samples half a second apart (busybox sleep takes fractions) give a real percentage
+    expect(u.cpuPercent).not.toBeNull();
+    expect(u.cpuPercent!).toBeGreaterThanOrEqual(0);
+    expect(u.cpuPercent!).toBeLessThanOrEqual(100);
+    expect(u.load).not.toBeNull();
+    // the same numbers the kernel shows inside the container (/proc is the host's)
+    const mem = await dockerExec(['sh', '-c', 'grep -E "^MemTotal:" /proc/meminfo']);
+    const totalKib = Number(/MemTotal:\s+(\d+)/.exec(mem.stdout)![1]);
+    expect(u.memoryTotalBytes).toBe(totalKib * 1024);
+    expect(u.memoryAvailableBytes).toBeGreaterThan(0);
+    expect(u.memoryAvailableBytes!).toBeLessThanOrEqual(u.memoryTotalBytes!);
+    const cpus = await dockerExec(['sh', '-c', 'grep -c "^processor" /proc/cpuinfo']);
+    expect(u.cpus).toBe(Number(cpus.stdout.trim()));
+  });
+
+  it('readRemoteLive: a key the server does not know is a reason, not an exception; an untrusted host key is refused', async () => {
+    expect(await readRemoteLive(base({ identityFile: join(tmp, 'id_other') }), env)).toEqual({
+      ok: false,
+      reason: 'login failed',
+    });
+    // a live ssh master would skip the host key check of a new connection (see the hosts README): end it first
+    await closeSshConnection(profile, env);
+    const strangers: HostsEnv = {
+      ...env,
+      knownHostsFile: join(tmp, 'config', 'empty_known_hosts'),
+    };
+    expect(await readRemoteLive(profile, strangers)).toEqual({
+      ok: false,
+      reason: 'host key not trusted',
+    });
   });
 
   it('testHost: a key the server does not know fails authentication, still reachable', async () => {

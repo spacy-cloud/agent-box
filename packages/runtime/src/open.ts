@@ -10,12 +10,15 @@ import {
   ensureDirs,
   hostsEnvFromPaths,
   loadConfig,
+  readLocalLive,
+  readRemoteLive,
   resolvePaths,
   type AboxConfig,
   type AboxPaths,
   type BackendKind,
   type Caller,
   type HostConnection,
+  type HostLiveSource,
   type HostResolver,
   type HostTargetResolver,
   type ProviderFactory,
@@ -150,6 +153,16 @@ export async function openAbox(opts: OpenAboxOptions = {}): Promise<AboxRuntime>
   const local = await localTarget;
   if (local) await hardened.prepare({ connection: local });
 
+  // Live utilisation of a host for hostCapacity / estimateFit: /proc numbers only, read directly on this
+  // machine and over the hardened ssh connection (one fixed command) for ssh hosts.
+  const hostLive: HostLiveSource = async (hostId) => {
+    const profile = hostRegistry.get(hostId);
+    if (!profile) return { ok: false, reason: 'unknown host' };
+    if (profile.kind === 'local') return readLocalLive({ now });
+    if (opts.hosts === false) return { ok: false, reason: 'remote hosts are disabled' };
+    return readRemoteLive(profile, hostsEnv);
+  };
+
   let abox: Abox;
   try {
     abox = await Abox.open({
@@ -166,6 +179,7 @@ export async function openAbox(opts: OpenAboxOptions = {}): Promise<AboxRuntime>
       ...(opts.reconcileOnOpen !== undefined ? { reconcileOnOpen: opts.reconcileOnOpen } : {}),
       ...(opts.policyText !== undefined ? { policyText: opts.policyText } : {}),
       ...(hostResolver ? { hostResolver } : {}),
+      hostLive,
       config,
     });
   } catch (e) {

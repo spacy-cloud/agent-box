@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useReducer, useState } from 'react';
 import { call } from '../api';
 import { useApp } from '../context';
-import { useNow, useQuery } from '../hooks';
+import { useHostCapacity, useNow, useQuery } from '../hooks';
+import type { CapacityState } from '../hooks';
 import {
   Badge,
   Banner,
@@ -30,6 +31,14 @@ import {
   safeText,
 } from '../../shared/format';
 import { groupHosts, groupsOf, hostUtilisation, plainTags } from '../../shared/host-usage';
+import { barTone, liveBars, reservedShare } from '../../shared/capacity';
+import type { LiveBar } from '../../shared/capacity';
+import {
+  hasLimitErrors,
+  limitFieldsOf,
+  parseLimitFields,
+  type LimitFields,
+} from '../../shared/host-limits';
 import type { HostUtilisation } from '../../shared/host-usage';
 import { FORWARD_KINDS, HOST_BACKENDS, HOST_ZONES, ISOLATION_LEVELS } from '../../shared/constants';
 import type {
@@ -62,6 +71,8 @@ export function HostsView() {
   const now = useNow(15_000);
 
   const rows = q.data ?? [];
+  // live size and utilisation of every machine (read-only, every ~10 s while this view is open)
+  const caps = useHostCapacity(rows.map((r) => r.profile.id));
   const shown = useMemo(() => {
     const f = filter.trim().toLowerCase();
     const list = rows.filter(
@@ -239,6 +250,7 @@ export function HostsView() {
                       row={r}
                       util={hostUtilisation(r.profile.id, sandboxes, r.profile.limits)}
                       utilKnown={sb.data !== undefined && !unreachable.includes(r.profile.id)}
+                      capacity={caps[r.profile.id]}
                       now={now}
                       busy={busy === r.profile.id}
                       onCreate={() => setCreateOn(r.profile.id)}
@@ -354,6 +366,7 @@ function HostLine(props: {
   row: HostRow;
   util: HostUtilisation;
   utilKnown: boolean;
+  capacity: CapacityState | undefined;
   now: number;
   busy: boolean;
   onCreate(): void;
@@ -440,7 +453,12 @@ function HostLine(props: {
         <StatusCell row={row} now={props.now} />
       </td>
       <td>
-        <UtilisationCell util={props.util} known={props.utilKnown} host={p.id} />
+        <UtilisationCell
+          util={props.util}
+          known={props.utilKnown}
+          host={p.id}
+          capacity={props.capacity}
+        />
       </td>
       <td>
         <div className="row-actions">
@@ -448,6 +466,12 @@ function HostLine(props: {
             {t('hosts.action.create')}
             <span className="sr-only"> {p.id}</span>
           </button>
+          {local ? (
+            <button type="button" onClick={props.onEdit}>
+              {t('hosts.action.limits')}
+              <span className="sr-only"> {p.id}</span>
+            </button>
+          ) : null}
           {!local ? (
             <>
               <button type="button" disabled={props.busy} onClick={props.onTest}>
@@ -486,7 +510,12 @@ function HostLine(props: {
 }
 
 /** Sandboxes, cpu and memory reserved on the host against its limits (the quotas of the profile), from the sandbox list. */
-export function UtilisationCell(props: { util: HostUtilisation; known: boolean; host: string }) {
+export function UtilisationCell(props: {
+  util: HostUtilisation;
+  known: boolean;
+  host: string;
+  capacity?: CapacityState | undefined;
+}) {
   const { t } = useApp();
   const u = props.util;
   const cpu = Number(u.cpusReserved.toFixed(2));
@@ -505,6 +534,7 @@ export function UtilisationCell(props: { util: HostUtilisation; known: boolean; 
     );
   return (
     <div data-testid={`util-${props.host}`}>
+      <LiveBars host={props.host} state={props.capacity} />
       <div>
         {u.sandboxLimit !== undefined
           ? t('hosts.util.sandboxesOf', { count: u.sandboxes, limit: u.sandboxLimit })
@@ -535,6 +565,116 @@ export function UtilisationCell(props: { util: HostUtilisation; known: boolean; 
       </div>
       {meter(u.memoryFraction, t('hosts.util.what.memory'))}
       {!props.known ? <div className="warn-text small">{t('hosts.util.unknown')}</div> : null}
+    </div>
+  );
+}
+
+/** `2.1 GiB` -> `2,1 GiB` in German; `35.5` -> `35,5`. */
+function useDecimal(): (text: string) => string {
+  const { locale } = useApp();
+  return (text) => (locale === 'de' ? text.replace(/(\d)\.(\d)/g, '$1,$2') : text);
+}
+
+function BarRow(props: { host: string; kind: 'cpu' | 'ram'; text: string; bar: LiveBar }) {
+  const { t } = useApp();
+  const percent = props.bar.percent ?? 0;
+  const tone = barTone(props.bar.percent);
+  return (
+    <div className="live-row" data-testid={`live-${props.kind}-${props.host}`} data-tone={tone}>
+      <span className="live-label">{t(`hosts.live.${props.kind}`)}</span>
+      <span className="live-text mono">
+        {props.text}
+        {tone !== 'ok' ? (
+          <span className={`live-tone live-tone-${tone}`}> {t(`hosts.live.tone.${tone}`)}</span>
+        ) : null}
+      </span>
+      <span className="live-bar" aria-hidden="true">
+        <span className={`live-fill live-fill-${tone}`} style={{ width: `${percent}%` }} />
+      </span>
+    </div>
+  );
+}
+
+/**
+ * What the whole machine uses right now (cpu and memory: label, used / total, a thin bar that turns amber above 80 %
+ * and red above 95 %; the words "hoch" / "kritisch" say the same without colour), and what abox has reserved of it.
+ * "unbekannt" where it could not be read: nothing is guessed.
+ */
+function LiveBars(props: { host: string; state: CapacityState | undefined }) {
+  const { t } = useApp();
+  const dec = useDecimal();
+  const s = props.state;
+  if (!s || (s.loading && !s.data)) {
+    return (
+      <div className="muted small" data-testid={`live-${props.host}`}>
+        {t('hosts.live.loading')}
+      </div>
+    );
+  }
+  if (!s.data) {
+    return (
+      <div className="warn-text small" data-testid={`live-${props.host}`} title={s.error}>
+        {t('hosts.live.unknown')}
+      </div>
+    );
+  }
+  const c = s.data;
+  const bars = liveBars(c);
+  const share = reservedShare(c);
+  const ncpu = c.capacity.cpus;
+  const cpuText = bars.cpu
+    ? ncpu !== null && bars.cpu.used !== null
+      ? t('hosts.live.cpuText', {
+          percent: bars.cpu.percent ?? 0,
+          used: dec(Number(bars.cpu.used.toFixed(1)).toString()),
+          total: ncpu,
+        })
+      : t('hosts.live.cpuPercent', { percent: bars.cpu.percent ?? 0 })
+    : '';
+  const ramText =
+    bars.ram && bars.ram.used !== null && bars.ram.total !== null
+      ? t('hosts.live.ramText', {
+          used: dec(formatBytes(bars.ram.used)),
+          total: dec(formatBytes(bars.ram.total)),
+          percent: bars.ram.percent ?? 0,
+        })
+      : '';
+  return (
+    <div
+      className="live"
+      data-testid={`live-${props.host}`}
+      role="group"
+      aria-label={t('hosts.live.group', { host: props.host })}
+    >
+      {bars.cpu || bars.ram ? (
+        <>
+          {bars.cpu ? <BarRow host={props.host} kind="cpu" text={cpuText} bar={bars.cpu} /> : null}
+          {bars.ram ? <BarRow host={props.host} kind="ram" text={ramText} bar={bars.ram} /> : null}
+        </>
+      ) : (
+        <div className="warn-text small" title={c.live.reason}>
+          {t('hosts.live.unknown')}
+          {c.live.reason ? <span className="plain"> ({safeInline(c.live.reason, 80)})</span> : null}
+        </div>
+      )}
+      {c.capacity.cpus !== null || c.capacity.memoryBytes !== null ? (
+        <div className="muted small" title={t('hosts.live.reservedNote')}>
+          {t('hosts.live.reserved', {
+            cpu: Number(c.abox.reserved.cpus.toFixed(2)),
+            cpuPct: share.cpu ?? '?',
+            mem: dec(formatBytes(c.abox.reserved.memoryBytes)),
+            memPct: share.ram ?? '?',
+          })}
+        </div>
+      ) : null}
+      {c.abox.usage ? (
+        <div className="muted small">
+          {t('hosts.live.aboxUse', {
+            cpu: dec(Number(c.abox.usage.cpuPercent.toFixed(1)).toString()),
+            mem: dec(formatBytes(c.abox.usage.memoryBytes)),
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -634,6 +774,8 @@ interface Draft {
   allowRootful: boolean;
   tags: string;
   favorite: boolean;
+  /** Limits for all sandboxes on the host together; empty = no limit. */
+  limits: LimitFields;
 }
 
 function draftOf(p: HostProfile | null): Draft {
@@ -654,6 +796,7 @@ function draftOf(p: HostProfile | null): Draft {
     allowRootful: p?.allowRootful ?? false,
     tags: (p?.tags ?? []).join(', '),
     favorite: p?.favorite ?? false,
+    limits: limitFieldsOf(p?.limits),
   };
 }
 
@@ -668,8 +811,14 @@ function HostDialog(props: {
   const [error, setError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD((x) => ({ ...x, [k]: v }));
+  const local = props.host?.kind === 'local';
+  const parsedLimits = parseLimitFields(d.limits);
+  const limitErrors = parsedLimits.errors;
+  const setLimit = (k: keyof LimitFields, v: string) =>
+    setD((x) => ({ ...x, limits: { ...x.limits, [k]: v } }));
 
   async function save() {
+    if (hasLimitErrors(limitErrors)) return;
     setBusy(true);
     setError(undefined);
     const tags = d.tags
@@ -701,6 +850,14 @@ function HostDialog(props: {
           ...(d.allowRootful ? { allowRootful: true } : {}),
           tags,
           favorite: d.favorite,
+          ...(parsedLimits.limits ? { limits: parsedLimits.limits } : {}),
+        });
+        props.onSaved(r.profile.id);
+      } else if (local) {
+        // this computer: only the limits can be edited (everything else about it is fixed)
+        const r = await call('hosts:update', {
+          id: d.id,
+          patch: { limits: parsedLimits.limits },
         });
         props.onSaved(r.profile.id);
       } else {
@@ -723,6 +880,7 @@ function HostDialog(props: {
             allowRootful: d.allowRootful ? true : null,
             tags,
             favorite: d.favorite,
+            limits: parsedLimits.limits,
           },
         });
         props.onSaved(r.profile.id);
@@ -736,7 +894,13 @@ function HostDialog(props: {
 
   return (
     <Dialog
-      title={editing ? t('hosts.edit.title', { host: d.id }) : t('hosts.add.title')}
+      title={
+        local
+          ? t('hosts.edit.localTitle')
+          : editing
+            ? t('hosts.edit.title', { host: d.id })
+            : t('hosts.add.title')
+      }
       onClose={props.onClose}
       wide
       footer={
@@ -748,7 +912,7 @@ function HostDialog(props: {
             type="submit"
             form="host-form"
             className="primary"
-            disabled={busy || d.id.trim() === ''}
+            disabled={busy || d.id.trim() === '' || hasLimitErrors(limitErrors)}
           >
             {t('common.save')}
           </button>
@@ -762,225 +926,304 @@ function HostDialog(props: {
           void save();
         }}
       >
-        <p className="muted">{t('hosts.form.noSecrets')}</p>
-        <div className="form-grid">
-          <Field label={t('hosts.form.id')} hint={t('hosts.form.idHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.id}
-                disabled={editing}
-                onChange={(e) => set('id', e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-                required
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.hostname')} hint={t('hosts.form.hostnameHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.hostname}
-                onChange={(e) => set('hostname', e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.alias')} hint={t('hosts.form.aliasHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.alias}
-                onChange={(e) => set('alias', e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.user')} hint={t('hosts.form.userHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.user}
-                onChange={(e) => set('user', e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.port')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                inputMode="numeric"
-                value={d.port}
-                onChange={(e) => set('port', e.target.value)}
-                autoComplete="off"
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.proxyJump')} hint={t('hosts.form.proxyJumpHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.proxyJump}
-                onChange={(e) => set('proxyJump', e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.identity')} hint={t('hosts.form.identityHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.identityFile}
-                onChange={(e) => set('identityFile', e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.zone')} hint={t(`hosts.zone.${d.zone}.hint`)}>
-            {(id) => (
-              <select
-                id={id}
-                value={d.zone}
-                onChange={(e) => set('zone', e.target.value as Draft['zone'])}
-              >
-                {HOST_ZONES.map((z) => (
-                  <option key={z} value={z}>
-                    {t(`hosts.zone.${z}`)}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-          <Field label={t('hosts.form.minIsolation')} hint={t('hosts.form.minIsolationHint')}>
-            {(id) => (
-              <select
-                id={id}
-                value={d.minIsolation}
-                onChange={(e) => set('minIsolation', e.target.value)}
-              >
-                <option value="">{t('hosts.form.byZone')}</option>
-                {ISOLATION_LEVELS.map((l) => (
-                  <option key={l} value={l}>
-                    {t(`isolation.${l}`)}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-          <Field label={t('hosts.form.engineSocket')} hint={t('hosts.form.engineSocketHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.engineSocket}
-                onChange={(e) => set('engineSocket', e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.tags')} hint={t('hosts.form.tagsHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.tags}
-                onChange={(e) => set('tags', e.target.value)}
-                autoComplete="off"
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.runtimeDocker')} hint={t('hosts.form.runtimeHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.runtimeDocker}
-                placeholder="runsc"
-                onChange={(e) => set('runtimeDocker', e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <Field label={t('hosts.form.runtimePodman')} hint={t('hosts.form.runtimeHint')}>
-            {(id) => (
-              <input
-                id={id}
-                type="text"
-                value={d.runtimePodman}
-                placeholder="runsc"
-                onChange={(e) => set('runtimePodman', e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-              />
-            )}
-          </Field>
-          <div className="wide-col">
-            <label className="inline">
-              <input
-                type="checkbox"
-                checked={d.allowRootful}
-                aria-describedby="allow-rootful-hint"
-                onChange={(e) => set('allowRootful', e.target.checked)}
-              />
-              {t('hosts.form.allowRootful')}
-            </label>
-            <div id="allow-rootful-hint" className="muted small">
-              {t('hosts.form.allowRootfulHint')}
-            </div>
-            {d.allowRootful ? (
-              <Banner tone="danger">
-                <strong>{t('hosts.form.allowRootfulWarningTitle')}</strong>{' '}
-                {t('hosts.form.allowRootfulWarning')}
-              </Banner>
-            ) : null}
-          </div>
-          <fieldset className="wide-col">
-            <legend>{t('hosts.form.backends')}</legend>
-            {HOST_BACKENDS.map((b) => (
-              <label key={b} className="inline">
+        {local ? (
+          <p className="muted">{t('hosts.limits.local')}</p>
+        ) : (
+          <p className="muted">{t('hosts.form.noSecrets')}</p>
+        )}
+        {local ? null : (
+          <div className="form-grid">
+            <Field label={t('hosts.form.id')} hint={t('hosts.form.idHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.id}
+                  disabled={editing}
+                  onChange={(e) => set('id', e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  required
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.hostname')} hint={t('hosts.form.hostnameHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.hostname}
+                  onChange={(e) => set('hostname', e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.alias')} hint={t('hosts.form.aliasHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.alias}
+                  onChange={(e) => set('alias', e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.user')} hint={t('hosts.form.userHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.user}
+                  onChange={(e) => set('user', e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.port')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  inputMode="numeric"
+                  value={d.port}
+                  onChange={(e) => set('port', e.target.value)}
+                  autoComplete="off"
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.proxyJump')} hint={t('hosts.form.proxyJumpHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.proxyJump}
+                  onChange={(e) => set('proxyJump', e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.identity')} hint={t('hosts.form.identityHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.identityFile}
+                  onChange={(e) => set('identityFile', e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.zone')} hint={t(`hosts.zone.${d.zone}.hint`)}>
+              {(id) => (
+                <select
+                  id={id}
+                  value={d.zone}
+                  onChange={(e) => set('zone', e.target.value as Draft['zone'])}
+                >
+                  {HOST_ZONES.map((z) => (
+                    <option key={z} value={z}>
+                      {t(`hosts.zone.${z}`)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+            <Field label={t('hosts.form.minIsolation')} hint={t('hosts.form.minIsolationHint')}>
+              {(id) => (
+                <select
+                  id={id}
+                  value={d.minIsolation}
+                  onChange={(e) => set('minIsolation', e.target.value)}
+                >
+                  <option value="">{t('hosts.form.byZone')}</option>
+                  {ISOLATION_LEVELS.map((l) => (
+                    <option key={l} value={l}>
+                      {t(`isolation.${l}`)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+            <Field label={t('hosts.form.engineSocket')} hint={t('hosts.form.engineSocketHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.engineSocket}
+                  onChange={(e) => set('engineSocket', e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.tags')} hint={t('hosts.form.tagsHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.tags}
+                  onChange={(e) => set('tags', e.target.value)}
+                  autoComplete="off"
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.runtimeDocker')} hint={t('hosts.form.runtimeHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.runtimeDocker}
+                  placeholder="runsc"
+                  onChange={(e) => set('runtimeDocker', e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <Field label={t('hosts.form.runtimePodman')} hint={t('hosts.form.runtimeHint')}>
+              {(id) => (
+                <input
+                  id={id}
+                  type="text"
+                  value={d.runtimePodman}
+                  placeholder="runsc"
+                  onChange={(e) => set('runtimePodman', e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              )}
+            </Field>
+            <div className="wide-col">
+              <label className="inline">
                 <input
                   type="checkbox"
-                  checked={d.backends.includes(b)}
-                  onChange={(e) =>
-                    set(
-                      'backends',
-                      e.target.checked ? [...d.backends, b] : d.backends.filter((x) => x !== b),
-                    )
-                  }
+                  checked={d.allowRootful}
+                  aria-describedby="allow-rootful-hint"
+                  onChange={(e) => set('allowRootful', e.target.checked)}
                 />
-                {b}
+                {t('hosts.form.allowRootful')}
               </label>
-            ))}
-            <div className="muted small">{t('hosts.form.backendsHint')}</div>
-          </fieldset>
-          <label className="inline wide-col">
-            <input
-              type="checkbox"
-              checked={d.favorite}
-              onChange={(e) => set('favorite', e.target.checked)}
-            />
-            {t('hosts.form.favorite')}
-          </label>
-        </div>
+              <div id="allow-rootful-hint" className="muted small">
+                {t('hosts.form.allowRootfulHint')}
+              </div>
+              {d.allowRootful ? (
+                <Banner tone="danger">
+                  <strong>{t('hosts.form.allowRootfulWarningTitle')}</strong>{' '}
+                  {t('hosts.form.allowRootfulWarning')}
+                </Banner>
+              ) : null}
+            </div>
+            <fieldset className="wide-col">
+              <legend>{t('hosts.form.backends')}</legend>
+              {HOST_BACKENDS.map((b) => (
+                <label key={b} className="inline">
+                  <input
+                    type="checkbox"
+                    checked={d.backends.includes(b)}
+                    onChange={(e) =>
+                      set(
+                        'backends',
+                        e.target.checked ? [...d.backends, b] : d.backends.filter((x) => x !== b),
+                      )
+                    }
+                  />
+                  {b}
+                </label>
+              ))}
+              <div className="muted small">{t('hosts.form.backendsHint')}</div>
+            </fieldset>
+            <label className="inline wide-col">
+              <input
+                type="checkbox"
+                checked={d.favorite}
+                onChange={(e) => set('favorite', e.target.checked)}
+              />
+              {t('hosts.form.favorite')}
+            </label>
+          </div>
+        )}
+        <LimitsSection fields={d.limits} errors={limitErrors} onChange={setLimit} />
         {error ? <ErrorBox error={error} /> : null}
       </form>
     </Dialog>
+  );
+}
+
+/**
+ * "Limits": caps for ALL sandboxes on the host together (not per sandbox). Empty = no limit. The values are checked
+ * like `abox host add --max-sandboxes/--cpus/--memory`; the manager refuses a create that would exceed them.
+ */
+function LimitsSection(props: {
+  fields: LimitFields;
+  errors: ReturnType<typeof parseLimitFields>['errors'];
+  onChange(k: keyof LimitFields, v: string): void;
+}) {
+  const { t } = useApp();
+  const field = (
+    k: keyof LimitFields,
+    label: string,
+    hint: string,
+    inputMode: 'numeric' | 'decimal' | 'text',
+    placeholder: string,
+  ) => (
+    <Field label={label} hint={hint}>
+      {(id) => (
+        <>
+          <input
+            id={id}
+            type="text"
+            inputMode={inputMode}
+            value={props.fields[k]}
+            placeholder={placeholder}
+            aria-invalid={props.errors[k] ? true : undefined}
+            aria-describedby={props.errors[k] ? `${id}-err` : undefined}
+            onChange={(e) => props.onChange(k, e.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          {props.errors[k] ? (
+            <small id={`${id}-err`} className="danger-text" role="alert">
+              {t(props.errors[k]!)}
+            </small>
+          ) : null}
+        </>
+      )}
+    </Field>
+  );
+  return (
+    <fieldset className="limits-section" data-testid="host-limits">
+      <legend>{t('hosts.limits.title')}</legend>
+      <p className="muted small">{t('hosts.limits.intro')}</p>
+      <div className="form-grid">
+        {field(
+          'sandboxes',
+          t('hosts.limits.sandboxes'),
+          t('hosts.limits.sandboxesHint'),
+          'numeric',
+          t('hosts.limits.none'),
+        )}
+        {field(
+          'cpus',
+          t('hosts.limits.cpus'),
+          t('hosts.limits.cpusHint'),
+          'decimal',
+          t('hosts.limits.none'),
+        )}
+        {field(
+          'memory',
+          t('hosts.limits.memory'),
+          t('hosts.limits.memoryHint'),
+          'text',
+          t('hosts.limits.none'),
+        )}
+      </div>
+    </fieldset>
   );
 }
 

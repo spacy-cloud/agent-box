@@ -5,7 +5,9 @@ import {
   NETWORK_MODES,
   SANDBOX_STATES,
   WORKSPACE_MODES,
+  describeFit,
   type CreateSandboxRequest,
+  type FitEstimate,
   type ResourceUsage,
   type SandboxState,
   type SandboxView,
@@ -48,6 +50,45 @@ function usageCells(u: ResourceUsage | undefined): string[] {
     ? `${formatBytes(u.memoryBytes)} / ${formatBytes(u.memoryLimitBytes)}`
     : formatBytes(u.memoryBytes);
   return [`${u.cpuPercent.toFixed(1)}%`, mem];
+}
+
+/** How long the estimate may delay a create (it is a courtesy: no answer is no estimate). */
+const ESTIMATE_MAX_MS = 8000;
+
+/** The fit estimate of the sandbox a create is about to make; undefined when it cannot be made quickly. */
+async function estimateBeforeCreate(
+  rt: Awaited<ReturnType<Cli['rt']>>,
+  cli: Cli,
+  req: CreateSandboxRequest,
+): Promise<FitEstimate | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const o = req.overrides;
+    return await Promise.race([
+      rt.abox.estimateFit(cli.caller(), {
+        ...(req.host ? { hostId: req.host } : {}),
+        template: req.template,
+        ...(o?.cpus !== undefined || o?.memory !== undefined
+          ? {
+              overrides: {
+                ...(o.cpus !== undefined ? { cpus: o.cpus } : {}),
+                ...(o.memory !== undefined ? { memory: o.memory } : {}),
+              },
+            }
+          : {}),
+        ...(req.projectDir ? { projectDir: req.projectDir } : {}),
+        ...(req.workspace?.path ? { workspacePath: req.workspace.path } : {}),
+      }),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ESTIMATE_MAX_MS);
+        timer.unref?.();
+      }),
+    ]);
+  } catch {
+    return undefined; // a bad template or host is reported by the create itself
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function registerSandbox(program: Command, cli: Cli): void {
@@ -164,6 +205,17 @@ export function registerSandbox(program: Command, cli: Cli): void {
           ...(o.cache === false ? { cache: false } : {}),
           projectDir: cli.projectDir(),
         };
+        // Does it fit? One line on stderr for a person, the whole estimate in --json. A ceiling from limits and
+        // reservations, not a prediction of speed. Not asked for scripts that read neither.
+        const estimate =
+          cli.interactive || cli.json ? await estimateBeforeCreate(rt, cli, req) : undefined;
+        if (estimate && cli.interactive && !cli.quiet) {
+          const line = describeFit(estimate);
+          cli.err(
+            `${estimate.tone === 'info' ? line : cli.style(estimate.tone === 'warn' ? 'yellow' : 'red', line)}\n`,
+          );
+          for (const w of estimate.warnings) cli.err(`  ! ${safe(w.message)}\n`);
+        }
         const signal = cli.abortSignal();
         const started = Date.now();
         const r = await cli.confirmed(
@@ -194,7 +246,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
         const elapsed = Date.now() - started;
         for (const w of r.warnings) cli.warn(safe(w));
         cli.success(
-          { ...r, durationMs: elapsed },
+          { ...r, durationMs: elapsed, ...(estimate ? { estimate } : {}) },
           () =>
             `created ${r.sandbox.id}${r.sandbox.name ? ` (${safe(r.sandbox.name)})` : ''} from ${safe(r.sandbox.template)} in ${formatDuration(elapsed)}${r.idempotent ? ' (already existed)' : ''}\n` +
             `  state ${r.sandbox.state}, network ${r.sandbox.network.mode}, expires in ${formatDuration(r.sandbox.ttlRemainingMs)}\n` +
