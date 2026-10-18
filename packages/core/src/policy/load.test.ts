@@ -65,7 +65,27 @@ describe('defaultPolicy', () => {
   it('default profile matches the concept', () => {
     const d = p.profiles.default!;
     expect(d.approval).toBe('medium');
-    expect(d.templates).toEqual(['node-dev', 'py-dev', 'py-offline', 'alpine-min']);
+    expect(d.templates).toEqual([
+      'node-dev',
+      'py-dev',
+      'py-uv',
+      'py-offline',
+      'rust-dev',
+      'tauri-dev',
+      'flutter-dev',
+      'php-dev',
+      'shell-dev',
+      'alpine-min',
+    ]);
+    // every built-in template except host-shell (isolation none) is usable by agents out of the box
+    expect(d.network.allow_presets).toEqual([
+      'npm',
+      'pypi',
+      'crates',
+      'pub',
+      'packagist',
+      'github',
+    ]);
     expect(d.limits).toMatchObject({
       sandboxes: 3,
       cpus: 4,

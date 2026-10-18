@@ -1,0 +1,52 @@
+apiVersion: 1
+name: tauri-dev
+description: >-
+  Rust (stable, with clippy and rustfmt), Node.js 24 with pnpm 10 and git on Ubuntu 24.04, plus
+  the system libraries of a Tauri 2 app (webkit2gtk 4.1, libsoup 3, librsvg, appindicator). Use it
+  to cargo check, build and test the Rust side and to install, build and test the web frontend.
+  There is no display, so the app window itself cannot be run. Network is limited to crates.io,
+  the npm registry and GitHub. The image is about 2 GB.
+backend: docker
+isolation: container
+
+base:
+  os: ubuntu:24.04
+
+packages:
+  apt:
+    - build-essential
+    - pkg-config
+    - file
+    - libssl-dev
+    - libwebkit2gtk-4.1-dev
+    - libsoup-3.0-dev
+    - librsvg2-dev
+    - libayatana-appindicator3-dev
+    - libxdo-dev
+
+tools:
+  - rust@stable
+  - node@24
+  - pnpm@10
+  - git
+
+setup:
+  - run: rustup component add clippy rustfmt
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 4
+  memory: 8g
+  pids: 1024
+  ttl: 2h
+
+network:
+  mode: allowlist
+  presets: [crates, npm, github]
+
+labels:
+  use-for: Tauri 2 apps (Rust backend plus Vite frontend; cargo check/build/test, pnpm; no GUI)

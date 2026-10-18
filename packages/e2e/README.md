@@ -13,6 +13,11 @@ npx tsc -p packages/e2e/tsconfig.test.json               # type-check the tests 
 
 Without `ABOX_TEST_DOCKER=1` every suite is skipped.
 
+The builds of the built-in stack templates (shell-dev, php-dev, tauri-dev) and their smoke checks are not in
+this package: they are in `packages/core/src/template/build.docker.test.ts` and run with `ABOX_TEST_DOCKER=1`
+(`npx vitest run packages/core/src/template/build.docker.test.ts --no-file-parallelism`). `flutter-dev` takes
+about 5 minutes and 3-4 GB of disk, so it additionally needs `ABOX_TEST_HEAVY_TEMPLATES=1` (see CONTRIBUTING.md).
+
 ## What runs where
 
 | File                        | Purpose                                                                                          |
