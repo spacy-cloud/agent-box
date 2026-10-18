@@ -12,6 +12,7 @@ import type { BackendKind, ForeignResource, SandboxId, SandboxInfo } from '../ty
 import type { WorkspaceRecord } from '../workspace/index.js';
 import { cleanupWorkspace } from '../workspace/index.js';
 import { expireApprovals as expireApprovalsOp } from './approvals.js';
+import { doctorCaches, formatSize, gcCaches } from './caches.js';
 import type { Internals } from './internals.js';
 import { destroySandbox } from './lifecycle.js';
 import { collectAllNetworkEvents, collectNetworkEvents } from './network-audit.js';
@@ -867,6 +868,29 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
     });
   }
 
+  // package caches
+  const caches = await doctorCaches(I);
+  if (caches.count > 0 || caches.unreachable.length > 0) {
+    add({
+      id: 'caches',
+      severity: 'info',
+      title:
+        caches.count === 0
+          ? 'package caches: none'
+          : `package caches: ${caches.count} cache(s)${caches.totalBytes === null ? '' : `, ${formatSize(caches.totalBytes)} on disk`}`,
+      ...(caches.count > 0
+        ? { hint: '`abox cache ls` lists them, `abox cache rm` removes them.' }
+        : {}),
+    });
+    for (const o of caches.overCap)
+      add({
+        id: `caches.cap.${o.host}.${o.project}`,
+        severity: 'warning',
+        title: `package caches of ${o.project} use ${formatSize(o.bytes)}, above the cap of ${formatSize(o.cap)}`,
+        hint: '`abox gc` removes the least recently used caches of the project that no sandbox uses.',
+      });
+  }
+
   return {
     ok: !checks.some((c) => c.severity === 'error'),
     summary: summarizeChecks(checks),
@@ -886,6 +910,7 @@ export async function doctor(I: Internals, caller: Caller): Promise<DoctorReport
     },
     audit,
     reconcile: rec,
+    caches: { count: caches.count, totalBytes: caches.totalBytes },
   };
 }
 
@@ -902,6 +927,7 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
     sandboxes: [],
     workspaces: [],
     images: [],
+    caches: [],
     logs: { files: 0, bytes: 0 },
     approvalsExpired: 0,
     errors: [],
@@ -961,7 +987,12 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
     }
   }
 
-  // 4. logs past retention, 5. approvals
+  // 4. package caches unused for too long or above the cap of their project
+  const cacheGc = await gcCaches(I, ctx.owner, dryRun);
+  report.caches = cacheGc.removed;
+  report.errors.push(...cacheGc.errors);
+
+  // 5. logs past retention, 6. approvals
   report.logs = await rotateLogs(I, dryRun);
   if (!dryRun) report.approvalsExpired = (await expireApprovalsOp(I, caller)).length;
   I.audit(ctx.owner, 'gc', {
@@ -971,6 +1002,7 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
       sandboxes: report.sandboxes.length,
       workspaces: report.workspaces.length,
       images: report.images.flatMap((i) => i.refs).length,
+      caches: report.caches.length,
       logFiles: report.logs.files,
       errors: report.errors.length,
     },

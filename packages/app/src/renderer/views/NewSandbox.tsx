@@ -42,6 +42,8 @@ interface Form {
   exclude?: string;
   /** Respect .gitignore in a copy / sync workspace; unset = the template's choice (else on). */
   gitignore?: boolean;
+  /** Use the template's package caches; unset = yes (`false` is sent as the opt-out). */
+  cache?: boolean;
   cpus: string;
   memory: string;
   ttl: string;
@@ -105,6 +107,8 @@ export function buildCreateInput(
     ...(f.projectDir ? { projectDir: f.projectDir } : {}),
     ...(Object.keys(workspace).length > 0 ? { workspace } : {}),
     ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
+    // an empty workspace has no project the cache could belong to: nothing to opt out of
+    ...(f.cache === false && effectiveMode !== 'empty' ? { cache: false } : {}),
   };
 }
 
@@ -171,6 +175,11 @@ export function NewSandboxDialog(props: {
   const templateGitignore =
     (details.data?.template.workspace as { gitignore?: boolean } | undefined)?.gitignore ?? true;
   const copiesFolder = effectiveMode === 'copy' || effectiveMode === 'sync';
+  // the package caches belong to a project folder; a template that declares none has nothing to switch
+  const cachesNeedProject = effectiveMode === 'empty';
+  const templateCaches = (details.data?.template as { caches?: unknown[] } | undefined)?.caches;
+  const templateHasNoCaches = Array.isArray(templateCaches) && templateCaches.length === 0;
+  const cacheDisabled = cachesNeedProject || templateHasNoCaches;
   // empty resource fields fall back to the template: show what it resolves to
   const resolved = details.data?.template as
     | {
@@ -538,6 +547,25 @@ export function NewSandboxDialog(props: {
                 )}
               </Field>
             ) : null}
+            <div className="field opt-check">
+              <label className="inline">
+                <input
+                  type="checkbox"
+                  checked={!cacheDisabled && form.cache !== false}
+                  disabled={cacheDisabled}
+                  aria-describedby="opt-cache-hint"
+                  onChange={(e) => set('cache', e.target.checked)}
+                />{' '}
+                {t('new.cache')}
+              </label>
+              <small id="opt-cache-hint" className="muted">
+                {cachesNeedProject
+                  ? t('new.cacheNeedsProject')
+                  : templateHasNoCaches
+                    ? t('new.cacheNone')
+                    : t('new.cacheHint')}
+              </small>
+            </div>
             {form.workspaceMode !== 'empty' ? (
               <WorkspaceEstimateNote
                 state={estimate}
@@ -679,6 +707,14 @@ export function NewSandboxDialog(props: {
                 ? ` · ${t((form.gitignore ?? templateGitignore) ? 'new.gitignoreOn' : 'new.gitignoreOff')}`
                 : ''}
             </dd>
+            {cacheDisabled ? null : (
+              <>
+                <dt>{t('new.cache')}</dt>
+                <dd className="plain">
+                  {t(form.cache === false ? 'new.cacheOff' : 'new.cacheOn')}
+                </dd>
+              </>
+            )}
             <dt>
               {t('new.cpus')} / {t('new.memory')} / {t('new.ttl')}
             </dt>

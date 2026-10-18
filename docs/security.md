@@ -194,6 +194,81 @@ The proxy contract is in `docs/internal/proxy-contract.md`.
 - Output from sandboxes passes through a filter that masks known secret values. This is **best
   effort and no guarantee**.
 
+## Package caches
+
+A **package cache** is a volume that outlives the sandboxes and holds what a package manager
+downloaded (the pnpm store, the Cargo registry, the uv and pip caches, the Composer cache, the pub
+cache), so a second sandbox of the same project does not download everything again. Which
+directories are caches is declared by the template (`caches:`, see
+[templates](templates.md#package-caches)); the built-in stack templates declare theirs. This is the
+one place where a sandbox leaves something behind for the next one, so the rules are strict:
+
+- **Identity.** A cache belongs to exactly one combination of **project** (the canonical,
+  symlink-free source folder of the workspace), **owner** (`human`, or `agent:<context>`),
+  **template** (the stack, `node-dev`), **cache name** (`pnpm-store`) and **user id**, and the volume
+  is named after a hash of that combination plus the abox instance. Two projects never share a
+  cache, so a sandbox of one project cannot poison the downloads of another. The human and each
+  agent context have separate caches even for the same project, so what a (possibly manipulated)
+  agent's sandbox writes is never read by the sandboxes you create yourself, and an agent never
+  sees what you installed. A sandbox without a project folder (workspace mode `empty`) has no caches:
+  nothing identifies what they would belong to.
+- **Mounted where declared, nowhere else.** The volume is mounted read-write at the paths of the
+  template's `caches:` list and at no other place. The paths must lie outside the workspace and the
+  other mounts, not in `/tmp`, the home directory itself or a system directory; a spec file or a
+  secret file can never be placed inside a cache. Agents cannot pass a cache path, a volume name or
+  a mount: the only thing they can do is `cache: false` for one sandbox. A project template (from a
+  repository) can declare caches, but it is untrusted until a human has approved its content like
+  any other project template; the cache section is part of what the review shows.
+- **Not part of the project.** A cache is not below the workspace, so `abox export` (diff, patch,
+  branch, files), the workspace baseline and the size estimate never see it.
+- **Instances and hosts.** The volume carries the labels `abox.managed`, `abox.role=cache`,
+  `abox.instance` and `abox.cache=<key>`. Another abox installation on the same engine neither
+  lists, mounts nor removes it (`abox gc --orphans` can, deliberately, after the data directory of
+  its installation was deleted). On a remote host the volume lives on that host's engine, as the
+  sandboxes do. The `process`, `vm` and venv-mode backends have no volumes: a template that declares
+  caches for them is refused (`process`, `vm`), or the caches are not mounted (`isolation: none`).
+- **Concurrent sandboxes share.** Two sandboxes of the same project, template and owner that run at
+  the same time use the same cache, read-write. abox does not copy or lock it: pnpm, npm, Cargo, uv,
+  pip, pub and Composer write their caches with atomic renames or their own file locks (Cargo and uv
+  lock across processes, and flock works across containers on one host). Per-sandbox copy-on-write
+  caches would defeat the purpose and are not offered; use `--no-cache` for a sandbox that must not
+  touch the shared cache.
+- **No secrets by design.** A secret injected by the egress proxy (`inject: proxy`) is added to the
+  request outside the sandbox and never reaches the cache. A secret with `inject: env` or
+  `inject: file` is readable by code in the sandbox, and a tool could write it into its cache (an
+  authenticated registry URL in a Cargo or npm metadata cache, say): those caches are as secret as
+  the secret. Prefer `inject: proxy`; a cache never holds a spec file.
+- **Size and age.** `cache_max_bytes` of the profile (default `10g`, per project, owner and host) and
+  `caches.max_age` of `config.yaml` (default `30d`) are enforced by `abox gc`, which removes caches
+  that are too old or push a project over its cap, least recently used first. Between two runs of
+  `gc` a cache can grow past the cap; a runaway sandbox is limited by its own disk, not by this
+  setting. Caches in use are never removed.
+
+**What a cache can carry over between sandboxes of the same project.** Everything a sandbox's
+package manager can write: a hostile dependency's install script (`postinstall`, `build.rs`, a
+setup hook) can change the files in the project's own cache. abox does not inspect or verify the
+content of a cache. Several tools check what they download against the integrity values in the lock
+file, but a tool that trusts what it has already unpacked (the extracted `registry/src` of Cargo,
+an unpacked package in a store, a Composer or pub archive, any cache that is not content-addressed)
+will use a planted file as it is. So a malicious dependency of **this** project can plant something
+that a **later sandbox of this
+project** (of the same owner and template) runs. It cannot reach another project, another owner or
+the host. If you suspect a cache (a dependency was compromised, a sandbox ran code you did not
+trust), wipe it:
+
+```console
+$ abox cache ls                          # what exists
+$ abox --project ~/projects/app cache rm # every cache of one project
+$ abox cache rm 3f9a1c0b2d4e5f60         # one cache by key
+$ abox cache rm --all                    # everything
+```
+
+or use the Caches section of the GUI Settings. Stop or delete the sandboxes that use a cache first
+(it is not removed while one references it). Create a sandbox with `abox create --no-cache` (MCP
+`cache: false`, the checkbox in the GUI) for a single fresh install without touching the shared
+cache, and set `caches: false` in a profile to give an agent no caches at all. Every creation, use
+and removal is in the audit log (`cache.create`, `cache.use`, `cache.remove`).
+
 ## Policy model
 
 Two separate axes: the **approval mode** (when to ask) and **rights** (what is possible at all).
@@ -214,8 +289,9 @@ bound to profile rights.
 
 A profile (in `policy.yaml`) groups the limits and rights for an agent context: allowed
 templates, limits (sandbox count, CPUs, memory, TTL), workspace roots and modes, network modes and
-presets, mounts, allowed secrets and injection methods, and minimum isolation per capability.
-Profiles can extend each other. The agent contexts themselves (which names exist and which profile
+presets, mounts, allowed secrets and injection methods, minimum isolation per capability, and the
+[package caches](#package-caches) (`caches: true|false`, `cache_max_bytes`). Profiles can extend
+each other. The agent contexts themselves (which names exist and which profile
 each one uses) are defined in the same `policy.yaml`; there is no separate `agents.yaml`. The
 tokens for HTTP agents are not in a file: they live in the state database (`state.db`), as SHA-256
 hashes only. Illustrative example:
@@ -240,6 +316,8 @@ profiles:
       inject: [proxy]
     min_isolation:
       network_open: vm
+    caches: true # per-project package caches (the default); false = none for this profile
+    cache_max_bytes: 10g # `abox gc` trims a project's caches to this (the default)
 ```
 
 ### Decision flow
@@ -477,6 +555,11 @@ of this documentation; it will be published per release alongside the changelog.
   `mount` and `worktree` workspaces on the host (hooks, fsmonitor, pagers, editors and diff
   drivers are neutralised).
 - GUI applications, browsers, audio and GPU access inside sandboxes are out of scope.
+- **Package caches are shared state between sandboxes of one project.** A hostile dependency can
+  poison its own project's cache for later sandboxes of the same owner and template, see
+  [Package caches](#package-caches). Size and age limits are enforced by `abox gc`, not while a
+  sandbox writes. Cache sizes come from the engine (`system df`); the cache volumes were verified with
+  Docker only, not with Podman.
 
 ### Network and secrets
 

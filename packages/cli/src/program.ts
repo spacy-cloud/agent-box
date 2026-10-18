@@ -2,6 +2,7 @@ import { Command, CommanderError } from 'commander';
 import { Cli, jsonRequested, processIo, type RunOptions } from './cli.js';
 import { CliError } from './errors.js';
 import { registerApprovals } from './commands/approvals.js';
+import { registerCache } from './commands/cache.js';
 import { registerCompletion } from './commands/completion.js';
 import { registerData } from './commands/data.js';
 import { registerHost } from './commands/host.js';
@@ -67,6 +68,7 @@ export function buildProgram(cli: Cli): Command {
   registerApprovals(program, cli);
   registerPolicy(program, cli);
   registerOps(program, cli);
+  registerCache(program, cli);
   registerMcp(program, cli);
   registerInit(program, cli);
   registerHost(program, cli);

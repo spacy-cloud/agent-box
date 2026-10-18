@@ -188,4 +188,25 @@ CREATE TABLE human_sessions (
 CREATE INDEX human_sessions_sandbox ON human_sessions(sandbox_id);
 `,
   },
+  {
+    version: 7,
+    name: 'package_caches',
+    // Bookkeeping for the per-project package cache volumes (`abox cache`). The engine is the truth
+    // about existence and size (volume labels); this table only remembers when a cache was last used.
+    sql: `
+CREATE TABLE package_caches (
+  host         TEXT NOT NULL,
+  key          TEXT NOT NULL,
+  project      TEXT NOT NULL,
+  stack        TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  owner        TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER NOT NULL,
+  last_sandbox TEXT,
+  PRIMARY KEY (host, key)
+);
+CREATE INDEX package_caches_project ON package_caches(host, owner, project);
+`,
+  },
 ];

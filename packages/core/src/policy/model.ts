@@ -77,6 +77,11 @@ export interface ResolvedProfile {
   /** Host ids, or `['*']` for any. */
   hosts: string[];
   exec: { approval: boolean };
+  /** Package cache volumes per project for sandboxes of this profile (`false`: never mounted). */
+  caches: boolean;
+  /** Size cap of the caches of one project (per owner and host), as written, e.g. `10g`. */
+  cache_max_bytes: string;
+  cacheMaxBytes: number;
 }
 
 export interface ContextDef {

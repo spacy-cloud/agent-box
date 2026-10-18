@@ -46,6 +46,8 @@ export const IPC_CHANNEL_NAMES = [
   'policy:revisions',
   'policy:revision',
   'doctor:run',
+  'caches:list',
+  'caches:remove',
   'reconcile:run',
   'tokens:list',
   'tokens:create',

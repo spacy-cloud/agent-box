@@ -33,5 +33,12 @@ network:
   mode: allowlist
   presets: [packagist, github]
 
+# Package caches: one volume per project, kept between sandboxes of that project (see docs/templates.md).
+caches:
+  - name: composer-cache
+    path: ~/.cache/composer
+    env:
+      COMPOSER_CACHE_DIR: '${path}'
+
 labels:
   use-for: PHP websites and libraries (PHP 8.3, Composer, built-in server; Packagist and GitHub reachable)

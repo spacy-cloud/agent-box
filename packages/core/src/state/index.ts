@@ -13,4 +13,5 @@ export * from './human-sessions.js';
 export * from './host-cache.js';
 export * from './agent-tokens.js';
 export * from './snapshots.js';
+export * from './package-caches.js';
 export * from './store.js';

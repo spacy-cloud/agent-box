@@ -14,6 +14,7 @@ can never grant itself more than the policy allows.
 - [Inheritance with `extends`](#inheritance-with-extends)
 - [Tool presets](#tool-presets)
 - [Network presets](#network-presets)
+- [Package caches](#package-caches)
 - [Choosing the operating system](#choosing-the-operating-system)
 - [Image cache and digest pinning](#image-cache-and-digest-pinning)
 - [Validation](#validation)
@@ -65,28 +66,29 @@ All keys are **strict**: an unknown key is an error with file, line and column. 
 look like numbers or booleans but must be text (`memory: 4g` is fine, `env: {PORT: 3000}` is not)
 have to be quoted.
 
-| Field         | Type                                      | Default                      | Required | Notes                                                  |
-| ------------- | ----------------------------------------- | ---------------------------- | -------- | ------------------------------------------------------ |
-| `apiVersion`  | integer                                   | -                            | yes      | must be `1`                                            |
-| `name`        | string                                    | -                            | yes      | `^[a-z0-9]([a-z0-9-]{0,62})$`                          |
-| `description` | string, max 2000 chars                    | empty                        | no       | shown to agents; `validate` warns below 20 characters  |
-| `backend`     | `docker` `podman` `process` `python` `vm` | -                            | yes      | also required when the template uses `extends`         |
-| `isolation`   | `none` `container` `hardened` `vm`        | natural level of the backend | no       | a **minimum**: backends that deliver less are rejected |
-| `base`        | object                                    | `{}`                         | depends  | see below                                              |
-| `packages`    | object                                    | none                         | no       | per package manager                                    |
-| `tools`       | list of strings                           | none                         | no       | tool presets, `name` or `name@version`                 |
-| `setup`       | list of `{run: text}`                     | none                         | no       | shell commands run at build time                       |
-| `user`        | object                                    | `agent`, uid 1000, no sudo   | no       | never root                                             |
-| `workspace`   | object                                    | `copy`, `/workspace`, `rw`   | no       |                                                        |
-| `resources`   | object                                    | see below                    | no       |                                                        |
-| `network`     | object                                    | mode `none`                  | no       |                                                        |
-| `mounts`      | list                                      | none                         | no       | extra host directories, each explicit                  |
-| `env`         | map of strings                            | none                         | no       | no secrets                                             |
-| `secrets`     | list                                      | none                         | no       | references into your keyring                           |
-| `labels`      | map of strings                            | none                         | no       | free metadata; `use-for` is shown to agents            |
-| `extends`     | template name                             | none                         | no       | see [inheritance](#inheritance-with-extends)           |
-| `python`      | object                                    | none                         | no       | only for `backend: python`                             |
-| `vm`          | object                                    | none                         | no       | only for `backend: vm`                                 |
+| Field         | Type                                      | Default                      | Required | Notes                                                    |
+| ------------- | ----------------------------------------- | ---------------------------- | -------- | -------------------------------------------------------- |
+| `apiVersion`  | integer                                   | -                            | yes      | must be `1`                                              |
+| `name`        | string                                    | -                            | yes      | `^[a-z0-9]([a-z0-9-]{0,62})$`                            |
+| `description` | string, max 2000 chars                    | empty                        | no       | shown to agents; `validate` warns below 20 characters    |
+| `backend`     | `docker` `podman` `process` `python` `vm` | -                            | yes      | also required when the template uses `extends`           |
+| `isolation`   | `none` `container` `hardened` `vm`        | natural level of the backend | no       | a **minimum**: backends that deliver less are rejected   |
+| `base`        | object                                    | `{}`                         | depends  | see below                                                |
+| `packages`    | object                                    | none                         | no       | per package manager                                      |
+| `tools`       | list of strings                           | none                         | no       | tool presets, `name` or `name@version`                   |
+| `setup`       | list of `{run: text}`                     | none                         | no       | shell commands run at build time                         |
+| `user`        | object                                    | `agent`, uid 1000, no sudo   | no       | never root                                               |
+| `workspace`   | object                                    | `copy`, `/workspace`, `rw`   | no       |                                                          |
+| `resources`   | object                                    | see below                    | no       |                                                          |
+| `network`     | object                                    | mode `none`                  | no       |                                                          |
+| `mounts`      | list                                      | none                         | no       | extra host directories, each explicit                    |
+| `env`         | map of strings                            | none                         | no       | no secrets                                               |
+| `secrets`     | list                                      | none                         | no       | references into your keyring                             |
+| `labels`      | map of strings                            | none                         | no       | free metadata; `use-for` is shown to agents              |
+| `caches`      | list                                      | none                         | no       | per-project package caches, see [below](#package-caches) |
+| `extends`     | template name                             | none                         | no       | see [inheritance](#inheritance-with-extends)             |
+| `python`      | object                                    | none                         | no       | only for `backend: python`                               |
+| `vm`          | object                                    | none                         | no       | only for `backend: vm`                                   |
 
 The natural isolation level is `container` for `docker`, `podman` and `python`, `none` for
 `process` and `vm` for `vm`.
@@ -370,7 +372,8 @@ conditions, no templating):
   alternatives).
 - `network.allow` and `network.presets` are a **union**. If the child sets a `network.mode` other
   than `allowlist`, the inherited entries are dropped.
-- `mounts` are keyed by `target` and `secrets` by `ref`; the child wins on a clash.
+- `mounts` are keyed by `target` and `secrets` by `ref`; the child wins on a clash. `caches` are
+  keyed by `name` the same way (a child entry replaces the parent's entry of that name).
 - `env` and `labels` merge by key.
 - At most five levels, no cycles. A template may extend a template of the **same or a lower**
   precedence level only (project > user > builtin), never itself. A user template called
@@ -470,6 +473,82 @@ doctor`'s network check, and it is one shared host for every public Google Cloud
 - **`packagist`** is `packagist.org` (security advisories) and `repo.packagist.org` (package
   metadata). Composer downloads most packages as zip archives from GitHub (`api.github.com`,
   redirected to `codeload.github.com`), so PHP templates also use `github`.
+
+## Package caches
+
+Every new sandbox would download all dependencies again: the pnpm store, the Cargo registry, the pub
+cache, the uv cache. A template can declare the directories in which its tools keep those downloads;
+abox then keeps one volume per project for each of them, mounts it at that path and sets the
+variables the tool needs to find it. A second sandbox of the same project starts with the downloads
+of the first one.
+
+```yaml
+caches:
+  - name: pnpm-store # [a-z0-9][a-z0-9-]{0,31}, unique in the template
+    path: ~/.local/share/pnpm/store # absolute, or ~/... (the home of the template user)
+    env: # optional: set while the cache is mounted
+      npm_config_store_dir: '${path}' # ${path} is the (expanded) cache path
+  - name: cargo-registry
+    path: ~/.cargo/registry
+```
+
+| Key    | Meaning                                                                                                                                                                                                                                                                                                                |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name` | Part of the cache identity, so keep it stable; it is what `abox cache ls` shows.                                                                                                                                                                                                                                       |
+| `path` | Where the volume is mounted, read-write, for the sandbox user. `~/` is the home directory of `user.name` (`/home/agent`), so a template that changes the user keeps working. Directories above the path are created for the user.                                                                                      |
+| `env`  | Variables for the tool, only set while the cache is mounted (with `--no-cache` they stay unset and the tool uses its default location). `${path}` is replaced by the cache path. They win over `env:` of the template. They are checked like `env:`: no names with `KEY`, `TOKEN`, ..., nothing starting with `ABOX_`. |
+
+Rules, checked when the template is resolved (`abox template validate`): at most 16 caches; unique
+names; paths that are not nested in each other, not in the workspace, a mount target or a secret
+file path, not `/tmp`, the home directory itself or a system directory (`/usr`, `/etc`, ...). The
+`process` and `vm` backends have no volumes, so a template for them with `caches:` is an error; a
+`python` template in venv mode (`isolation: none`) simply gets none. Changing `caches:` does not
+rebuild the environment image (it is not part of the build hash).
+
+**When a sandbox gets its caches.** When the template declares some, a project folder is shared
+(`--workspace`, MCP `workspace.path`, the GUI folder; not workspace mode `empty`), the backend is
+Docker or Podman (or the `python` backend in a container), the profile has `caches: true` (the
+default) and nothing opted out (`abox create --no-cache`, MCP `cache: false`, the GUI checkbox
+"Use package cache"). The effective setting is recorded in the sandbox's `effective.caches` and in
+the audit entry.
+
+**Who shares a cache.** Exactly the sandboxes with the same **project** (the canonical source
+folder), **owner** (you, or one agent context), **template** (its name, the "stack") and cache name
+and user id. Two projects never share, an agent's caches are separate from yours, and `node-dev` and
+`tauri-dev` keep separate pnpm stores for the same project. Sandboxes that match and run at the same
+time share one cache, read-write; the tools' own locking and atomic writes keep it consistent (see
+[security](security.md#package-caches)). The first sandbox creates the volume empty, or as a copy of
+the image's directory when the image already has one at that path (the `flutter-dev` pub cache with
+the packages of a new app).
+
+**Managing them.** `abox cache ls` shows project, template, size, last use and whether a sandbox
+holds a cache; `abox cache rm <key>`, `abox --project <dir> cache rm` and `abox cache rm --all`
+remove them; `abox gc` removes caches unused for `caches.max_age` (config.yaml, default 30 days) and
+trims a project above `cache_max_bytes` (profile, default 10 GiB); `abox doctor` shows their total
+size. The GUI has the same list in Settings. See [CLI](cli.md#abox-cache),
+[GUI](gui.md#package-caches) and [security](security.md#package-caches) for what a cache can and
+cannot carry over and how to wipe it.
+
+**Built-in templates.** The paths were checked in running sandboxes of `node-dev`, `py-dev`, `py-uv`,
+`rust-dev` and `php-dev` (install twice, the second time nothing is downloaded; `tauri-dev` combines
+the node and rust paths). `flutter-dev` (3 GB image) uses the documented `PUB_CACHE` of its template
+and the same copy-on-first-use mechanism, but was not built and run for this feature.
+
+| Template      | Cache (`name`: path)                                                                                                        | Variables set                                                                                                    |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `node-dev`    | `pnpm-store`: `~/.local/share/pnpm/store`; `npm-cache`: `~/.npm`                                                            | `npm_config_store_dir` (pnpm 10 reads it)                                                                        |
+| `py-dev`      | `uv-cache`: `~/.cache/uv`; `pip-cache`: `~/.cache/pip`                                                                      | `UV_LINK_MODE=copy` (the cache and the venv are on different file systems; hard links would fail with a warning) |
+| `py-uv`       | `uv-cache`: `~/.cache/uv` (starts as a copy of the cache baked into the image: the project's dependencies)                  | `UV_LINK_MODE=copy`                                                                                              |
+| `rust-dev`    | `cargo-registry`: `~/.cargo/registry`; `cargo-git`: `~/.cargo/git`                                                          | none (`CARGO_HOME` is unset at run time, Cargo uses `~/.cargo`)                                                  |
+| `tauri-dev`   | `pnpm-store`, `npm-cache`, `cargo-registry`, `cargo-git` as above                                                           | `npm_config_store_dir`                                                                                           |
+| `flutter-dev` | `pub-cache`: `/opt/pub-cache` (starts as a copy of the packages baked into the image, so `pub get --offline` keeps working) | none (`PUB_CACHE` is already set by the template)                                                                |
+| `php-dev`     | `composer-cache`: `~/.cache/composer`                                                                                       | `COMPOSER_CACHE_DIR`                                                                                             |
+
+`alpine-min`, `host-shell`, `py-offline` and `shell-dev` download nothing and declare no cache. The
+cache sits on another file system than the workspace: pnpm and uv fall back from hard links to
+copies (the install is a little slower, the download is what is saved). The `go` preset has no cache
+declared yet; add one to a template of your own if you need it (`path: ~/go/pkg/mod`, with `GOMODCACHE`
+as `${path}`).
 
 ## Choosing the operating system
 
@@ -639,6 +718,10 @@ with a fast connection; a build downloads the toolchains once and is cached afte
 | `tauri-dev`   | Tauri 2 apps: cargo check/build/test/clippy, pnpm and Vite               | crates, npm, github |
 | `php-dev`     | plain PHP websites and libraries: Composer, PHPUnit, `php -S`            | packagist, github   |
 | `shell-dev`   | linting and formatting bash, fish and Lua scripts and configs            | none                |
+
+The stack templates (`node-dev`, `py-dev`, `py-uv`, `rust-dev`, `tauri-dev`, `flutter-dev`,
+`php-dev`) declare [package caches](#package-caches), so a second sandbox of a project skips the
+dependency download.
 
 Agents only see and may only use the templates their policy lists; the built-in policy allows every
 built-in template except `host-shell` (isolation `none`), with the `npm`, `pypi`, `crates`, `pub`,

@@ -4,7 +4,8 @@
  * YAML editor edit the same string); the form has no rules of its own, the manager validates the result.
  *
  * Covered: the approval mode, the limits, the isolation minimums, the network modes and destinations, the
- * workspace modes, the image registries, `exec.approval`, the template and host lists. Mounts, secrets and
+ * workspace modes, the image registries, `exec.approval`, the package caches switch and size cap, the template
+ * and host lists. Mounts, secrets and
  * the workspace roots stay in the YAML.
  */
 import { isMap, isSeq, parseDocument } from 'yaml';
@@ -22,6 +23,8 @@ export type FieldPath =
   | ['workspace', 'modes']
   | ['images', 'registries']
   | ['exec', 'approval']
+  | ['caches']
+  | ['cache_max_bytes']
   | ['templates']
   | ['hosts'];
 
@@ -36,6 +39,10 @@ export interface ProfileFields {
   workspaceModes?: string[];
   registries?: string[];
   execApproval?: boolean;
+  /** Package caches for the sandboxes of the profile (`false`: never mounted). */
+  caches?: boolean;
+  /** Size cap of the caches of one project, as written (`10g`). */
+  cacheMaxBytes?: string;
   templates?: string[];
   hosts?: string[];
 }
@@ -105,6 +112,8 @@ export function readPolicyForm(text: string): ReadResult {
     set('workspaceModes', list(ws['modes']));
     set('registries', list(images['registries']));
     set('execApproval', typeof exec['approval'] === 'boolean' ? exec['approval'] : undefined);
+    set('caches', typeof p['caches'] === 'boolean' ? p['caches'] : undefined);
+    set('cacheMaxBytes', str(p['cache_max_bytes']));
     set('templates', list(p['templates']));
     set('hosts', list(p['hosts']));
     out.push({

@@ -409,6 +409,12 @@ export function registerTools(register: Register): void {
       ttl: duration
         .optional()
         .describe('Lifetime: duration string like "2h" or seconds (same as overrides.ttl).'),
+      cache: z
+        .boolean()
+        .optional()
+        .describe(
+          'false: do not mount the package caches (pnpm store, Cargo registry, ...) the template declares, for a clean install. Default: used when a project is shared (workspace.path) and the policy allows it. You cannot list, read or remove caches.',
+        ),
       request_id: z
         .string()
         .max(128)
@@ -461,6 +467,7 @@ export function registerTools(register: Register): void {
         workspace: resolveWorkspace(args.workspace),
         ...(Object.keys(overrides).length ? { overrides } : {}),
         ...(args.request_id !== undefined ? { requestId: args.request_id } : {}),
+        ...(args.cache === false ? { cache: false } : {}),
       };
       const res = await rt.abox.createSandbox(rt.caller, req, {
         signal: rt.signal,

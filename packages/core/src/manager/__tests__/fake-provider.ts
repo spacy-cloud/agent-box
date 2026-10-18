@@ -5,6 +5,7 @@ import { AboxError } from '../../errors.js';
 import type { SandboxProvider } from '../../provider.js';
 import type {
   BackendStatus,
+  CacheVolume,
   DirEntry,
   ExecEvent,
   ExecRequest,
@@ -58,6 +59,8 @@ export interface FakeOptions {
   failUpdateResources?: string;
   /** Provide `stats`: the sample for a running sandbox (default: a fixed one); a sandbox that is not running is `conflict`. */
   stats?: boolean | ((id: SandboxId) => ResourceUsage);
+  /** Provide package cache volumes (`capabilities().caches`, `listCaches`, `removeCache`). */
+  caches?: boolean;
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -84,6 +87,10 @@ export class FakeProvider implements SandboxProvider {
   /** Foreign objects that are still there / the refs `removeForeign` deleted. */
   readonly foreignResources: ForeignResource[] = [];
   readonly foreignRemoved: string[] = [];
+  /** Cache volumes created by `create` (key -> volume) and the sizes tests give them. */
+  readonly cacheVolumes = new Map<string, Omit<CacheVolume, 'inUse' | 'sizeBytes'>>();
+  readonly cacheSizes = new Map<string, number>();
+  readonly cacheRemoved: string[] = [];
   /** Egress events the fake proxy "recorded" per sandbox (`networkEvents` returns those with `ts >= since`). */
   readonly netEvents = new Map<SandboxId, NetworkEvent[]>();
   readonly networkEventCalls: Array<{ id: SandboxId; sinceTs: number | undefined }> = [];
@@ -107,6 +114,8 @@ export class FakeProvider implements SandboxProvider {
   logs?: SandboxProvider['logs'];
   listForeign?: SandboxProvider['listForeign'];
   removeForeign?: SandboxProvider['removeForeign'];
+  listCaches?: SandboxProvider['listCaches'];
+  removeCache?: SandboxProvider['removeCache'];
 
   constructor(host: HostConnection, opts: FakeOptions = {}) {
     this.host = host;
@@ -139,6 +148,25 @@ export class FakeProvider implements SandboxProvider {
           this.foreignRemoved.push(r.ref);
         }
         return Promise.resolve();
+      };
+    }
+    if (opts.caches) {
+      this.caps.caches = true;
+      const inUse = (key: string): boolean =>
+        [...this.sandboxes.values()].some((sb) => sb.spec.caches?.some((c) => c.key === key));
+      this.listCaches = (o) =>
+        Promise.resolve(
+          [...this.cacheVolumes.values()].map((v) => ({
+            ...v,
+            inUse: inUse(v.key),
+            sizeBytes: o?.size ? (this.cacheSizes.get(v.key) ?? 0) : null,
+          })),
+        );
+      this.removeCache = (key) => {
+        if (inUse(key)) return Promise.reject(new AboxError('conflict', `cache ${key} is in use`));
+        const had = this.cacheVolumes.delete(key);
+        if (had) this.cacheRemoved.push(key);
+        return Promise.resolve({ removed: had });
       };
     }
     if (!opts.noExtendExpiry) {
@@ -279,6 +307,17 @@ export class FakeProvider implements SandboxProvider {
       return Promise.reject(new AboxError('backend_error', 'create failed (fake)'));
     if (this.sandboxes.has(spec.id)) return Promise.reject(new AboxError('conflict', 'exists'));
     this.specs.push(spec);
+    for (const c of spec.caches ?? [])
+      if (!this.cacheVolumes.has(c.key))
+        this.cacheVolumes.set(c.key, {
+          key: c.key,
+          name: c.name,
+          project: c.project,
+          stack: c.stack,
+          owner: c.owner,
+          createdAt: this.now(),
+          engine: 'docker',
+        });
     this.sandboxes.set(spec.id, { spec, state: 'created', files: new Map(), snapshots: new Map() });
     return Promise.resolve(this.info(this.get(spec.id)));
   }

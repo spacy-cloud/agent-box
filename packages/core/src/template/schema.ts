@@ -30,6 +30,10 @@ export const DOMAIN_PATTERN_RE = new RegExp(
 export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const SECRET_REF_RE = /^[a-z0-9-]+$/;
 const USER_NAME_RE = /^[a-z_][a-z0-9_-]{0,31}$/;
+/** Name of a package cache (`pnpm-store`); part of the cache identity, so keep it stable. */
+export const CACHE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/** At most this many caches per template. */
+export const MAX_TEMPLATE_CACHES = 16;
 const LABEL_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$/;
 /** Image reference / distro name. Must not start with `-` (option injection) and has a conservative charset. */
 const IMAGE_REF_RE = /^[a-z0-9][A-Za-z0-9._/:@+-]{0,254}$/;
@@ -145,6 +149,24 @@ const absolutePath = (what: string) =>
         message: `${what} must not contain ".." segments (got "${v}")`,
       });
   });
+
+/** A cache path: absolute, or below the home directory of the template user (`~/.cache/uv`). */
+const cachePath = strOf('caches[].path').superRefine((v, ctx) => {
+  if (!(v.startsWith('/') || v.startsWith('~/')))
+    ctx.addIssue({
+      code: 'custom',
+      message: `caches[].path must be absolute or start with "~/" (got "${v}")`,
+    });
+  else if (v === '/' || v === '~/')
+    ctx.addIssue({ code: 'custom', message: 'caches[].path must not be the root or the home' });
+  else if (v.includes('\0'))
+    ctx.addIssue({ code: 'custom', message: 'caches[].path must not contain NUL bytes' });
+  else if (v.split('/').includes('..'))
+    ctx.addIssue({
+      code: 'custom',
+      message: `caches[].path must not contain ".." segments (got "${v}")`,
+    });
+});
 
 const packageList = (manager: PackageManager) =>
   z.array(
@@ -369,6 +391,21 @@ export const templateSchema = z.strictObject({
       image: imageRef('vm.image').optional(),
       cloudInit: strOf('vm.cloudInit').min(1).optional(),
       diskSize: sizeString('vm.diskSize').optional(),
+    })
+    .optional(),
+  caches: z
+    .array(
+      z.strictObject({
+        name: strOf('caches[].name').regex(CACHE_NAME_RE, {
+          error:
+            'caches[].name must match ^[a-z0-9][a-z0-9-]{0,31}$ (lowercase letters, digits and "-")',
+        }),
+        path: cachePath,
+        env: envSchema.optional(),
+      }),
+    )
+    .max(MAX_TEMPLATE_CACHES, {
+      error: `a template can declare at most ${MAX_TEMPLATE_CACHES} caches`,
     })
     .optional(),
 });
