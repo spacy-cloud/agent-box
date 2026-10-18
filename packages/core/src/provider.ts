@@ -11,6 +11,8 @@ import type {
   IsolationLevel,
   NetworkEvent,
   NetworkSpec,
+  SandboxPortForward,
+  PortForwardRequest,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
@@ -174,6 +176,24 @@ export interface SandboxProvider {
    * missing one is not an error (`removed: false`). Optional; absent = `unsupported`.
    */
   removeCache?(key: string): Promise<{ removed: boolean }>;
+
+  /**
+   * Publish a TCP port of a running sandbox on `127.0.0.1` of the machine running abox (never on
+   * another address), without giving the sandbox any new way out. The forward must keep working
+   * after the calling process ended (the CLI is short-lived) and ends with the sandbox: `stop`,
+   * `remove` and the deadline close it. A second forward for the same `sandboxPort` is `conflict`;
+   * a `hostPort` that is taken is `conflict`; a sandbox that is not running is `conflict`; a
+   * network mode that has no way to the host is `unsupported`. Optional (see
+   * `capabilities().portForward`); absent = `unsupported`.
+   */
+  addPortForward?(id: SandboxId, req: PortForwardRequest): Promise<SandboxPortForward>;
+  /** The open forwards of a sandbox, ordered by sandbox port. */
+  listPortForwards?(id: SandboxId): Promise<SandboxPortForward[]>;
+  /**
+   * Close the forward of `sandboxPort`. Returns it as it was just before (with its connection
+   * counts), or `undefined` when there was none (not an error).
+   */
+  removePortForward?(id: SandboxId, sandboxPort: number): Promise<SandboxPortForward | undefined>;
 
   /** Egress decisions recorded by the proxy since `sinceTs` (allowlist mode only). */
   networkEvents?(id: SandboxId, sinceTs?: number): Promise<NetworkEvent[]>;

@@ -12,10 +12,11 @@ import { domainCovered } from '../policy/domains.js';
 import { formatSize, tryParseSize } from '../policy/units.js';
 import { buildProxyInjections } from '../secrets/inject.js';
 import { expandNetworkPresets } from '../template/network-presets.js';
-import type { NetworkMode, NetworkSpec, ResolvedTemplate } from '../types.js';
+import type { NetworkMode, NetworkSpec, ResolvedTemplate, SandboxPortForward } from '../types.js';
 import { confirmationRequired, consumeApproval, gate } from './approvals.js';
 import type { Internals, StoredEffective } from './internals.js';
 import { toDuration, viewFor } from './lifecycle.js';
+import { assertPortApplicable, portsOf, type PortApply } from './ports.js';
 import { accessSchema } from './schemas.js';
 import { requireNotTakenOver } from './takeover.js';
 import type { AccessResult, Caller, ExecCallOptions } from './types.js';
@@ -31,7 +32,8 @@ type ApplySpec =
     }
   | { kind: 'ttl'; totalTtlMs: number }
   | { kind: 'mount' }
-  | { kind: 'resources'; cpus?: number; memoryBytes?: number };
+  | { kind: 'resources'; cpus?: number; memoryBytes?: number }
+  | PortApply;
 
 function liveOrThrow(I: Internals, rec: SandboxRecord): void {
   if (rec.state === 'removed' || rec.state === 'failed' || rec.state === 'preparing') {
@@ -77,6 +79,9 @@ export async function accessRequest(
   let spec: AccessRequestSpec;
   let apply: ApplySpec;
   let noop: string | undefined;
+  let noopPort: SandboxPortForward | undefined;
+  /** kind port: forwards the sandbox has open besides the one asked for (`ports.max` counts them). */
+  let otherForwards: number | undefined;
 
   switch (input.kind) {
     case 'network': {
@@ -156,6 +161,29 @@ export async function accessRequest(
       }
       break;
     }
+    case 'port': {
+      const d = input.details;
+      const open = await portsOf(I, rec);
+      const same = open.find((p) => p.sandboxPort === d.port);
+      otherForwards = open.length - (same ? 1 : 0);
+      spec = {
+        kind: 'port',
+        details: {
+          sandboxPort: d.port,
+          ...(d.hostPort !== undefined ? { hostPort: d.hostPort } : {}),
+        },
+      };
+      apply = {
+        kind: 'port',
+        sandboxPort: d.port,
+        ...(d.hostPort !== undefined ? { hostPort: d.hostPort } : {}),
+      };
+      if (same && (d.hostPort === undefined || d.hostPort === same.hostPort)) {
+        noop = `port ${d.port} is already forwarded to ${same.url}`;
+        noopPort = same;
+      }
+      break;
+    }
     case 'ttl': {
       const by = toDuration(input.details.ttl, 'ttl');
       const total = Math.max(rec.expiresAt, I.now()) + by - rec.createdAt;
@@ -176,6 +204,7 @@ export async function accessRequest(
       network: { mode: currentNet.mode as NetworkMode, allow: currentNet.allow },
       // what the other sandboxes of the host reserve: the host limits hold for all of them together
       hostUsage: I.hostUsage(rec.host, { exclude: rec.id }),
+      ...(otherForwards !== undefined ? { portForwards: otherForwards } : {}),
     },
     spec,
     { ...(ctx.kind === 'human' && caller.humanConfirmed === true ? { humanConfirmed: true } : {}) },
@@ -199,17 +228,24 @@ export async function accessRequest(
       decision: 'allow',
       details: { ...detailsForAudit, noop },
     });
-    return { status: 'applied', kind: input.kind, sandbox: await viewFor(I, rec), message: noop };
+    return {
+      status: 'applied',
+      kind: input.kind,
+      sandbox: await viewFor(I, rec),
+      message: noop,
+      ...(noopPort ? { port: noopPort } : {}),
+    };
   }
   await assertApplicable(I, rec, apply);
 
   if (ev.decision === 'allow') {
-    const message = await applyAccess(I, rec, apply, ctx.owner, undefined);
+    const done = await applyAccess(I, rec, apply, ctx.owner, undefined);
     return {
       status: 'applied',
       kind: input.kind,
       sandbox: await viewFor(I, I.state.sandboxes.get(rec.id)!),
-      message,
+      message: done.message,
+      ...(done.port ? { port: done.port } : {}),
     };
   }
   if (ctx.kind === 'human') return confirmationRequired(ev.reasons, ev.risks, ev.items);
@@ -239,12 +275,13 @@ export async function accessRequest(
     };
   }
   consumeApproval(I, g.approval);
-  const message = await applyAccess(I, rec, apply, ctx.owner, g.approval.id);
+  const done = await applyAccess(I, rec, apply, ctx.owner, g.approval.id);
   return {
     status: 'applied',
     kind: input.kind,
     sandbox: await viewFor(I, I.state.sandboxes.get(rec.id)!),
-    message,
+    message: done.message,
+    ...(done.port ? { port: done.port } : {}),
   };
 }
 
@@ -252,6 +289,8 @@ export async function accessRequest(
 async function assertApplicable(I: Internals, rec: SandboxRecord, apply: ApplySpec): Promise<void> {
   const eff = (rec.effective ?? {}) as Partial<StoredEffective>;
   switch (apply.kind) {
+    case 'port':
+      return assertPortApplicable(I, rec);
     case 'mount':
       throw new AboxError('unsupported', 'mounts cannot be added to an existing sandbox', {
         hint: 'Create a new sandbox with overrides.mounts (a human has to approve additional mounts).',
@@ -319,13 +358,42 @@ async function applyAccess(
   apply: ApplySpec,
   actor: string,
   approvalId: string | undefined,
-): Promise<string> {
+): Promise<{ message: string; port?: SandboxPortForward }> {
   const fresh = I.state.sandboxes.get(rec.id) ?? rec;
   liveOrThrow(I, fresh);
   const eff = (fresh.effective ?? {}) as unknown as StoredEffective;
   try {
     let message: string;
-    if (apply.kind === 'ttl') {
+    let port: SandboxPortForward | undefined;
+    if (apply.kind === 'port') {
+      await assertApplicable(I, fresh, apply);
+      const provider = await I.providerForRecord(fresh);
+      port = await provider.addPortForward!(fresh.id, {
+        sandboxPort: apply.sandboxPort,
+        ...(apply.hostPort !== undefined ? { hostPort: apply.hostPort } : {}),
+        expiresAt: fresh.expiresAt,
+      });
+      message = `port ${port.sandboxPort} of the sandbox is forwarded to ${port.url}${
+        port.target === 'down'
+          ? ' (nothing answers on that port in the sandbox yet; the server there must listen on 0.0.0.0, not only on 127.0.0.1)'
+          : ''
+      }`;
+      I.audit(actor, 'sandbox.port.add', {
+        sandboxId: fresh.id,
+        decision: approvalId ? 'approved' : 'allow',
+        details: {
+          sandboxPort: port.sandboxPort,
+          hostPort: port.hostPort,
+          hostAddress: port.hostAddress,
+          approvalId,
+        },
+      });
+      I.emit('sandbox.ports', {
+        sandboxId: fresh.id,
+        owner: fresh.owner,
+        data: { action: 'add', sandboxPort: port.sandboxPort, hostPort: port.hostPort },
+      });
+    } else if (apply.kind === 'ttl') {
       const expiresAt = Math.max(fresh.expiresAt, fresh.createdAt + apply.totalTtlMs);
       if (expiresAt > fresh.expiresAt) {
         // The backend enforces the deadline itself (container entrypoint, guest timer, ...): move
@@ -443,7 +511,7 @@ async function applyAccess(
       decision: approvalId ? 'approved' : 'allow',
       details: { kind: apply.kind, apply, approvalId, message },
     });
-    return message;
+    return { message, ...(port ? { port } : {}) };
   } catch (e) {
     I.audit(actor, 'sandbox.access_applied', {
       sandboxId: fresh.id,
@@ -481,8 +549,8 @@ export async function applyApprovedAccessInternal(
   const rec = I.state.sandboxes.get(a.sandboxId);
   if (!rec) throw new AboxError('not_found', `sandbox ${a.sandboxId} no longer exists`);
   consumeApproval(I, a);
-  const message = await applyAccess(I, rec, apply, ctx.owner, a.id);
-  return { ok: true, message };
+  const done = await applyAccess(I, rec, apply, ctx.owner, a.id);
+  return { ok: true, message: done.message };
 }
 
 export async function extendTtl(

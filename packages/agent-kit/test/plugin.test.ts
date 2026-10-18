@@ -41,6 +41,7 @@ const TOOLS = [
   'sandbox_export',
   'sandbox_stop',
   'sandbox_delete',
+  'sandbox_port_forward',
   'access_request',
   'policy_show',
 ];

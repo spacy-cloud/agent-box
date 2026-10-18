@@ -313,6 +313,34 @@ describe('package caches', () => {
   });
 });
 
+describe('ports', () => {
+  it('defaults to ask with at most 3 forwards; the human profile may forward freely', () => {
+    const p = parse('profiles:\n  a: { templates: [x] }\n');
+    expect(p.profiles.a!.ports).toEqual({ allow: 'ask', max: 3 });
+    expect(p.profiles.human!.ports).toEqual({ allow: true, max: 16 });
+    expect(defaultPolicy().profiles.default!.ports).toEqual({ allow: 'ask', max: 3 });
+  });
+
+  it('accepts false, ask and true, and extends merges the keys one by one', () => {
+    const p = parse(
+      'profiles:\n  a: { ports: { allow: false, max: 1 } }\n  b: { extends: a, ports: { allow: true } }\n  c: { extends: b, ports: { max: 8 } }\n  d: { ports: { allow: ask } }\n',
+    );
+    expect(p.profiles.a!.ports).toEqual({ allow: false, max: 1 });
+    expect(p.profiles.b!.ports).toEqual({ allow: true, max: 1 });
+    expect(p.profiles.c!.ports).toEqual({ allow: true, max: 8 });
+    expect(p.profiles.d!.ports).toEqual({ allow: 'ask', max: 3 });
+  });
+
+  it('rejects other values and unknown keys with the field path', () => {
+    expect(() => parse('profiles:\n  a: { ports: { allow: maybe } }\n')).toThrow(/ports\.allow/);
+    expect(() => parse('profiles:\n  a: { ports: { max: -1 } }\n')).toThrow(/ports\.max/);
+    expect(() => parse('profiles:\n  a: { ports: { max: 1000 } }\n')).toThrow(/ports\.max/);
+    expect(() => parse('profiles:\n  a: { ports: { bind: 0.0.0.0 } }\n')).toThrow(
+      /unknown key "bind"/,
+    );
+  });
+});
+
 describe('profile resolution', () => {
   const policy = `
 profiles:

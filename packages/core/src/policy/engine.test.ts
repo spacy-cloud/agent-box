@@ -1706,6 +1706,89 @@ describe('evaluateAccessRequest', () => {
     });
   });
 
+  describe('port', () => {
+    const port = (sandboxPort = 5173, hostPort?: number): AccessRequestSpec => ({
+      kind: 'port',
+      details: { sandboxPort, ...(hostPort !== undefined ? { hostPort } : {}) },
+    });
+
+    it('agents need a human by default (ports.allow ask), in every approval mode', () => {
+      for (const approval of MODES) {
+        const r = acc({ approval }, port());
+        expect(r.decision, approval).toBe('approval');
+        if (r.decision === 'approval') {
+          expect(r.kinds).toContain('port_forward');
+          expect(r.items[0]).toMatchObject({ kind: 'port_forward', invariant: true });
+          expect(r.reasons.join(' ')).toContain('port 5173');
+          expect(r.risks.join(' ')).toContain('Any process on this machine');
+        }
+      }
+    });
+
+    it('ports.allow true lets an agent forward without a question (strict mode still asks)', () => {
+      const ports = { allow: true, max: 3 };
+      expect(acc({ approval: 'medium', ports }, port()).decision).toBe('allow');
+      expect(acc({ approval: 'open', ports }, port()).decision).toBe('allow');
+      expect(acc({ approval: 'strict', ports }, port()).decision).toBe('approval');
+    });
+
+    it('ports.allow false denies agents with a hint, whatever the approval mode', () => {
+      for (const approval of MODES) {
+        const r = acc({ approval, ports: { allow: false } }, port());
+        expect(r.decision, approval).toBe('deny');
+        if (r.decision === 'deny') {
+          expect(r.reasons[0]).toContain('ports.allow: false');
+          expect(r.hint).toContain('abox port add');
+        }
+      }
+    });
+
+    it('the human context forwards without a question and is not limited by ports.allow', () => {
+      const h = evaluateAccessRequest(humanContext(env), sbx({ owner: 'human' }), port(), {});
+      expect(h.decision).toBe('allow');
+    });
+
+    it('ports.max counts the forwards the sandbox has open', () => {
+      const ports = { allow: true, max: 2 };
+      expect(acc({ ports }, port(), sbx({ portForwards: 1 })).decision).toBe('allow');
+      const full = acc({ ports }, port(), sbx({ portForwards: 2 }));
+      expect(full.decision).toBe('deny');
+      if (full.decision === 'deny') expect(full.reasons[0]).toContain('allows 2 (ports.max)');
+      expect(acc({ ports: { allow: true, max: 0 } }, port()).decision).toBe('deny');
+    });
+
+    it('rejects ports that are not TCP ports and privileged host ports', () => {
+      const ports = { allow: true, max: 3 };
+      for (const bad of [0, 65536, 1.5, -1, Number.NaN])
+        expect(acc({ ports }, port(bad)).decision, String(bad)).toBe('deny');
+      const priv = evaluateAccessRequest(humanContext(env), sbx({ owner: 'human' }), port(80, 80));
+      expect(priv.decision).toBe('deny');
+      if (priv.decision === 'deny') expect(priv.reasons[0]).toContain('privileged ports');
+      expect(
+        evaluateAccessRequest(humanContext(env), sbx({ owner: 'human' }), port(80, 1023)).decision,
+      ).toBe('deny');
+      expect(
+        evaluateAccessRequest(humanContext(env), sbx({ owner: 'human' }), port(80, 1024)).decision,
+      ).toBe('allow');
+    });
+
+    it('agents cannot choose the host port', () => {
+      const r = acc({ ports: { allow: true, max: 3 } }, port(5173, 8080));
+      expect(r.decision).toBe('deny');
+      if (r.decision === 'deny') expect(r.reasons[0]).toContain('cannot choose the host port');
+    });
+
+    it('the digest binds sandbox, port and host port', () => {
+      const a = acc({}, port(5173));
+      const b = acc({}, port(5174));
+      const c = acc({}, port(5173));
+      const d = acc({}, port(5173), sbx({ id: 'local/other' }));
+      expect(hashRequestDigest(a.requestDigest)).toBe(hashRequestDigest(c.requestDigest));
+      expect(hashRequestDigest(a.requestDigest)).not.toBe(hashRequestDigest(b.requestDigest));
+      expect(hashRequestDigest(a.requestDigest)).not.toBe(hashRequestDigest(d.requestDigest));
+    });
+  });
+
   it('rejects unknown request kinds', () => {
     expect(
       acc({}, { kind: 'root-shell', details: {} } as unknown as AccessRequestSpec).decision,

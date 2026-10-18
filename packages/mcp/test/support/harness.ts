@@ -61,9 +61,17 @@ profiles:
     secrets: { allowed: [], inject: [] }
     isolation: { min: none, network_open: none, mounts: none, secrets_env: none }
     hosts: [local]
+  free:
+    extends: agent
+    ports: { allow: true, max: 2 }
+  nopreview:
+    extends: agent
+    ports: { allow: false }
 contexts:
   agent-a: { profile: agent }
   agent-b: { profile: agent }
+  agent-free: { profile: free }
+  agent-nopreview: { profile: nopreview }
 `;
 }
 

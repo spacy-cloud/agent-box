@@ -7,7 +7,7 @@
  * by the manager). Nothing here decides anything: the engine remains the only judge.
  *
  * Only changes that are narrow and mean what they say are proposed: one more image registry, one more
- * network destination, the approval mode `strict` -> `medium`, `exec.approval` off. Findings that no
+ * network destination, the approval mode `strict` -> `medium`, `exec.approval` off, `ports.allow` on. Findings that no
  * policy setting can waive (isolation `none`, an untrusted template, a shared or restricted host) or that
  * only the broad approval mode `open` would waive (mounts, open network, secrets, private addresses) are
  * listed with the reason and never proposed.
@@ -22,6 +22,8 @@ export interface ProfileFacts {
   exec: { approval: boolean };
   network: { allow: string[] };
   images: { registries: string[] };
+  /** `allow`: `false`, `'ask'` or `true`; absent in a view of an older core. */
+  ports?: { allow: unknown };
 }
 
 export type PolicyEdit =
@@ -119,6 +121,18 @@ export function proposePolicyChange(input: {
           labelKey: 'perm.change.domain',
           params: { domain: d },
         });
+      }
+    } else if (kind === 'port_forward') {
+      if (p.ports?.allow === 'ask') {
+        put({
+          id: 'ports',
+          kind,
+          edit: { op: 'set', path: ['ports', 'allow'], value: true },
+          labelKey: 'perm.change.ports',
+          params: {},
+        });
+      } else if (p.ports === undefined) {
+        unsupported.push({ kind, reason: 'unknown' });
       }
     } else if (kind === 'strict_mode') {
       if (p.approval === 'strict') approvalToMedium(kind);

@@ -54,7 +54,7 @@ machine.
 | VM backend         | QEMU/KVM virtual machine with its own kernel, cloud images with checksum verification           | implemented; needs `/dev/kvm`, x86_64                                                                                                                      |
 | Process backend    | host process without isolation (level `none`), clearly marked; reference for the contract tests | implemented                                                                                                                                                |
 | CLI (`abox`)       | thin layer over the core, text or `--json` output, shell completion                             | implemented                                                                                                                                                |
-| MCP server         | 21 tools over stdio and local HTTP with token authentication, resources and a prompt            | implemented                                                                                                                                                |
+| MCP server         | 22 tools over stdio and local HTTP with token authentication, resources and a prompt            | implemented                                                                                                                                                |
 | Claude Code plugin | `agent-kit`: decision skill, slash commands, subagent, optional hook, marketplace               | implemented; skill triggering checked headless only (single samples), slash commands untested                                                              |
 | Electron GUI       | sandboxes, templates, hosts, approvals, audit, policy, terminal                                 | implemented; e2e tests pass under xvfb; AppImage builds locally; unreleased                                                                                |
 | Hosts and SSH      | sandboxes on a remote machine over SSH (agentless), host profiles, zones, host-key pinning      | implemented, experimental; verified only against a local sshd container                                                                                    |
@@ -69,6 +69,8 @@ Highlights of the design:
   minimum level. `hardened` (a stronger container runtime) is not verified.
 - **Network modes** `none` (default), `allowlist` (domain allowlist via an egress proxy) and
   `open`.
+- **Previews** forward a dev server of a sandbox (Vite, Flutter web, `php -S`) to `127.0.0.1`
+  only (`abox port add`); the sandbox gets no new way out, and agents need your approval.
 - **Secrets** stay in the host keyring. With `inject: proxy` the proxy adds the credential to
   requests and the sandbox never sees it.
 - **Workspace modes** `mount`, `clone`, `worktree`, `copy`, `empty` (and `sync` for remote

@@ -43,7 +43,12 @@ export const BUILTIN_HUMAN_PROFILE: RawProfile = {
   isolation: { min: 'none', network_open: 'none', mounts: 'none', secrets_env: 'none' },
   hosts: ['*'],
   exec: { approval: false },
+  ports: { allow: true, max: 16 },
 };
+
+/** Defaults of the profile key `ports`: agents need a human's approval, at most this many forwards per sandbox. */
+export const DEFAULT_PORTS_ALLOW = 'ask';
+export const DEFAULT_PORTS_MAX = 3;
 
 /** Default soft limits of a `copy` / `sync` workspace (`workspace.max_copy_bytes` / `max_copy_entries`). */
 export const DEFAULT_MAX_COPY_BYTES = '1g';
@@ -105,6 +110,8 @@ profiles:
     isolation: { min: container, network_open: vm, mounts: container, secrets_env: container }
     hosts: [local]
     exec: { approval: false }
+    # Preview forwards (127.0.0.1 -> a port in the sandbox): a human approves each one; \`allow\` is false, ask or true.
+    ports: { allow: ask, max: 3 }
 contexts:
   # Agent contexts of the supported agent integrations (\`abox mcp serve --agent <id>\`), all with the same profile.
   default: { profile: default }
@@ -405,6 +412,7 @@ export function mergeProfiles(parent: RawProfile, child: RawProfile): RawProfile
     'secrets',
     'isolation',
     'exec',
+    'ports',
   ] as const) {
     if (child[key] !== undefined) {
       (out as Record<string, unknown>)[key] = { ...(parent[key] ?? {}), ...child[key] };
@@ -469,6 +477,7 @@ function applyDefaults(name: string, p: RawProfile): ResolvedProfile {
     caches: p.caches ?? true,
     cache_max_bytes: cacheMax,
     cacheMaxBytes: parseSize(cacheMax),
+    ports: { allow: p.ports?.allow ?? DEFAULT_PORTS_ALLOW, max: p.ports?.max ?? DEFAULT_PORTS_MAX },
   };
 }
 

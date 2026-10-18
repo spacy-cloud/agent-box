@@ -11,6 +11,7 @@ import { registerMcp } from './commands/mcp.js';
 import { registerNetwork } from './commands/network.js';
 import { registerOps } from './commands/ops.js';
 import { registerPolicy } from './commands/policy.js';
+import { registerPort } from './commands/port.js';
 import { registerRun } from './commands/run.js';
 import { registerSandbox } from './commands/sandbox.js';
 import { registerSecret } from './commands/secret.js';
@@ -69,6 +70,7 @@ export function buildProgram(cli: Cli): Command {
   registerApprovals(program, cli);
   registerNetwork(program, cli);
   registerPolicy(program, cli);
+  registerPort(program, cli);
   registerOps(program, cli);
   registerCache(program, cli);
   registerMcp(program, cli);

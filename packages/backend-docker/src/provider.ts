@@ -19,6 +19,7 @@ import type {
   IsolationLevel,
   NetworkEvent,
   NetworkSpec,
+  PortForwardRequest,
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
@@ -27,6 +28,7 @@ import type {
   SandboxFilter,
   SandboxId,
   SandboxInfo,
+  SandboxPortForward,
   SandboxProvider,
   SandboxSpec,
   TtyOptions,
@@ -50,6 +52,14 @@ import {
   toEpochSeconds,
   writeExpiryFile,
 } from './expiry.js';
+import {
+  FORWARD_CONFIG_DIR,
+  FORWARD_EXPIRES_PATH,
+  FORWARD_PORT,
+  FORWARD_UID,
+  ensureForwardImage,
+  parseForwardLog,
+} from './forward.js';
 import { effectiveFromInspect, infoFromLabels } from './info.js';
 import { isAbortError, mapEngineError, statusOf } from './errors.js';
 import { Demux, openTty, runExec, simpleExec, streamExec } from './exec.js';
@@ -82,6 +92,7 @@ import {
   PROXY_PORT,
   TMP_STASH,
   containerName,
+  forwardName,
   imageRepoName,
   internalNetName,
   isValidHost,
@@ -214,6 +225,11 @@ const TMPFS_PACK_SCRIPT =
 
 function envArray(env: Record<string, string>): string[] {
   return Object.entries(env).map(([k, v]) => `${k}=${v}`);
+}
+
+function errText(e: unknown): string {
+  const j = (e as { json?: { message?: string } } | undefined)?.json?.message;
+  return j ?? (e instanceof Error ? e.message : String(e));
 }
 
 function sleep(ms: number): Promise<void> {
@@ -363,6 +379,9 @@ export class DockerProvider implements SandboxProvider {
       extendExpiry: true,
       updateResources: true,
       stats: true,
+      // `none` has no network interface, so nothing can reach into it; remote engines publish on
+      // the remote machine's loopback, which this machine cannot reach without another ssh forward
+      portForward: this.remote ? [] : allowlist ? ['allowlist', 'open'] : ['open'],
       limits: { cpus: true, memory: true, pids: true, disk: this.facts?.diskQuota ?? false },
       nonRootUser: true,
       secretInjection: ['proxy', 'env', 'file'],
@@ -1840,6 +1859,20 @@ export class DockerProvider implements SandboxProvider {
       }
       if (toEpochSeconds(expiresAt) === toEpochSeconds(current)) return;
       await writeExpiryFile(container, expiresAt);
+      // The forwarders end themselves at the sandbox's deadline: move theirs as well.
+      for (const f of await this.forwarderContainers(id)) {
+        if (f.State !== 'running') continue;
+        await putFile(
+          this.docker.getContainer(f.Id),
+          FORWARD_EXPIRES_PATH,
+          Buffer.from(`${toEpochSeconds(expiresAt)}\n`),
+          {
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+          },
+        ).catch(() => undefined);
+      }
     });
   }
 
@@ -1912,6 +1945,8 @@ export class DockerProvider implements SandboxProvider {
     return this.guard(async () => {
       const c = await this.load(id);
       const { short } = this.parseId(id);
+      // Port forwards end with the running sandbox (they point at its address, which changes).
+      await this.removeForwarders(id);
       try {
         await this.docker.getContainer(c.Id).stop({ t: this.opts.stopTimeoutSec ?? 5 });
       } catch (e) {
@@ -1998,7 +2033,8 @@ export class DockerProvider implements SandboxProvider {
         if (e instanceof AboxError) throw e;
         ignore(e);
       }
-      // Proxy sidecar and internal network.
+      // Port forwarders (they are attached to the internal network), then proxy sidecar and network.
+      await this.removeForwarders(id);
       await this.removeProxyInfrastructure(id, short);
       // Snapshot images.
       try {
@@ -2013,6 +2049,285 @@ export class DockerProvider implements SandboxProvider {
       } catch (e) {
         ignore(e);
       }
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Port forwards
+  // -------------------------------------------------------------------------
+
+  /**
+   * How a port of the sandbox reaches the host: a sidecar container (`runtime/forward.mjs`) on the
+   * sandbox's network that listens on `FORWARD_PORT` and pipes to `<sandbox ip>:<port>`, with that
+   * port published by the engine on `127.0.0.1` only. Why not publish the sandbox's own port: the
+   * ports of a container are fixed when it is created, and one that sits on an `internal` network
+   * (allowlist mode) cannot publish at all. Why not connect from this process to the container's
+   * address: the address of an internal network is not routable from the host, and it would tie the
+   * forward to the (short-lived) process.
+   *
+   * The sandbox gains nothing: it stays on its network with no route out. The sidecar is attached
+   * to that network (allowlist: the sandbox's internal network plus the shared `abox-egress`
+   * network for the published side; open: the shared `abox-open` network) and only ever connects
+   * to the one address it was started with. A sandbox with network mode `none` has no interface a
+   * container could reach; that is refused instead of weakening it.
+   */
+  private async forwarderContainers(id: SandboxId): Promise<Docker.ContainerInfo[]> {
+    const items = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`${LABEL.managed}=1`, `${LABEL.role}=forward`, `${LABEL.id}=${id}`] },
+    });
+    return items.filter((i) => this.ownsInstance(i.Labels));
+  }
+
+  private async removeForwarders(id: SandboxId): Promise<void> {
+    const items = await this.forwarderContainers(id);
+    await Promise.all(
+      items.map((i) =>
+        this.docker
+          .getContainer(i.Id)
+          .remove({ force: true, v: true })
+          .catch((e: unknown) => {
+            if (statusOf(e) !== 404 && statusOf(e) !== 409) throw e;
+          }),
+      ),
+    );
+  }
+
+  private forwardFromContainer(
+    labels: Record<string, string>,
+    hostPort: number,
+    log: string,
+  ): SandboxPortForward {
+    const st = parseForwardLog(log);
+    const sandboxPort = Number(labels[LABEL.fwdPort]);
+    return {
+      sandboxPort,
+      hostAddress: '127.0.0.1',
+      hostPort,
+      url: `http://127.0.0.1:${hostPort}/`,
+      createdAt: Number(labels[LABEL.fwdCreated]) || 0,
+      target: st.target,
+      connections: st.connections,
+      rejected: st.rejected,
+      failed: st.failed,
+    };
+  }
+
+  async addPortForward(id: SandboxId, req: PortForwardRequest): Promise<SandboxPortForward> {
+    return this.guard(async () => {
+      if (this.remote) {
+        throw new AboxError('unsupported', 'Port forwards are not available on remote hosts', {
+          hint: 'The forward would be published on the remote machine, not on this one.',
+        });
+      }
+      const { sandboxPort, hostPort } = req;
+      if (!Number.isInteger(sandboxPort) || sandboxPort < 1 || sandboxPort > 65535)
+        throw new AboxError('invalid_input', `Invalid sandbox port ${String(sandboxPort)}`);
+      if (
+        hostPort !== undefined &&
+        (!Number.isInteger(hostPort) || hostPort < 1024 || hostPort > 65535)
+      )
+        throw new AboxError(
+          'invalid_input',
+          `Invalid host port ${String(hostPort)} (use 1024..65535; privileged ports are never bound)`,
+        );
+      const c = await this.running(id);
+      const labels = c.Config.Labels ?? {};
+      const mode = labels[LABEL.networkMode] ?? 'none';
+      if (mode !== 'allowlist' && mode !== 'open') {
+        throw new AboxError(
+          'unsupported',
+          `Sandbox ${id} has network mode "${mode}": it has no network interface that a forward could reach`,
+          {
+            hint: 'Create the sandbox with network mode allowlist (with at least one destination) or open to preview servers.',
+          },
+        );
+      }
+      const { short } = this.parseId(id);
+      const sandboxNet = mode === 'allowlist' ? internalNetName(short) : OPEN_NETWORK;
+      const address = c.NetworkSettings?.Networks?.[sandboxNet]?.IPAddress;
+      if (!address) {
+        throw new AboxError(
+          'backend_error',
+          `Sandbox ${id} has no address on network ${sandboxNet}`,
+          {
+            hint: 'Restart the sandbox.',
+          },
+        );
+      }
+
+      const name = forwardName(short, sandboxPort);
+      try {
+        const old = await this.docker.getContainer(name).inspect();
+        const ol = old.Config.Labels ?? {};
+        if (ol[LABEL.managed] === '1' && ol[LABEL.id] === id && this.ownsInstance(ol)) {
+          if (old.State.Running)
+            throw new AboxError('conflict', `Port ${sandboxPort} of ${id} is already forwarded`);
+          await this.docker.getContainer(old.Id).remove({ force: true, v: true });
+        } else {
+          throw new AboxError(
+            'conflict',
+            `A container named ${name} exists that is not a port forward of ${id}`,
+          );
+        }
+      } catch (e) {
+        if (e instanceof AboxError) throw e;
+        if (statusOf(e) !== 404) throw e;
+      }
+
+      const image = await ensureForwardImage(this.docker);
+      const publishedOn = mode === 'allowlist' ? EGRESS_NETWORK : OPEN_NETWORK;
+      await this.ensureNetwork(publishedOn, 'network');
+      const created = Date.now();
+      const forwarder = await this.docker.createContainer({
+        name,
+        Image: image,
+        Labels: {
+          ...this.containerExtra,
+          [LABEL.managed]: '1',
+          [LABEL.role]: 'forward',
+          [LABEL.id]: id,
+          [LABEL.host]: this.host.host,
+          [LABEL.owner]: labels[LABEL.owner] ?? '',
+          [LABEL.backend]: this.kind,
+          [LABEL.fwdPort]: String(sandboxPort),
+          [LABEL.fwdCreated]: String(created),
+          [LABEL.expires]: String(req.expiresAt),
+        },
+        User: `${FORWARD_UID}:${FORWARD_UID}`,
+        Env: envArray({
+          FWD_TARGET_HOST: address,
+          FWD_TARGET_PORT: String(sandboxPort),
+          FWD_LISTEN_PORT: String(FORWARD_PORT),
+          FWD_EXPIRES: String(toEpochSeconds(req.expiresAt)),
+        }),
+        ExposedPorts: { [`${FORWARD_PORT}/tcp`]: {} },
+        HostConfig: {
+          NetworkMode: publishedOn,
+          // The one published port, on the loopback of this machine only.
+          PortBindings: {
+            [`${FORWARD_PORT}/tcp`]: [
+              { HostIp: '127.0.0.1', HostPort: hostPort !== undefined ? String(hostPort) : '' },
+            ],
+          },
+          PublishAllPorts: false,
+          Privileged: false,
+          CapDrop: ['ALL'],
+          SecurityOpt: ['no-new-privileges:true'],
+          ReadonlyRootfs: true,
+          Mounts: [{ Type: 'volume', Source: '', Target: FORWARD_CONFIG_DIR }],
+          Memory: 64 * MiB,
+          MemorySwap: 64 * MiB,
+          PidsLimit: 32,
+          NanoCpus: 0.25e9,
+          Init: true,
+          IpcMode: 'private',
+          RestartPolicy: { Name: 'no' },
+          ...(this.engine === 'docker'
+            ? { LogConfig: { Type: 'json-file', Config: { 'max-size': '64k', 'max-file': '1' } } }
+            : {}),
+        },
+      } as unknown as Docker.ContainerCreateOptions);
+      const fc = this.docker.getContainer(forwarder.id);
+      const undo = async (): Promise<void> => {
+        await fc.remove({ force: true, v: true }).catch(() => undefined);
+      };
+      try {
+        // Allowlist: also onto the sandbox's internal network (that is where the sandbox is).
+        if (mode === 'allowlist')
+          await this.docker.getNetwork(sandboxNet).connect({ Container: forwarder.id });
+        try {
+          await fc.start();
+        } catch (e) {
+          if (/already allocated|address already in use|Bind for/i.test(errText(e))) {
+            throw new AboxError(
+              'conflict',
+              `Host port ${hostPort ?? '(auto)'} on 127.0.0.1 is already in use`,
+              { hint: 'Pick another --host-port, or leave it out to get a free one.', cause: e },
+            );
+          }
+          throw e;
+        }
+        // wait for the forwarder to listen and probe its target
+        const deadline = Date.now() + 20_000;
+        let log = '';
+        for (;;) {
+          log = await this.readLogs(forwarder.id);
+          if (parseForwardLog(log).ready) break;
+          const st = await fc.inspect();
+          if (!st.State.Running)
+            throw new AboxError(
+              'backend_error',
+              'The port forwarder stopped right after it started',
+              {
+                details: { log: log.slice(-500) },
+              },
+            );
+          if (Date.now() > deadline)
+            throw new AboxError('timeout', 'The port forwarder did not become ready in time');
+          await sleep(100);
+        }
+        const inspected = await fc.inspect();
+        const bound = (inspected.NetworkSettings?.Ports?.[`${FORWARD_PORT}/tcp`] ?? []).filter(
+          (b) => b.HostPort,
+        );
+        const publishedOk =
+          bound.length === 1 && bound[0]?.HostIp === '127.0.0.1' && Number(bound[0]?.HostPort) > 0;
+        if (!publishedOk) {
+          // Defence in depth: never leave a forward that is bound anywhere but the loopback.
+          throw new AboxError(
+            'backend_error',
+            `The engine did not publish the forward on 127.0.0.1 only (${JSON.stringify(bound)})`,
+          );
+        }
+        return this.forwardFromContainer(
+          inspected.Config.Labels ?? {},
+          Number(bound[0]?.HostPort),
+          log,
+        );
+      } catch (e) {
+        await undo();
+        throw e;
+      }
+    });
+  }
+
+  async listPortForwards(id: SandboxId): Promise<SandboxPortForward[]> {
+    return this.guard(async () => {
+      await this.load(id);
+      const items = (await this.forwarderContainers(id)).filter((i) => i.State === 'running');
+      const out: SandboxPortForward[] = [];
+      for (const i of items) {
+        const bound = (i.Ports ?? []).find((p) => p.PrivatePort === FORWARD_PORT && p.PublicPort);
+        if (!bound?.PublicPort) continue;
+        const log = await this.readLogs(i.Id, { tail: 40 }).catch(() => '');
+        out.push(this.forwardFromContainer(i.Labels ?? {}, bound.PublicPort, log));
+      }
+      return out.sort((a, b) => a.sandboxPort - b.sandboxPort);
+    });
+  }
+
+  async removePortForward(
+    id: SandboxId,
+    sandboxPort: number,
+  ): Promise<SandboxPortForward | undefined> {
+    return this.guard(async () => {
+      await this.load(id);
+      const item = (await this.forwarderContainers(id)).find(
+        (i) => i.Labels?.[LABEL.fwdPort] === String(sandboxPort),
+      );
+      if (!item) return undefined;
+      const bound = (item.Ports ?? []).find((p) => p.PrivatePort === FORWARD_PORT && p.PublicPort);
+      // SIGTERM first: the forwarder prints its final counts before it ends
+      await this.stopContainer(item.Id, 2).catch(() => undefined);
+      const log = await this.readLogs(item.Id, { tail: 40 }).catch(() => '');
+      await this.docker
+        .getContainer(item.Id)
+        .remove({ force: true, v: true })
+        .catch((e: unknown) => {
+          if (statusOf(e) !== 404) throw e;
+        });
+      return this.forwardFromContainer(item.Labels ?? {}, bound?.PublicPort ?? 0, log);
     });
   }
 
