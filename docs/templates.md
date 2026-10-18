@@ -19,6 +19,7 @@ can never grant itself more than the policy allows.
 - [Validation](#validation)
 - [Where templates live](#where-templates-live-and-which-one-wins)
 - [Project templates and trust](#project-templates-and-trust)
+- [Built-in templates](#built-in-templates)
 - [Examples](#examples)
 
 ## A first template
@@ -335,26 +336,31 @@ the upstream publishes one, verify the download against a SHA-256 checksum. Thes
 from the same HTTPS origin as the artifact: that protects against corruption and mirror problems,
 not against a compromised upstream.
 
-| Preset             | Version                                       | What you get                                                                                                                                                                                      |
-| ------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node@<v>`         | required: `24` or `24.11.0`                   | Node.js and npm from the official tarball (Alpine: musl builds from `unofficial-builds.nodejs.org`)                                                                                               |
-| `pnpm[@<v>]`       | optional                                      | pnpm via npm (needs `node`)                                                                                                                                                                       |
-| `python@<v>`       | required: `3.13` or `3.13.1`                  | CPython (python-build-standalone, installed by uv) plus uv (pinned version, SHA-256 verified); `python` and `python3` in `/usr/local/bin`                                                         |
-| `rust[@<v>]`       | optional: `stable`, `beta`, `nightly`, `1.82` | rustup, minimal profile, system-wide in `/opt/rust`, with a linker (`gcc`)                                                                                                                        |
-| `go@<v>`           | required: `1.24` or `1.24.5`                  | the official Go tarball, checksum from go.dev                                                                                                                                                     |
-| `java@<v>`         | required: major, e.g. `21`                    | OpenJDK headless from the distribution (which majors exist depends on the base image)                                                                                                             |
-| `git`              | none                                          | git and CA certificates from the distribution                                                                                                                                                     |
-| `gh`               | none                                          | GitHub CLI from the distribution (version depends on the base)                                                                                                                                    |
-| `playwright[@<v>]` | optional: `1.50.0`                            | Playwright with Chromium and system dependencies in `/opt/ms-playwright`; Debian/Ubuntu only; needs `node`                                                                                        |
-| `docker-cli`       | none                                          | the Docker **client** only. No daemon, no socket: the sandbox cannot reach any engine. Debian/Ubuntu: from Docker's apt repository (signing key fingerprint pinned); Alpine: `docker-cli` package |
+| Preset             | Version                                       | What you get                                                                                                                                                                                                                                                                                        |
+| ------------------ | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node@<v>`         | required: `24` or `24.11.0`                   | Node.js and npm from the official tarball (Alpine: musl builds from `unofficial-builds.nodejs.org`)                                                                                                                                                                                                 |
+| `pnpm[@<v>]`       | optional                                      | pnpm via npm (needs `node`)                                                                                                                                                                                                                                                                         |
+| `python@<v>`       | required: `3.13` or `3.13.1`                  | CPython (python-build-standalone, installed by uv) plus uv (pinned version, SHA-256 verified); `python` and `python3` in `/usr/local/bin`                                                                                                                                                           |
+| `rust[@<v>]`       | optional: `stable`, `beta`, `nightly`, `1.82` | rustup, minimal profile, system-wide in `/opt/rust`, with a linker (`gcc`); `cargo`, `rustc`, `rustfmt`, `cargo-clippy` and friends are on the `PATH` (add the components with `rustup component add clippy rustfmt` in `setup:`)                                                                   |
+| `go@<v>`           | required: `1.24` or `1.24.5`                  | the official Go tarball, checksum from go.dev                                                                                                                                                                                                                                                       |
+| `java@<v>`         | required: major, e.g. `21`                    | OpenJDK headless from the distribution (which majors exist depends on the base image)                                                                                                                                                                                                               |
+| `flutter@<v>`      | required: `3.47` or `3.47.7`                  | the Flutter SDK (stable channel) with its Dart SDK in `/opt/flutter`, `flutter` and `dart` in `/usr/local/bin`. Debian/Ubuntu on x86_64 only; the archive checksum comes from Flutter's release manifest. The Android engine artifacts are removed (about 850 MB), the Linux and web artifacts stay |
+| `composer@<v>`     | required: a full version, `2.10.3`            | Composer as `composer.phar` in `/usr/local/bin`, checksum from getcomposer.org; needs `php` (apt `php-cli`); Debian/Ubuntu only                                                                                                                                                                     |
+| `stylua@<v>`       | required: `2.6.0` or `2.5.0`                  | the StyLua release binary. Upstream publishes no checksum file, so the SHA-256 of each supported release is pinned in abox                                                                                                                                                                          |
+| `git`              | none                                          | git and CA certificates from the distribution                                                                                                                                                                                                                                                       |
+| `gh`               | none                                          | GitHub CLI from the distribution (version depends on the base)                                                                                                                                                                                                                                      |
+| `playwright[@<v>]` | optional: `1.50.0`                            | Playwright with Chromium and system dependencies in `/opt/ms-playwright`; Debian/Ubuntu only; needs `node`                                                                                                                                                                                          |
+| `docker-cli`       | none                                          | the Docker **client** only. No daemon, no socket: the sandbox cannot reach any engine. Debian/Ubuntu: from Docker's apt repository (signing key fingerprint pinned); Alpine: `docker-cli` package                                                                                                   |
 
 Presets exist for the OS families **Debian/Ubuntu** and **Alpine** only. Using one on Fedora, Arch
 or an unknown base fails with a clear message; install tools yourself with `setup:` there.
 `pnpm`, `playwright` and `pip`/`npm` packages pull from their registries at build time.
 
 What is verified: the preset scripts are exercised by `packages/core/src/template/build.docker.test.ts`
-(a basic Debian check always, the full matrix with `ABOX_TEST_DOCKER_FULL=1`). On the machine used
-for the release-candidate documentation the matrix result was:
+(a basic Debian check always, the full matrix with `ABOX_TEST_DOCKER_FULL=1`). The `flutter`,
+`composer` and `stylua` presets are verified by building the templates that use them (`flutter-dev`
+only with `ABOX_TEST_HEAVY_TEMPLATES=1`, see [Built-in templates](#built-in-templates)). On the
+machine used for the release-candidate documentation the matrix result was:
 
 | Preset / base                                                                            | Result                              |
 | ---------------------------------------------------------------------------------------- | ----------------------------------- |
@@ -386,9 +392,27 @@ reports "not available in this Alpine release" for _any_ `apk` failure, which ca
 | `alpine`     | `dl-cdn.alpinelinux.org`                                                                                            |
 | `crates`     | `crates.io`, `index.crates.io`, `static.crates.io`                                                                  |
 | `go`         | `proxy.golang.org`, `sum.golang.org`                                                                                |
+| `pub`        | `pub.dev`                                                                                                           |
+| `packagist`  | `packagist.org`, `repo.packagist.org`                                                                               |
 
 Presets are expanded into plain domains when the template is resolved; `abox template show <name>`
 prints the resulting list. Unknown preset names are an error.
+
+The `pub` and `packagist` presets were measured, not guessed: the destinations are what `flutter
+create`, `pub get`, `flutter pub add`, `flutter analyze`/`test` and `flutter build web`/`linux`
+(`pub`) and `composer require` (`packagist`) actually contacted through the egress proxy in a
+sandbox, according to `abox audit --action network.egress`.
+
+- **`pub`** is `pub.dev` only. Package archives are served by pub.dev itself, and a `pubspec.lock`
+  that still names `pub.dartlang.org` is read as `pub.dev`. Git dependencies need `github`.
+  `storage.googleapis.com` is deliberately not in the preset: it is only contacted by
+  `flutter precache` for platforms that are not in the image, by Android builds and by `flutter
+doctor`'s network check, and it is one shared host for every public Google Cloud Storage bucket.
+  The Flutter tool also probes the cloud metadata address `169.254.169.254` once on its first
+  run; the proxy denies it, which is harmless.
+- **`packagist`** is `packagist.org` (security advisories) and `repo.packagist.org` (package
+  metadata). Composer downloads most packages as zip archives from GitHub (`api.github.com`,
+  redirected to `codeload.github.com`), so PHP templates also use `github`.
 
 ## Choosing the operating system
 
@@ -537,6 +561,86 @@ ask for mounts, network and secrets. So abox treats it like `direnv allow` does:
   line), and the review starts with the line "shadows the built-in template ...".
 
 `abox init` creates an example project template to start from.
+
+## Built-in templates
+
+`abox template ls` lists them; each is a plain YAML file in `packages/core/templates/` that you
+can copy, or extend as in [Customising a built-in template](#customising-a-built-in-template).
+The sizes and build times given below were measured for the newer stack templates on one machine
+with a fast connection; a build downloads the toolchains once and is cached afterwards.
+
+| Template      | Use it for                                                               | Network             |
+| ------------- | ------------------------------------------------------------------------ | ------------------- |
+| `alpine-min`  | tiny throwaway shell tasks and tests                                     | none                |
+| `host-shell`  | last resort, **no isolation** (process backend)                          | open                |
+| `node-dev`    | JavaScript/TypeScript: Node.js 24 LTS, pnpm 10 (and Corepack), npm, Vite | npm, github         |
+| `py-dev`      | Python 3.13 with uv, `pyproject.toml` projects, pytest, ruff             | pypi, github        |
+| `py-offline`  | numpy/pandas evaluation scripts                                          | none                |
+| `py-uv`       | pure-Python code and uv environments (python backend)                    | pypi                |
+| `rust-dev`    | Rust crates (stable)                                                     | crates, github      |
+| `flutter-dev` | Flutter and Dart: analyze, test, format, web and Linux builds            | pub, github         |
+| `tauri-dev`   | Tauri 2 apps: cargo check/build/test/clippy, pnpm and Vite               | crates, npm, github |
+| `php-dev`     | plain PHP websites and libraries: Composer, PHPUnit, `php -S`            | packagist, github   |
+| `shell-dev`   | linting and formatting bash, fish and Lua scripts and configs            | none                |
+
+Agents only see and may only use the templates their policy lists; the built-in policy allows every
+built-in template except `host-shell` (isolation `none`), with the `npm`, `pypi`, `crates`, `pub`,
+`packagist` and `github` presets. A `policy.yaml` of your own replaces that list (`abox policy edit`).
+
+### Flutter and Dart: `flutter-dev`
+
+About 3 GB installed (1.3 GB compressed), 5 minutes to build. Flutter 3.47.7 (stable, Dart 3.13.5) from the official Linux archive, whose SHA-256 is read from
+Flutter's release manifest and checked before unpacking. On top of it: git, and the Linux desktop
+build chain from Flutter's documentation (clang, cmake, ninja, pkg-config, GTK 3, liblzma).
+
+- **Works**: `flutter create`, `flutter pub get/add`, `flutter analyze`, `flutter test`,
+  `dart format`, `flutter build web` and `flutter build linux`. The Linux and web
+  engine artifacts are part of the image, so after the packages are fetched none of these needs
+  the network; with the network `none` they work too for a project whose packages are in the
+  image's pub cache.
+- **Pub cache**: `PUB_CACHE` is `/opt/pub-cache` and already holds the packages of Flutter's
+  default app template (`cupertino_icons`, `flutter_lints`, and what `flutter_test` pulls in).
+  `flutter create --offline` plus `flutter pub get --offline` therefore work without network. Other
+  packages are downloaded from pub.dev as usual.
+- **Not included**: the Android SDK and emulator, Chrome and a display. Android builds are out
+  of scope: the SDK alone is several GB and needs `dl.google.com` and `maven.google.com`. If you
+  need them, extend the template with your own `setup:` steps and `network.allow` entries and
+  expect an image of 10 GB or more. `flutter run`, integration tests on a device and
+  `flutter doctor` (which complains about Android and Chrome) are not meaningful here.
+- **Architecture**: x86_64 only; Flutter publishes no Linux arm64 SDK archive.
+- The SDK directory is writable for the sandbox user because the Flutter tool writes lock files
+  and caches into it; git is told to trust it (`safe.directory`).
+
+### Tauri: `tauri-dev`
+
+About 2 GB installed, 3 minutes to build. Rust stable (with `clippy` and `rustfmt`), Node.js 24 with pnpm 10, git and the system libraries a
+Tauri 2 app links against on Ubuntu 24.04: `libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`,
+`librsvg2-dev`, `libayatana-appindicator3-dev`, `libxdo-dev`, `libssl-dev`, `build-essential`,
+`pkg-config`.
+
+- **Works**: `pnpm create tauri-app`, `pnpm install`, `pnpm build` (Vite), `cargo check`, `cargo
+build`, `cargo test`, `cargo clippy`, `cargo fmt --check` and `pnpm tauri build --debug
+--no-bundle`. A first `cargo check` of the default Tauri app takes about a minute.
+- **Not included**: a display. The app window cannot be opened (the binary stops with "Failed to
+  initialize GTK"), so `tauri dev`, WebDriver and end-to-end tests are out of scope. `tauri build`
+  with bundles (AppImage, deb) is not verified; AppImage bundling downloads tools from GitHub.
+- `tauri.conf.json` points `frontendDist` at a directory that must exist for `cargo check`; run
+  the frontend build once (`pnpm build`) or create the directory.
+
+### PHP: `php-dev`
+
+About 250 MB installed, 1 minute to build. PHP 8.3 (CLI, from Ubuntu 24.04) with `mbstring`, `xml`/`dom`, `curl`, `zip`, `sqlite3`/`pdo_sqlite`
+and `intl`, Composer 2.10.3 (checksum verified) and git. The built-in server works inside the
+sandbox: start it as a background process (`php -S 127.0.0.1:8000 -t public`) and reach it from
+another command in the same sandbox, for example with `curl`. The port is not published to the
+host. There is no web server, database server or Xdebug; use SQLite or the SQLite PDO driver.
+
+### Shell and Lua: `shell-dev`
+
+About 300 MB installed, 1 minute to build. No network at all. bash, fish, ShellCheck, shfmt, Lua 5.4, luacheck, StyLua 2.6.0, jq and git.
+`lua` is Lua 5.4; luacheck itself runs on the Lua 5.1 that its package pulls in, use
+`luacheck --std lua54` to check for 5.4. QML tools (`qmllint`, `qmlformat`) and a Lua language
+server are not included: the Qt packages would multiply the image size.
 
 ## Examples
 

@@ -1,0 +1,37 @@
+apiVersion: 1
+name: php-dev
+description: >-
+  PHP 8.3 (CLI) with mbstring, xml, curl, zip, sqlite3 and intl, Composer 2.10 and git on Ubuntu
+  24.04. Use it for plain PHP websites and libraries: composer install/require, php -l, PHPUnit,
+  and the built-in web server (php -S 127.0.0.1:8000, reachable from inside the sandbox only).
+  Network is limited to Packagist and GitHub. The image is about 250 MB.
+backend: docker
+isolation: container
+
+base:
+  os: ubuntu:24.04
+
+packages:
+  apt: [php-cli, php-mbstring, php-xml, php-curl, php-zip, php-sqlite3, php-intl]
+
+tools:
+  - composer@2.10.3
+  - git
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 2
+  memory: 2g
+  pids: 256
+  ttl: 2h
+
+network:
+  mode: allowlist
+  presets: [packagist, github]
+
+labels:
+  use-for: PHP websites and libraries (PHP 8.3, Composer, built-in server; Packagist and GitHub reachable)

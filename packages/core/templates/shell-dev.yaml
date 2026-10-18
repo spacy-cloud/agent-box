@@ -1,0 +1,40 @@
+apiVersion: 1
+name: shell-dev
+description: >-
+  Linting and formatting for shell and Lua configuration on Ubuntu 24.04 without network access:
+  bash, fish, ShellCheck, shfmt, Lua 5.4, luacheck, StyLua, jq and git. Use it to check scripts
+  and desktop-shell or editor configs in the workspace; nothing can be downloaded at run time.
+  QML tooling and a Lua language server are not included. The image is about 300 MB.
+backend: docker
+isolation: container
+
+base:
+  os: ubuntu:24.04
+
+packages:
+  apt: [bash, fish, shellcheck, shfmt, lua5.4, lua-check, jq]
+
+tools:
+  - stylua@2.6.0
+  - git
+
+# luacheck pulls in Lua 5.1 and wins the `lua` alternative; scripts should run on 5.4.
+setup:
+  - run: update-alternatives --set lua-interpreter /usr/bin/lua5.4 && update-alternatives --set lua-compiler /usr/bin/luac5.4
+
+workspace:
+  mode: copy
+  path: /workspace
+  access: rw
+
+resources:
+  cpus: 2
+  memory: 2g
+  pids: 256
+  ttl: 1h
+
+network:
+  mode: none
+
+labels:
+  use-for: Shell (bash, fish) and Lua scripts and configs, lint and format without network access

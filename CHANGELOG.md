@@ -10,6 +10,18 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Built-in templates for more stacks: `flutter-dev` (Flutter 3.47 and Dart 3.13 with the Linux
+  desktop build chain: analyze, test, format, web and Linux builds, the packages of a new app
+  baked into the pub cache; no Android), `tauri-dev` (Rust, Node.js 24, pnpm and the Tauri 2
+  system libraries; no display), `php-dev` (PHP 8.3 with common extensions, Composer 2.10, the
+  built-in server) and `shell-dev` (bash, fish, ShellCheck, shfmt, Lua 5.4, luacheck, StyLua, jq;
+  no network).
+- Tool presets `flutter@<version>` (archive checksum from Flutter's release manifest, x86_64
+  Debian/Ubuntu only), `composer@<version>` (checksum from getcomposer.org) and `stylua@<version>`
+  (SHA-256 pinned in abox); network presets `pub` (`pub.dev`) and `packagist` (`packagist.org`,
+  `repo.packagist.org`). The destinations were measured with the egress audit.
+- `ABOX_TEST_HEAVY_TEMPLATES=1` enables the build of `flutter-dev` (about 5 minutes, 3-4 GB) in
+  the Docker template tests; the other new templates are built with `ABOX_TEST_DOCKER=1`.
 - Remote hosts: a hardened runtime is configured per host (`runtimes: { docker: runsc }` in
   hosts.yaml, `abox host add --runtime docker=runsc`) and checked against the remote engine, so
   `shared` and `restricted` hosts can be used; `abox host test` shows rootless mode and runtimes.
@@ -113,6 +125,9 @@ release. Nothing has been released yet.
 
 ### Changed
 
+- The built-in default policy lets agents use every built-in template except `host-shell`
+  (adds `py-uv`, `rust-dev`, `tauri-dev`, `flutter-dev`, `php-dev`, `shell-dev`) and the registry
+  presets `crates`, `pub` and `packagist`; limits and approval mode are unchanged.
 - `abox doctor` and the GUI diagnostics tell apart four severities: `ok`, `info`, `warning` and
   failed. A backend that works is `ok` even with advisory notes (rootful engine, no disk quota,
   `process`/venv mode without isolation, VM `open` network mode), which are listed as `info` notes
@@ -262,6 +277,10 @@ into the sandbox …` lines through `onProgress` (stderr of `abox create`; the G
 
 ### Fixed
 
+- The `rust` tool preset links the rustup proxies of `rustfmt`, `cargo-fmt`, `cargo-clippy` and
+  `clippy-driver` into `/usr/local/bin`, so `cargo clippy` and `cargo fmt` work after
+  `rustup component add clippy rustfmt` in a `setup:` step (they failed with "no such command").
+  The environment images of templates with the `rust` tool are rebuilt once.
 - GUI diagnostics: the lines behind a "Details" disclosure (for example of an optional backend that
   is not running) use the full width instead of wrapping after every few characters.
 - **Copying a huge folder no longer fails minutes later with the wrong message.** The create used to
