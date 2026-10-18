@@ -121,7 +121,7 @@ export function WorkspaceEstimateNote(props: {
   if (!e.applicable) return null;
   const size = `${e.truncated ? '≥ ' : '≈ '}${fmtSize(e.bytes, locale)}`;
   const files = fmtCount(e.files, locale);
-  const summary = t('new.estimate.summary', { size, files });
+  const summary = t('new.estimate.summary', { size, files, count: e.files });
   // what .gitignore left out, as the second line of the note
   const left = e.ignoredTotals;
   const leftOut =
@@ -130,6 +130,7 @@ export function WorkspaceEstimateNote(props: {
         {t('new.estimate.leftOut', {
           size: `${left.partial ? '≥ ' : ''}${fmtSize(left.bytes, locale)}`,
           files: fmtCount(left.files, locale),
+          count: left.files,
         })}
       </p>
     ) : null;
@@ -172,7 +173,9 @@ export function WorkspaceEstimateNote(props: {
   }
   return (
     <Banner tone="info">
-      <strong data-testid="estimate-ok">{t('new.estimate.willCopy', { size, files })}</strong>
+      <strong data-testid="estimate-ok">
+        {t('new.estimate.willCopy', { size, files, count: e.files })}
+      </strong>
       {leftOut}
     </Banner>
   );

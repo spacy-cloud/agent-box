@@ -308,17 +308,60 @@ label.inline {
 .form-grid .wide-col {
   grid-column: 1 / -1;
 }
-.workspace-row {
+/* New sandbox, Options step: titled sections; controls of one row share the top edge (labels are one line, hints sit below) */
+.options {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.9rem 1.25rem;
-  align-items: flex-end;
+  flex-direction: column;
+  gap: 1rem;
 }
-.workspace-row > .field {
-  flex: 1 1 14rem;
+.opt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
 }
-.workspace-row > .field:last-child:not(:first-child) {
-  flex: 3 1 20rem;
+.opt-section > h3 {
+  margin: 0.25rem 0 0;
+}
+.opt-section > .banner {
+  margin: 0;
+}
+.opt-hint {
+  margin: -0.45rem 0 0;
+}
+.opt-row {
+  display: grid;
+  gap: 0.7rem 1rem;
+  align-items: start;
+}
+.opt-row-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.opt-row-workspace {
+  grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
+}
+.opt-row-workspace.no-path {
+  grid-template-columns: minmax(0, 13rem);
+}
+.opt-row-resources {
+  grid-template-columns: minmax(0, 4.5rem) minmax(0, 7rem) minmax(0, 6rem) minmax(0, 1fr);
+}
+.opt-row .field > :is(input, select),
+.opt-section > .field > input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.opt-check small {
+  padding-left: 1.55rem;
+}
+@media (max-width: 640px) {
+  .opt-row-2,
+  .opt-row-workspace,
+  .opt-row-resources {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .opt-row-workspace > .field:nth-child(2) {
+    grid-column: 1 / -1;
+  }
 }
 .with-button {
   display: flex;
@@ -595,7 +638,7 @@ dialog.modal {
   overflow: auto;
 }
 dialog.modal.wide {
-  width: min(920px, 94vw);
+  width: min(720px, 94vw);
 }
 dialog.modal::backdrop {
   background: rgb(0 0 0 / 0.5);

@@ -55,7 +55,14 @@ interface Rig {
 }
 
 /** A bridge with a controllable event channel and a create call that stays open until released. */
-function rig(opts: { estimate: () => WorkspaceEstimate; failEstimate?: boolean }): Rig {
+function rig(opts: {
+  estimate: () => WorkspaceEstimate;
+  failEstimate?: boolean;
+  /** Fields merged into the resolved template `templates:show` returns. */
+  template?: Record<string, unknown>;
+  /** A policy profile for `policy:get` (default: none). */
+  profile?: unknown;
+}): Rig {
   const calls: Rig['calls'] = [];
   const listeners = new Set<(p: ProgressEvent) => void>();
   let settle: { resolve(v: unknown): void; reject(e: Error): void } | undefined;
@@ -67,14 +74,19 @@ function rig(opts: { estimate: () => WorkspaceEstimate; failEstimate?: boolean }
         case 'templates:list':
           return { templates: [TEMPLATE], problems: [] };
         case 'policy:get':
-          return { view: { profile: null }, text: '', source: 'default', path: null };
+          return {
+            view: { profile: opts.profile ?? null },
+            text: '',
+            source: 'default',
+            path: null,
+          };
         case 'hosts:list':
           return [];
         case 'projects:recent':
           return [];
         case 'templates:show':
           return {
-            template: { workspace: { mode: 'copy', path: '/workspace' } },
+            template: { workspace: { mode: 'copy', path: '/workspace' }, ...opts.template },
             warnings: [],
             effectiveLimits: { exceedsProfile: [] },
           };
@@ -357,6 +369,98 @@ describe('New sandbox: respecting .gitignore', () => {
       path: '/work/proj',
       gitignore: false,
     });
+  });
+});
+
+describe('New sandbox: options layout and template defaults', () => {
+  const PROFILE = {
+    name: 'human',
+    limits: { cpus: 64, memory: '512g', ttl: '30d' },
+    workspace: { modes: ['copy', 'mount', 'empty'] },
+    network: { modes: ['none', 'allowlist', 'open'], allow_presets: [] },
+  };
+  const RESOLVED = {
+    resources: { cpus: 4, memoryBytes: 6 * GIB, ttlMs: 2 * 3_600_000 },
+    network: { mode: 'allowlist', allow: ['pub.dev', 'github.com'] },
+  };
+
+  it('shows what the template resolves to as placeholders of the empty resource fields', async () => {
+    const r = rig({ estimate: () => estimate({}), template: RESOLVED });
+    mount();
+    await toOptions();
+    await waitFor(() =>
+      expect(screen.getByLabelText('CPUs').getAttribute('placeholder')).toBe('4'),
+    );
+    expect(screen.getByLabelText('Memory').getAttribute('placeholder')).toBe('6g');
+    expect(screen.getByLabelText('Time to live').getAttribute('placeholder')).toBe('2h');
+    const first = within(screen.getByLabelText('Network mode')).getAllByRole('option')[0];
+    expect(first?.textContent).toBe('Template default (Allowlist: pub.dev, github.com)');
+    // placeholders are not values: nothing is sent for empty fields
+    expect((screen.getByLabelText('CPUs') as HTMLInputElement).value).toBe('');
+    expect(r.calls.some((c) => c.channel === 'templates:show')).toBe(true);
+  });
+
+  it('leaves the placeholders empty while the template is unknown and keeps typed values', async () => {
+    rig({ estimate: () => estimate({}) });
+    mount();
+    await toOptions();
+    expect(screen.getByLabelText('CPUs').getAttribute('placeholder')).toBeFalsy();
+    fireEvent.change(screen.getByLabelText('Memory'), { target: { value: '8g' } });
+    expect((screen.getByLabelText('Memory') as HTMLInputElement).value).toBe('8g');
+    expect(
+      within(screen.getByLabelText('Network mode')).getAllByRole('option')[0]?.textContent,
+    ).toBe('Template default');
+  });
+
+  it('groups the fields in two titled sections and puts the profile limits under the resources title', async () => {
+    rig({ estimate: () => estimate({}), template: RESOLVED, profile: PROFILE });
+    mount();
+    await toOptions();
+    const workspace = screen.getByRole('region', { name: 'Workspace' });
+    const resources = screen.getByRole('region', { name: 'Resources and network' });
+    expect(within(workspace).getByLabelText('Workspace mode')).toBeTruthy();
+    expect(within(workspace).getByLabelText('Project directory')).toBeTruthy();
+    expect(within(workspace).getByLabelText('Also exclude')).toBeTruthy();
+    expect(within(resources).getByLabelText('CPUs')).toBeTruthy();
+    expect(within(resources).getByLabelText('Network mode')).toBeTruthy();
+    // name and host stay above the sections
+    expect(workspace.contains(screen.getByLabelText('Name (optional)'))).toBe(false);
+    expect(workspace.contains(screen.getByLabelText('Host'))).toBe(false);
+    expect(
+      within(resources).getByText('At most 64 CPUs, 512g RAM, 30d (profile "human")'),
+    ).toBeTruthy();
+    expect(screen.queryByText(/The manager checks further limits/)).toBeNull();
+    // one short line for the exclude patterns and for the host
+    expect(
+      within(workspace).getByText('Patterns like .gitignore, e.g. node_modules *.log'),
+    ).toBeTruthy();
+    expect(screen.getByText('Where the sandbox runs.')).toBeTruthy();
+  });
+
+  it('keeps the keyboard order of the visual order', async () => {
+    rig({ estimate: () => estimate({}), template: RESOLVED, profile: PROFILE });
+    mount();
+    await toOptions();
+    const labels = [
+      'Name (optional)',
+      'Host',
+      'Workspace mode',
+      'Project directory',
+      'Also exclude',
+      'CPUs',
+      'Memory',
+      'Time to live',
+      'Network mode',
+    ];
+    const els = labels.map((l) => screen.getByLabelText(l));
+    for (let i = 1; i < els.length; i++) {
+      const before = els[i - 1] as HTMLElement;
+      const after = els[i] as HTMLElement;
+      expect(
+        before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `${labels[i - 1]} before ${labels[i]}`,
+      ).toBeTruthy();
+    }
   });
 });
 

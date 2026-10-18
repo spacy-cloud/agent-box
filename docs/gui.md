@@ -108,10 +108,15 @@ a project template. Looking at a review never trusts anything.
 
 ## New sandbox: big folders
 
-In the **Options** step the workspace mode, the project folder and **Choose …** share one row. For
-a `copy`/`sync` workspace the checkbox **Respect .gitignore** follows (ticked unless the template
-says otherwise; "Ignored files (e.g. build/, .dart_tool/) are not copied"), then **Also exclude**
-(patterns like `*.log coverage`, applied on top of `.gitignore`), then the size note. The folder is
+The **Options** step has **Name** and **Host** on top (one row), then two titled sections. **Workspace**
+holds the mode, the project folder and **Choose …** in one row, and, for a `copy`/`sync` workspace,
+the checkbox **Respect .gitignore** (ticked unless the template says otherwise; "Ignored files (e.g.
+build/, .dart_tool/) are not copied"), then **Also exclude** (patterns like `*.log coverage`, applied
+on top of `.gitignore`; as wide as the section), then the size note. **Resources and network** holds
+CPUs, memory, lifetime and network mode in one row, with the limits of your profile as a short hint
+under the title ("At most 64 CPUs, 512g RAM, 30d (profile "human")"). Empty fields use the template's
+values, which are shown as placeholders (e.g. `4`, `6g`, `2h`; the first network option reads "Template
+default (Allowlist: pub.dev, github.com)"). The folder is
 measured as soon as you have chosen or typed it (a fast read-only scan, no file content is read; it
 is cancelled and restarted when you change the folder, the checkbox or the patterns). The note is an
 info banner: "≈ 38 MiB, 1,240 files will be copied" in bold and, when `.gitignore` left something

@@ -13,6 +13,34 @@ export function formatDuration(ms: number): string {
   return `${s}s`;
 }
 
+/** A byte count in the template syntax the memory field accepts (`6g`, `512m`): the largest unit that divides it exactly. */
+export function formatSizeSpec(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  for (const [unit, size] of [
+    ['t', 1024 ** 4],
+    ['g', 1024 ** 3],
+    ['m', 1024 ** 2],
+    ['k', 1024],
+  ] as const) {
+    if (bytes >= size && bytes % size === 0) return `${bytes / size}${unit}`;
+  }
+  return String(bytes);
+}
+
+/** A duration in the syntax the lifetime field accepts (`2h`, `30m`, `1d`): the largest unit that divides it exactly. */
+export function formatDurationSpec(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  for (const [unit, size] of [
+    ['d', 86_400_000],
+    ['h', 3_600_000],
+    ['m', 60_000],
+    ['s', 1000],
+  ] as const) {
+    if (ms >= size && ms % size === 0) return `${ms / size}${unit}`;
+  }
+  return `${ms}ms`;
+}
+
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return '-';
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
