@@ -152,6 +152,8 @@ export` leaves out ignored paths the sandbox created (`stats.ignored`).
 
 ### Changed
 
+- GUI: dialogs keep their title and buttons in place; only the content between them scrolls (e.g. the
+  long template list in New sandbox).
 - The built-in default policy lets agents use every built-in template except `host-shell`
   (adds `py-uv`, `rust-dev`, `tauri-dev`, `flutter-dev`, `php-dev`, `shell-dev`) and the registry
   presets `crates`, `pub` and `packagist`; limits and approval mode are unchanged.
