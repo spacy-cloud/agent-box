@@ -1983,12 +1983,16 @@ describe.skipIf(!DOCKER)('security: hardening checks (real Docker through the ma
       c.created.splice(c.created.indexOf(first.sandbox.id), 1);
     }, 120_000);
 
-    it('agents have no way to read or change host profiles through the manager', () => {
-      // The Abox facade exposes no host-profile operation at all (HostRegistry is CLI/GUI only, see core/src/hosts/README.md).
+    it('agents have no way to read or change host profiles through the manager', async () => {
+      // The Abox facade exposes no host-profile operation (HostRegistry is CLI/GUI only, see
+      // core/src/hosts/README.md). The one host-related method is the human-only, read-only
+      // capacity report, and an agent calling it is refused.
       const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(c.abox)).filter((m) =>
         /host|ssh|tunnel/i.test(m),
       );
-      expect(methods).toEqual([]);
+      expect(methods).toEqual(['hostCapacity']);
+      const err = (await c.abox.hostCapacity(HA, 'local').catch((e: unknown) => e)) as AboxError;
+      expect(err.code).toBe('policy_denied');
     });
   });
 });
