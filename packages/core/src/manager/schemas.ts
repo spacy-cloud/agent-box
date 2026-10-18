@@ -54,6 +54,7 @@ export const createRequestSchema = z.strictObject({
     .optional(),
   requestId: z.string().regex(REQUEST_ID_RE, 'use letters, digits . _ : @ - (max 128)').optional(),
   projectDir: hostPathStr.optional(),
+  cache: z.boolean().optional(),
 });
 
 export const workspaceEstimateSchema = z.strictObject({

@@ -39,7 +39,7 @@ it).
 | **Approvals**      | the queue of requests from agents, see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **Audit**          | the audit log with filters (time, actor, sandbox, action, decision), verification of the hash chain and export as JSON Lines.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **Policy**         | the profiles and agent contexts in force as cards (isolation `none` in red), an editor with a **form** for profiles and limits next to the **YAML** text, live validation by the manager, a diff and a confirmation before saving, and the revision history. See [The Policy view](#the-policy-view).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| **Settings**       | language, closing the window to the tray (optional), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Settings**       | language, closing the window to the tray (optional), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **package caches** (see [Package caches](#package-caches)), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 ## Approvals
 
@@ -143,7 +143,8 @@ The **Options** step has **Name** and **Host** on top (one row), then two titled
 holds the mode, the project folder and **Choose …** in one row, and, for a `copy`/`sync` workspace,
 the checkbox **Respect .gitignore** (ticked unless the template says otherwise; "Ignored files (e.g.
 build/, .dart_tool/) are not copied"), then **Also exclude** (patterns like `*.log coverage`, applied
-on top of `.gitignore`; as wide as the section), then the size note. **Resources and network** holds
+on top of `.gitignore`; as wide as the section), then the checkbox **Use package cache** (see
+[Package caches](#package-caches)), then the size note. **Resources and network** holds
 CPUs, memory, lifetime and network mode in one row, with the limits of your profile as a short hint
 under the title ("At most 64 CPUs, 512g RAM, 30d (profile "human")"). Empty fields use the template's
 values, which are shown as placeholders (e.g. `4`, `6g`, `2h`; the first network option reads "Template
@@ -197,7 +198,7 @@ The view has three modes.
   Isolation settings of `none` are shown as a red "No isolation" badge (text and colour), in the
   cards, in the form and in the review.
 - **Editing.** Two columns that edit the same text: a **form** (profile selector, approval mode,
-  `exec.approval`, limits, the four isolation minimums, network modes, presets, allowed
+  `exec.approval`, the package caches switch and size cap, limits, the four isolation minimums, network modes, presets, allowed
   destinations and image registries, workspace modes, templates and hosts) and the **YAML** editor.
   A change in the form is written into the text, keeping comments and layout, so the diff contains
   only the lines that changed; a change in the YAML shows in the form. An empty form field means
@@ -314,6 +315,40 @@ Settings shows what is observable about the MCP side: the agent contexts defined
 of the last action of each agent, with a link to its audit entries. The MCP server is a separate
 process (stdio per agent, or HTTP with tokens) that does not report to the manager, so the app cannot
 tell whether it is running right now; it shows the activity and tokens instead.
+
+## Package caches
+
+A package cache keeps downloaded packages (the pnpm store, the cargo registry, ...) per project in a
+Docker or Podman volume, so the next sandbox for that project does not download everything again.
+A cache belongs to the project folder, to the owner (you or an agent context) and to the template,
+and it is mounted only at the paths the template declares under `caches:`. Sandboxes without a
+project folder (workspace mode `empty`) get none. See [templates](templates.md) and the CLI command
+`abox cache` for the same operations in a terminal.
+
+**New sandbox.** The checkbox **Use package cache** in the Workspace section is ticked by default; the
+line under it says what it does. Untick it for a clean install: the sandbox then gets no cache, and
+nothing is shared with it. The checkbox is disabled, with the reason below it, when the workspace mode
+is `empty` ("Needs a project folder: the cache belongs to the project.") or when the template declares
+no caches. The policy profile can switch caches off (`caches: false`) and cap them
+(`cache_max_bytes`); both are fields in the Policy form.
+
+**Settings, Package caches.** The section explains the above in a few sentences and lists every cache
+of every reachable host: the project, the template, the cache name, its size, when a sandbox last
+used it and whether a sandbox (running or stopped) still uses it. Above the table are the number of
+caches and their total size. Hosts that could not be asked are named in a warning with the error, so
+a missing cache is never mistaken for "no caches". Sizes are measured by the engine and can take a
+moment, so the list is read when the page opens and on **Refresh**, not continuously.
+
+- **Remove** deletes one cache. It is disabled while a sandbox uses the cache (the tooltip says why);
+  delete that sandbox first.
+- **Remove all** deletes every cache that no sandbox uses. Caches in use are kept.
+
+Both ask first. The confirmation names what goes (project, cache, size) and says that only download
+time is lost: the next install downloads the packages again and fills the cache. Afterwards the list
+is read again and a banner shows how many caches were removed and how much space that freed, which
+caches were skipped (and why) and any errors. Caches are also removed by `abox gc`: unused ones after
+`caches.max_age` (default 30 days) and the least recently used ones when a project is above
+`cache_max_bytes` (default 10g). **Diagnostics** shows the number and size of the caches as a check.
 
 ## The SSH passphrase dialog
 

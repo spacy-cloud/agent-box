@@ -8,6 +8,7 @@ import { AboxError, collectBuildContext, parseSandboxId } from '@abox/core';
 import type {
   BackendKind,
   BackendStatus,
+  CacheVolume,
   CopyOutOptions,
   DirEntry,
   ExecEvent,
@@ -34,6 +35,15 @@ import type {
   TtySession,
 } from '@abox/core';
 import { buildImage, pullImage } from './build.js';
+import {
+  assertCacheMount,
+  cacheVolumeLabels,
+  cacheVolumeName,
+  ensureCacheVolume,
+  listCacheVolumes,
+  ownCachePaths,
+  removeCacheVolumes,
+} from './caches.js';
 import { renderDockerfile } from './dockerfile.js';
 import {
   EXPIRY_STORAGE_RESOLUTION_MS,
@@ -377,6 +387,7 @@ export class DockerProvider implements SandboxProvider {
       secretInjection: ['proxy', 'env', 'file'],
       osFamilies: ['debian', 'alpine', 'fedora', 'arch'],
       remote: this.remote,
+      caches: true,
     };
   }
 
@@ -1160,6 +1171,82 @@ export class DockerProvider implements SandboxProvider {
     return mounts;
   }
 
+  /**
+   * Adds the package cache volumes of the spec to `mounts` (created on first use) and returns their
+   * mount paths. A cache is mounted read-write at its own path only; it may not overlap the
+   * workspace, another mount, the home of a read-only root filesystem, `/tmp`, the abox directory or
+   * a file the spec places (a cache must never hold a secret).
+   */
+  private async cacheMounts(
+    spec: SandboxSpec,
+    mounts: Docker.MountSettings[],
+    ro: boolean,
+    uid: number | undefined,
+    cleanup: Array<() => Promise<void>>,
+  ): Promise<string[]> {
+    const paths: string[] = [];
+    const overlaps = (a: string, b: string): boolean =>
+      a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+    const reserved = [sandboxPath(spec.workspace.sandboxPath, 'workspace path'), CA_DIR, '/tmp'];
+    // The home volume of a read-only root filesystem is the one mount a cache may sit inside.
+    const home = ro ? `/home/${spec.user.name}` : undefined;
+    for (const m of spec.caches ?? []) {
+      assertCacheMount(m);
+      const target = checkMountTarget(sandboxPath(m.path, 'cache path'));
+      if (target === home)
+        throw new AboxError('invalid_input', `Cache path ${target} is the home directory itself`);
+      const clash =
+        mounts.find((x) => overlaps(x.Target, target) && !(x.Target === home && target !== home))
+          ?.Target ??
+        reserved.find((r) => overlaps(r, target)) ??
+        paths.find((p) => overlaps(p, target));
+      if (clash)
+        throw new AboxError(
+          'invalid_input',
+          `Cache path ${target} overlaps ${clash}; a cache needs a directory of its own`,
+        );
+      for (const f of spec.files) {
+        if (overlaps(sandboxPath(f.sandboxPath, 'file path'), target))
+          throw new AboxError(
+            'invalid_input',
+            `${f.sandboxPath} lies in the package cache ${target}; files of the spec never go into a cache`,
+          );
+      }
+      const name = cacheVolumeName(this.instanceId, m.key, uid);
+      const { created } = await ensureCacheVolume(
+        this.docker,
+        name,
+        cacheVolumeLabels(m, this.extra, uid, Date.now()),
+        (l) => this.ownsInstance(l),
+      );
+      if (created)
+        cleanup.push(() =>
+          this.docker
+            .getVolume(name)
+            .remove()
+            .catch(() => undefined),
+        );
+      mounts.push({
+        Type: 'volume',
+        Source: name,
+        Target: target,
+        ReadOnly: false,
+      } as Docker.MountSettings);
+      paths.push(target);
+    }
+    return paths;
+  }
+
+  async listCaches(opts: { size?: boolean } = {}): Promise<CacheVolume[]> {
+    return this.guard(() =>
+      listCacheVolumes(this.docker, this.engine, (l) => this.ownsInstance(l), opts),
+    );
+  }
+
+  async removeCache(key: string): Promise<{ removed: boolean }> {
+    return this.guard(() => removeCacheVolumes(this.docker, key, (l) => this.ownsInstance(l)));
+  }
+
   /** `.git`-style paths of a bind workspace that are mounted read-only on top of it. */
   private async readonlySubmounts(spec: SandboxSpec): Promise<Docker.MountSettings[]> {
     const ws = spec.workspace;
@@ -1216,6 +1303,7 @@ export class DockerProvider implements SandboxProvider {
         throw new AboxError('invalid_input', `Duplicate mount target ${m.Target}`);
       mounts.push(m);
     }
+    const caches = await this.cacheMounts(spec, mounts, ro, remapsUid ? uid : undefined, cleanup);
 
     // Files that need the container filesystem: reject what a start would hide or the engine refuses.
     const wsPath = sandboxPath(spec.workspace.sandboxPath);
@@ -1354,6 +1442,9 @@ export class DockerProvider implements SandboxProvider {
     // The image's home belongs to the template uid; a host-mapped user needs it (and what build
     // steps put there) to be writable. Done on the created container, before files are placed.
     if (remapsUid) await reownDir(c, home, uid, gid, !ro);
+
+    // Package caches: the mount points belong to the sandbox user (see `ownCachePaths`).
+    if (caches.length > 0) await ownCachePaths(c, caches, home, uid, gid);
 
     // Workspace delivery
     if (spec.workspace.kind === 'copy') {

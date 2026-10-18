@@ -299,7 +299,7 @@ With --json each check also has "severity", "details" and "notes", and the repor
   program
     .command('gc')
     .description(
-      'Remove expired sandboxes, stale workspaces, unused images and old logs; with --orphans, find and remove leftovers of other abox homes',
+      'Remove expired sandboxes, stale workspaces, unused images, package caches that are old or above their cap, and old logs; with --orphans, find and remove leftovers of other abox homes',
     )
     .option('--dry-run', 'only show what would be removed')
     .option(
@@ -339,10 +339,14 @@ With --json each check also has "severity", "details" and "notes", and the repor
           const verb = r.dryRun ? 'would remove' : 'removed';
           const images = r.images.reduce((n, i) => n + i.refs.length, 0);
           const lines = [
-            `${verb}: ${r.sandboxes.length} sandbox(es), ${r.workspaces.length} workspace dir(s), ${images} image(s), ${r.logs.files} log file(s) (${formatBytes(r.logs.bytes)})`,
+            `${verb}: ${r.sandboxes.length} sandbox(es), ${r.workspaces.length} workspace dir(s), ${images} image(s), ${r.caches.length} package cache(s), ${r.logs.files} log file(s) (${formatBytes(r.logs.bytes)})`,
           ];
           if (r.approvalsExpired) lines.push(`${r.approvalsExpired} overdue approval(s) expired`);
           for (const s of r.sandboxes) lines.push(`  sandbox ${s}`);
+          for (const c of r.caches)
+            lines.push(
+              `  cache ${c.key} (${safe(c.stack)}/${safe(c.name)}, ${safe(c.project)}): ${c.reason === 'age' ? 'unused for too long' : 'above the size cap of the project'}${c.sizeBytes === null ? '' : `, ${formatBytes(c.sizeBytes)}`}`,
+            );
           for (const e of r.errors) lines.push(`  error: ${safe(e)}`);
           return lines.join('\n');
         });

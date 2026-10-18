@@ -266,6 +266,12 @@ export interface CreateSandboxRequest {
   requestId?: string;
   /** Directory with `.sandbox/*.yaml` project templates; default: workspace path, then the abox project dir. */
   projectDir?: string;
+  /**
+   * `false`: do not mount the package caches of the template for this sandbox (a fresh install).
+   * `true` / absent: use them when the policy, the backend and the workspace allow it. Never
+   * overrides a policy that switched the caches off.
+   */
+  cache?: boolean;
 }
 
 export interface CreateOptions {
@@ -792,10 +798,73 @@ export interface DoctorReport {
   };
   audit: ChainVerification;
   reconcile: ReconcileReport;
+  /** Package caches on all reachable hosts (sizes best effort). */
+  caches?: { count: number; totalBytes: number | null };
+}
+
+/** One package cache volume (`abox cache ls`). */
+export interface CacheView {
+  host: string;
+  /** Cache key; `abox cache rm <key>` removes it. */
+  key: string;
+  /** Cache name from the template (`pnpm-store`). */
+  name: string;
+  /** Canonical project path the cache belongs to. */
+  project: string;
+  /** Template name the cache belongs to (the stack). */
+  stack: string;
+  /** `human` or `agent:<context>`. */
+  owner: string;
+  /** Bytes on disk; `null` when the engine cannot tell. */
+  sizeBytes: number | null;
+  createdAt: number;
+  /** When a sandbox last mounted it (creation time when abox has no record). */
+  lastUsedAt: number;
+  /** A sandbox (running or stopped) still references it; it cannot be removed. */
+  inUse: boolean;
+}
+
+export interface CacheList {
+  caches: CacheView[];
+  /** Sum of the known sizes. */
+  totalBytes: number;
+  /** Hosts that could not be asked. */
+  unreachable: Array<{ host: string; error: string }>;
+}
+
+/** What `removeCaches` removes: exactly one of `keys`, `project` or `all`. */
+export interface CacheSelector {
+  /** Keys or unique prefixes (at least 4 characters). */
+  keys?: string[];
+  /** Project path: all caches of that project. */
+  project?: string;
+  all?: boolean;
+  /** Limit to one host (default: every host with caches). */
+  host?: string;
+}
+
+export interface CacheRemoveResult {
+  removed: CacheView[];
+  /** Selected caches left alone (in use by a sandbox). */
+  skipped: Array<{ cache: CacheView; reason: string }>;
+  errors: string[];
 }
 
 export interface GcOptions {
   dryRun?: boolean;
+}
+
+/** A package cache `abox gc` removed (or would remove). */
+export interface GcCacheEntry {
+  host: string;
+  key: string;
+  name: string;
+  project: string;
+  stack: string;
+  owner: string;
+  sizeBytes: number | null;
+  /** `age`: unused for longer than `caches.max_age`; `cap`: the project's caches were above `cache_max_bytes`. */
+  reason: 'age' | 'cap';
 }
 
 export interface GcReport {
@@ -803,6 +872,8 @@ export interface GcReport {
   sandboxes: SandboxId[];
   workspaces: string[];
   images: GcImagesResult['removed'];
+  /** Package caches removed for age or size. */
+  caches: GcCacheEntry[];
   logs: { files: number; bytes: number };
   approvalsExpired: number;
   errors: string[];

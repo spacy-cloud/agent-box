@@ -27,6 +27,14 @@ describe('config', () => {
     expect(cfg.secrets).toEqual({});
   });
 
+  it('caches.max_age defaults to 30d and takes any duration', () => {
+    expect(defaultConfig().caches).toEqual({ max_age: '30d' });
+    expect(parseConfig('caches:\n  max_age: 12h\n').caches.max_age).toBe('12h');
+    expect(() => parseConfig('caches:\n  max_age: soon\n')).toThrowError(/caches\.max_age/);
+    expect(() => parseConfig('caches:\n  max_age: 30\n')).toThrowError(/caches/);
+    expect(() => parseConfig('caches:\n  ttl: 30d\n')).toThrowError(/caches/);
+  });
+
   it('backends.default was removed and says so', () => {
     expect(() => parseConfig('backends:\n  default: podman\n')).toThrowError(
       /backends\.default was removed/,

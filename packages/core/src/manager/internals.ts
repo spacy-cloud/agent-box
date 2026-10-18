@@ -80,6 +80,8 @@ export interface StoredEffective {
   workspaceWarnings?: string[];
   /** Who/what created it, for `inspect`. */
   imageRef?: string;
+  /** Package caches: why they are (not) mounted, and which ones. */
+  caches?: { status: string; mounts: Array<{ key: string; name: string; path: string }> };
 }
 
 /**
@@ -785,6 +787,7 @@ export class Internals {
       effective: {
         ...(eff?.policy ? { policy: eff.policy } : {}),
         ...(providerEffective ? { provider: providerEffective } : {}),
+        ...(eff?.caches ? { caches: eff.caches } : {}),
       },
       requestId: rec.requestId,
       ...this.humanAttachedOf(rec),

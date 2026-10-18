@@ -5,6 +5,7 @@ import { AboxError, isAboxError } from '@abox/core';
 import type {
   BackendKind,
   BackendStatus,
+  CacheVolume,
   CopyOutOptions,
   DirEntry,
   ExecEvent,
@@ -445,6 +446,11 @@ export class PythonProvider implements SandboxProvider {
   }
 
   private async createVenv(spec: SandboxSpec): Promise<SandboxInfo> {
+    if (spec.caches && spec.caches.length > 0)
+      throw unsupported(
+        'Package caches need a container: venv mode (isolation: none) has no volumes to keep them in',
+        'The manager does not request caches for such templates; this is a defect if you see it.',
+      );
     const venv = this.requireVenv();
     const t = spec.template;
     this.checkVenvTemplate(t);
@@ -719,6 +725,15 @@ export class PythonProvider implements SandboxProvider {
 
   removeForeign(resource: ForeignResource): Promise<void> {
     return this.container.removeForeign(resource);
+  }
+
+  /** Cache volumes of the container mode (venv mode has none). */
+  listCaches(opts?: { size?: boolean }): Promise<CacheVolume[]> {
+    return this.container.listCaches(opts);
+  }
+
+  removeCache(key: string): Promise<{ removed: boolean }> {
+    return this.container.removeCache(key);
   }
 }
 

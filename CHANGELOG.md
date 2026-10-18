@@ -26,6 +26,20 @@ release. Nothing has been released yet.
   `abox exec`) when the proxy denied requests during the command, can read their own sandbox's log with the new
   MCP tool `sandbox_network_log` (21 tools now), and still can not allow anything (they use `access_request`).
   `Abox.setPolicy` takes an optional `baseHash` and refuses a policy that changed meanwhile.
+- Per-project package caches (Closes #14): a template's `caches:` list (name, `path`, optional
+  `env`) is mounted as an abox-managed Docker/Podman named volume per project, owner (you or the
+  agent context) and template, so a second sandbox of the same project skips the dependency
+  downloads. `node-dev` and `tauri-dev` (pnpm store, npm), `py-dev` (uv, pip), `py-uv` (uv),
+  `rust-dev` (cargo registry and git), `flutter-dev` (pub) and `php-dev` (Composer) declare theirs. Volumes are
+  labelled `abox.managed`, `abox.instance` and `abox.cache=<key>`; a new volume starts as a copy of
+  the image's directory. Policy `caches: true|false` (default true) and `cache_max_bytes` (default
+  10g per project), `caches.max_age` (default 30 days) in the config; `abox create --no-cache`, MCP
+  `cache: false` and the GUI checkbox "Paket-Cache verwenden" opt out for one sandbox. `abox cache
+ls [--json]`, `abox cache rm <key>|--project <path>|--all` (human only), `abox gc` removes caches
+  past the age or over the cap (never one in use), `abox doctor` shows the total size, and the
+  Settings view lists the caches with a confirmed remove. Create, use and remove are audited. MCP
+  agents can neither list nor remove caches. The `process`, `vm` and venv backends have no caches;
+  `docs/security.md` describes what a cache can carry over between sandboxes. State migration 7.
 - **Port forwards (preview of dev servers):** `abox port add <sandbox> <port> [--host-port N]`,
   `abox port ls` and `abox port rm` publish a TCP port of a running sandbox on `127.0.0.1` of this
   machine (a free port is picked unless `--host-port` is given; never 0.0.0.0, never below 1024), so
@@ -171,6 +185,8 @@ export` leaves out ignored paths the sandbox created (`stats.ignored`).
 
 ### Changed
 
+- GUI: dialogs keep their title and buttons in place; only the content between them scrolls (e.g. the
+  long template list in New sandbox).
 - The built-in default policy lets agents use every built-in template except `host-shell`
   (adds `py-uv`, `rust-dev`, `tauri-dev`, `flutter-dev`, `php-dev`, `shell-dev`) and the registry
   presets `crates`, `pub` and `packagist`; limits and approval mode are unchanged.

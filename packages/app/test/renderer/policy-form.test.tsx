@@ -35,6 +35,8 @@ const RESOLVED = {
     },
     network: { modes: ['none'], allow_presets: ['npm'], allow: [] },
     images: { registries: ['docker.io/library'] },
+    caches: true,
+    cache_max_bytes: '10g',
     workspace: { modes: ['empty'], roots: [] },
     templates: [],
     hosts: ['local'],
@@ -82,6 +84,24 @@ describe('PolicyForm', () => {
     expect((screen.getByLabelText('Speicher je Sandbox') as HTMLInputElement).value).toBe('');
     // (the hints come from the policy in force; "child" is not part of it, so its placeholder is empty)
     expect((screen.getByLabelText('Freigabemodus') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('edits the package caches switch and size cap; the inherited values are the placeholders', () => {
+    installBridge(() => undefined);
+    renderApp(<Host />);
+    const use = screen.getByLabelText('Paket-Caches erlauben') as HTMLSelectElement;
+    expect(use.value).toBe('');
+    expect(within(use).getByRole('option', { name: '(geerbt oder Standard: ja)' })).toBeTruthy();
+    fireEvent.change(use, { target: { value: 'false' } });
+    expect(text()).toContain('caches: false');
+    const cap = screen.getByLabelText('Größenlimit je Projekt') as HTMLInputElement;
+    expect(cap.placeholder).toBe('10g');
+    fireEvent.change(cap, { target: { value: '2g' } });
+    expect(text()).toContain('cache_max_bytes: 2g');
+    fireEvent.change(use, { target: { value: '' } });
+    fireEvent.change(cap, { target: { value: '' } });
+    expect(text()).not.toContain('cache');
+    expect(text()).toContain('contexts:\n  sim: { profile: agent }');
   });
 
   it('clearing a field removes it again (and an emptied map with it)', () => {

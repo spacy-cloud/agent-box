@@ -1,6 +1,7 @@
 import type {
   BackendKind,
   BackendStatus,
+  CacheVolume,
   DirEntry,
   ExecEvent,
   ExecRequest,
@@ -162,6 +163,19 @@ export interface SandboxProvider {
    * `conflict`. Optional (see `capabilities().stats`); absent = `unsupported`.
    */
   stats?(id: SandboxId): Promise<ResourceUsage>;
+
+  /**
+   * The package cache volumes of this installation on the engine (`SandboxSpec.caches`), with their
+   * size when `opts.size` is set (it can take a moment) and whether a sandbox still references them.
+   * Only volumes with this provider's `abox.instance` are returned. Optional (see
+   * `capabilities().caches`); absent = `unsupported`.
+   */
+  listCaches?(opts?: { size?: boolean }): Promise<CacheVolume[]>;
+  /**
+   * Remove the volume(s) of cache `key`. A cache that a sandbox still references is `conflict`, a
+   * missing one is not an error (`removed: false`). Optional; absent = `unsupported`.
+   */
+  removeCache?(key: string): Promise<{ removed: boolean }>;
 
   /**
    * Publish a TCP port of a running sandbox on `127.0.0.1` of the machine running abox (never on

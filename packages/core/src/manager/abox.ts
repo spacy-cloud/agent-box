@@ -49,6 +49,7 @@ import {
   listSnapshots,
   sandboxLogs,
 } from './interactive.js';
+import { listCaches, removeCaches } from './caches.js';
 import { estimateWorkspace } from './estimate.js';
 import { allowNetwork, networkLog, proposeNetworkPolicy } from './network-log.js';
 import { listPortForwards, removePortForward } from './ports.js';
@@ -83,6 +84,9 @@ import type {
   AuditFilter,
   BuildResult,
   BuildTemplateOptions,
+  CacheList,
+  CacheRemoveResult,
+  CacheSelector,
   Caller,
   ChainVerification,
   CreateOptions,
@@ -553,6 +557,17 @@ export class Abox {
    */
   gcOrphans(caller: Caller, o: GcOrphansOptions = {}): Promise<GcOrphansReport> {
     return gcOrphans(this.I, caller, o);
+  }
+  /**
+   * Human only. The package cache volumes on the hosts (all with a record, or `o.host`): project,
+   * stack, size, last use and whether a sandbox holds them. `size: false` skips measuring (fast).
+   */
+  listCaches(caller: Caller, o: { host?: string; size?: boolean } = {}): Promise<CacheList> {
+    return listCaches(this.I, caller, o);
+  }
+  /** Human only. Removes caches by key, project or all; caches in use by a sandbox are never removed. */
+  removeCaches(caller: Caller, selector: CacheSelector): Promise<CacheRemoveResult> {
+    return removeCaches(this.I, caller, selector);
   }
   /**
    * For long-running processes (`abox mcp serve`, the GUI): enforce sandbox deadlines in the

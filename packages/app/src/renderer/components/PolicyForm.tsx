@@ -169,6 +169,43 @@ export function PolicyForm(props: {
       </fieldset>
 
       <fieldset className="tpl-form">
+        <legend>{t('policy.f.caches')}</legend>
+        <p className="muted small">{t('policy.f.cachesHint')}</p>
+        <div className="form-grid">
+          <Field label={t('policy.f.cachesUse')}>
+            {(id) => (
+              <select
+                id={id}
+                value={f.caches === undefined ? '' : String(f.caches)}
+                onChange={(e) =>
+                  put(['caches'], e.target.value === '' ? undefined : e.target.value === 'true')
+                }
+              >
+                <option value="">
+                  {t('policy.f.inheritedValue', {
+                    value: eff?.caches === false ? t('common.no') : t('common.yes'),
+                  })}
+                </option>
+                <option value="true">{t('common.yes')}</option>
+                <option value="false">{t('common.no')}</option>
+              </select>
+            )}
+          </Field>
+          <Field label={t('policy.f.cacheMax')} hint={t('policy.f.cacheMaxHint')}>
+            {(id) => (
+              <SyncedInput
+                id={id}
+                spellCheck={false}
+                value={f.cacheMaxBytes ?? ''}
+                placeholder={inherited(eff?.cache_max_bytes ?? '10g')}
+                onValue={(v) => put(['cache_max_bytes'], v.trim())}
+              />
+            )}
+          </Field>
+        </div>
+      </fieldset>
+
+      <fieldset className="tpl-form">
         <legend>{t('policy.isolation')}</legend>
         <p className="muted small">{t('policy.f.isolationHint')}</p>
         {(['min', 'network_open', 'mounts', 'secrets_env'] as const).map((key) => {

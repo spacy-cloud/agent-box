@@ -58,6 +58,12 @@ test('New sandbox, Options step: two titled sections, aligned rows, template val
     const nameTop = await top(wizard.getByLabel('Name (optional)'));
     expect(Math.abs(nameTop - (await top(wizard.getByLabel('Host'))))).toBeLessThanOrEqual(2);
 
+    // the package cache switch sits with the workspace options; host-shell declares no caches, so it says so
+    const cache = workspace.getByLabel('Paket-Cache verwenden');
+    await expect(cache).toBeVisible();
+    await expect(cache).toBeDisabled();
+    await expect(workspace).toContainText('Das Template sieht keine Paket-Caches vor.');
+
     // the size note is an info banner inside the section, not wider than it
     await folder.fill(h.project);
     const note = workspace.getByTestId('estimate-ok');
@@ -115,6 +121,36 @@ test('New sandbox, Options step: two titled sections, aligned rows, template val
     await expect(wizard.getByRole('button', { name: 'Weiter' })).toBeVisible();
     expect(await axeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
+  } finally {
+    await app.close();
+  }
+});
+
+test('New sandbox: the dialog footer stays visible while the long template list scrolls', async () => {
+  const { app, page } = await launchGui(h);
+  try {
+    await page.setViewportSize({ width: 960, height: 600 });
+    await page.getByRole('button', { name: 'Neue Sandbox' }).click();
+    const wizard = page.getByRole('dialog', { name: 'Neue Sandbox' });
+    const next = wizard.getByRole('button', { name: 'Weiter' });
+    // wait until the built-in templates are listed
+    await expect(wizard.locator('label.template-card', { hasText: 'shell-dev' })).toBeVisible();
+    const viewport = page.viewportSize()!;
+    const inView = async (l: Locator) => {
+      const b = await l.boundingBox();
+      return !!b && b.y >= 0 && b.y + b.height <= viewport.height;
+    };
+    // without scrolling: the footer is on screen, the list is longer than the body
+    expect(await inView(next)).toBe(true);
+    const body = wizard.locator('.modal-body');
+    expect(await body.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    // scrolled to the end: the footer is still in the same place
+    const before = (await next.boundingBox())!.y;
+    await body.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+    expect(Math.abs((await next.boundingBox())!.y - before)).toBeLessThanOrEqual(1);
+    expect(await inView(next)).toBe(true);
+    // the title stays too
+    expect(await inView(wizard.getByRole('heading', { name: 'Neue Sandbox' }))).toBe(true);
   } finally {
     await app.close();
   }

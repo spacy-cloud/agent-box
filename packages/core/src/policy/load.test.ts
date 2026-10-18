@@ -277,6 +277,42 @@ describe('workspace copy limits', () => {
   });
 });
 
+describe('package caches', () => {
+  it('are on with a cap of 10g by default, for every profile including human', () => {
+    const p = parse('profiles:\n  bare: {}\n');
+    for (const name of ['bare', 'human'])
+      expect(p.profiles[name]).toMatchObject({
+        caches: true,
+        cache_max_bytes: '10g',
+        cacheMaxBytes: 10 * 1024 ** 3,
+      });
+    expect(defaultPolicy().profiles['default']).toMatchObject({ caches: true });
+  });
+
+  it('can be switched off and capped per profile, and are inherited like other scalars', () => {
+    const p = parse(
+      'profiles:\n  a: { caches: false, cache_max_bytes: 512m }\n  b: { extends: a }\n  c: { extends: a, caches: true }\n',
+    );
+    expect(p.profiles.a).toMatchObject({
+      caches: false,
+      cache_max_bytes: '512m',
+      cacheMaxBytes: 512 * 1024 ** 2,
+    });
+    expect(p.profiles.b).toMatchObject({ caches: false, cacheMaxBytes: 512 * 1024 ** 2 });
+    expect(p.profiles.c).toMatchObject({ caches: true, cacheMaxBytes: 512 * 1024 ** 2 });
+  });
+
+  it('rejects values of the wrong type with the field path and line', () => {
+    const e = fail('profiles:\n  a:\n    caches: maybe\n');
+    expect(e.issues[0]).toMatchObject({ path: 'profiles.a.caches', line: 3 });
+    expect(fail('profiles:\n  a: { cache_max_bytes: lots }\n').message).toContain(
+      'cache_max_bytes',
+    );
+    expect(fail('profiles:\n  a: { cache_max_bytes: 0 }\n').message).toContain('cache_max_bytes');
+    expect(fail('profiles:\n  a: { cache: false }\n').message).toContain('unknown key');
+  });
+});
+
 describe('ports', () => {
   it('defaults to ask with at most 3 forwards; the human profile may forward freely', () => {
     const p = parse('profiles:\n  a: { templates: [x] }\n');

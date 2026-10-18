@@ -82,6 +82,7 @@ const WRITE_CHANNELS = new Set<IpcChannel>([
   'approvals:deny',
   'policy:set',
   'reconcile:run',
+  'caches:remove',
   'tokens:create',
   'tokens:revoke',
 ]);
