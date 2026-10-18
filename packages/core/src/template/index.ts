@@ -11,6 +11,8 @@ export {
   DOMAIN_PATTERN_RE,
   ENV_KEY_RE,
   SECRET_REF_RE,
+  CACHE_NAME_RE,
+  MAX_TEMPLATE_CACHES,
   type TemplateSchemaOutput,
 } from './schema.js';
 export {

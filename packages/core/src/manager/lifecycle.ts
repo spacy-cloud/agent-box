@@ -44,6 +44,7 @@ import {
 } from '../workspace/index.js';
 import type { ScanResult, WorkspaceRecord } from '../workspace/index.js';
 import { confirmationRequired, consumeApproval, gate } from './approvals.js';
+import { existingCacheKeys, planCaches, recordCacheUse } from './caches.js';
 import { collectNetworkEvents } from './network-audit.js';
 import type { Internals, StoredEffective } from './internals.js';
 import { createRequestSchema } from './schemas.js';
@@ -421,6 +422,14 @@ export async function createSandbox(
     wsHostPath = canonicalizePath(raw, { home: I.home, cwd: base });
     wsLexicalPath = lexicalPath(raw, { home: I.home, cwd: base });
   }
+  // Package caches: which of the template's caches this sandbox mounts (none without a project).
+  const cachePlan = planCaches({
+    ctx,
+    template,
+    supported: caps.caches === true,
+    optOut: req.cache === false,
+    project: wsHostPath,
+  });
   // Idempotency by effective request: the same sandbox however the request spelled its defaults.
   const effectiveRequestHash = hashJson({
     template: template.name,
@@ -444,6 +453,8 @@ export async function createSandbox(
       privateExceptions: [...privateExceptions].sort(),
     },
     mounts: mounts.map((m) => `${m.target}\0${m.hostPath}\0${m.access}`).sort(),
+    // only the deviation from the default, so requests that did not use it keep their key
+    ...(cachePlan.status === 'opted_out' ? { cache: false } : {}),
   });
   if (req.requestId) {
     const existing = await waitForPeer(I, owner, req.requestId, {
@@ -875,9 +886,10 @@ export async function createSandbox(
       })),
       resources: { ...template.resources, cpus, memoryBytes, ttlMs },
       network,
-      env: { ...template.env, ...envSecrets },
+      env: { ...template.env, ...cachePlan.env, ...envSecrets },
       files,
       user: template.user,
+      ...(cachePlan.mounts.length > 0 ? { caches: cachePlan.mounts } : {}),
       createdAt,
       expiresAt,
       labels: {
@@ -894,6 +906,8 @@ export async function createSandbox(
           : {}),
       },
     };
+    const existingCaches =
+      cachePlan.mounts.length > 0 ? await existingCacheKeys(provider) : new Set<string>();
     providerTouched = true;
     if (prepared.delivery.kind === 'copy') {
       opts.onProgress?.('delivering workspace into the sandbox …', { phase: 'deliver' });
@@ -902,6 +916,14 @@ export async function createSandbox(
     if (opts.signal?.aborted) throw new AboxError('internal', 'create cancelled');
     await provider.start(id);
     const info = await provider.inspect(id).catch(() => created);
+    if (cachePlan.mounts.length > 0)
+      recordCacheUse(I, {
+        actor: owner,
+        host: hostId,
+        sandboxId: id,
+        mounts: cachePlan.mounts,
+        existing: existingCaches,
+      });
 
     const policyEffective: Record<string, unknown> = {
       ...ev.effective,
@@ -914,6 +936,14 @@ export async function createSandbox(
       provider: info.effective,
       imageRef: image.ref,
       ...(prepared.warnings.length > 0 ? { workspaceWarnings: prepared.warnings } : {}),
+      ...(cachePlan.status !== 'none'
+        ? {
+            caches: {
+              status: cachePlan.status,
+              mounts: cachePlan.mounts.map((m) => ({ key: m.key, name: m.name, path: m.path })),
+            },
+          }
+        : {}),
     };
     delete effective.creator;
     const rec = I.state.sandboxes.upsert({
@@ -956,6 +986,9 @@ export async function createSandbox(
         mounts,
         resources: { cpus, memoryBytes, ttlMs },
         keyringRefs: effective.keyringRefs,
+        ...(cachePlan.status !== 'none'
+          ? { caches: { status: cachePlan.status, keys: cachePlan.mounts.map((m) => m.key) } }
+          : {}),
         approvalId,
         notes: ev.decision === 'allow' ? ev.notes : [],
         policy: policyEffective,

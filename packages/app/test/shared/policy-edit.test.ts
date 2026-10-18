@@ -200,6 +200,32 @@ describe('policy form', () => {
     expect(t).not.toContain('isolation:');
   });
 
+  it('reads and writes the package cache switch and size cap, keeping unknown keys', () => {
+    const text = `${POLICY.replace('    mounts: deny\n', '    mounts: deny\n    caches: false\n    cache_max_bytes: 2g\n    future_key: { keep: me }\n')}`;
+    const r = readPolicyForm(text);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const agent = r.profiles.find((p) => p.name === 'agent')!;
+    expect(agent.fields.caches).toBe(false);
+    expect(agent.fields.cacheMaxBytes).toBe('2g');
+    expect(r.profiles.find((p) => p.name === 'child')!.fields.caches).toBeUndefined();
+    let t = setProfileField(text, 'agent', ['caches'], true);
+    expect(t).toContain('caches: true');
+    t = setProfileField(t, 'agent', ['cache_max_bytes'], '20g');
+    expect(t).toContain('cache_max_bytes: 20g');
+    expect(t).toContain('future_key: { keep: me }');
+    expect(t).toContain('# my policy');
+    t = setProfileField(t, 'agent', ['caches'], undefined);
+    t = setProfileField(t, 'agent', ['cache_max_bytes'], undefined);
+    expect(t).not.toContain('caches:');
+    expect(t).not.toContain('cache_max_bytes');
+    expect(t).toContain('future_key: { keep: me }');
+    // a number written without unit stays what the user typed
+    expect(setProfileField(POLICY, 'agent', ['cache_max_bytes'], '10g')).toContain(
+      'cache_max_bytes: 10g',
+    );
+  });
+
   it('leaves the text alone when it cannot edit it', () => {
     expect(setProfileField('profiles: [oops', 'agent', ['approval'], 'open')).toBe(
       'profiles: [oops',

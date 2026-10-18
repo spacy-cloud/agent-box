@@ -57,6 +57,7 @@ export function makeTestTemplate(overrides: Partial<ResolvedTemplate> = {}): Res
     env: {},
     secrets: [],
     labels: {},
+    caches: [],
     source: { kind: 'builtin' },
     hash: '',
     contentHash: '',

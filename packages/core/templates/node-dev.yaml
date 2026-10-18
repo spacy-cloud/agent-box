@@ -32,5 +32,14 @@ network:
   mode: allowlist
   presets: [npm, github]
 
+# Package caches: one volume per project, kept between sandboxes of that project (see docs/templates.md).
+caches:
+  - name: pnpm-store
+    path: ~/.local/share/pnpm/store
+    env:
+      npm_config_store_dir: '${path}'
+  - name: npm-cache
+    path: ~/.npm
+
 labels:
   use-for: JavaScript and TypeScript projects (Node.js 24, pnpm, npm registry and GitHub reachable)

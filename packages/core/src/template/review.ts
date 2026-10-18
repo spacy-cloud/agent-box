@@ -99,6 +99,14 @@ export function renderTemplateSnapshot(t: ResolvedTemplate): string {
           }))
         : undefined,
     labels: Object.keys(t.labels).length > 0 ? sortedRecord(t.labels) : undefined,
+    caches:
+      t.caches.length > 0
+        ? t.caches.map((c) => ({
+            name: c.name,
+            path: c.path,
+            ...(Object.keys(c.env).length > 0 ? { env: sortedRecord(c.env) } : {}),
+          }))
+        : undefined,
     python: t.python,
     vm: t.vm,
   };

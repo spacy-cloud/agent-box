@@ -28,5 +28,14 @@ network:
   mode: allowlist
   presets: [pypi, github]
 
+# Package caches: one volume per project, kept between sandboxes of that project (see docs/templates.md).
+caches:
+  - name: uv-cache
+    path: ~/.cache/uv
+    env:
+      UV_LINK_MODE: copy
+  - name: pip-cache
+    path: ~/.cache/pip
+
 labels:
   use-for: Python projects (Python 3.13, uv, PyPI and GitHub reachable)

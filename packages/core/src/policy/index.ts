@@ -19,6 +19,7 @@ export {
   DEFAULT_WORKSPACE_ROOTS,
   DEFAULT_MAX_COPY_BYTES,
   DEFAULT_MAX_COPY_ENTRIES,
+  DEFAULT_CACHE_MAX_BYTES,
 } from './load.js';
 export * from './context.js';
 export * from './paths.js';

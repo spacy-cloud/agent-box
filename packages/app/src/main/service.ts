@@ -75,6 +75,8 @@ export type ManagerChannel =
   | 'policy:revisions'
   | 'policy:revision'
   | 'doctor:run'
+  | 'caches:list'
+  | 'caches:remove'
   | 'reconcile:run'
   | 'tokens:list'
   | 'tokens:create'
@@ -141,9 +143,11 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     'sandboxes:remove': (i) => abox.removeSandbox(HUMAN, i.id),
     'sandboxes:extend': (i) => abox.extendTtl(confirmedHuman(i.confirmed), i.id, i.ttl),
     'sandboxes:create': async (i, ctx) => {
-      const { confirmed, progressKey, projectDir, ...req } = i;
+      const { confirmed, progressKey, projectDir, cache, ...req } = i;
       const request: CreateSandboxRequest = clean({
         ...req,
+        // only the opt-out is sent: absent means "use the template's caches where policy allows"
+        cache: cache === false ? false : undefined,
         ...(await projectOption(projectDir)),
         workspace: req.workspace ? clean(req.workspace) : undefined,
         overrides: req.overrides
@@ -279,6 +283,14 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     },
     'policy:revision': (i) => abox.getPolicyRevision(HUMAN, i.rev),
     'doctor:run': () => abox.doctor(HUMAN),
+    'caches:list': () => abox.listCaches(HUMAN, { size: true }),
+    'caches:remove': (i) =>
+      abox.removeCaches(
+        HUMAN,
+        'keys' in i
+          ? clean({ keys: i.keys, host: i.host })
+          : clean({ all: true as const, host: i.host }),
+      ),
     'reconcile:run': (i) => abox.reconcile(HUMAN, clean({ ...(i ?? {}) })),
     'tokens:list': () => abox.listAgentTokens(HUMAN),
     'tokens:create': async (i) => {

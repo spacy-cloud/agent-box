@@ -13,6 +13,9 @@ import type {
   CreateResult,
   DirEntry,
   BackendReport,
+  CacheList,
+  CacheRemoveResult,
+  CacheView,
   DoctorCheck,
   DoctorReport,
   DoctorSeverity,
@@ -55,6 +58,9 @@ export type {
   CreateResult,
   DirEntry,
   BackendReport,
+  CacheList,
+  CacheRemoveResult,
+  CacheView,
   DoctorCheck,
   DoctorReport,
   DoctorSeverity,
@@ -369,6 +375,8 @@ export interface Outputs {
   'policy:revisions': PolicyRevisionSummary[];
   'policy:revision': PolicyRevisionDetail;
   'doctor:run': DoctorReport;
+  'caches:list': CacheList;
+  'caches:remove': CacheRemoveResult;
   'reconcile:run': ReconcileReport;
   'tokens:list': AgentTokenView[];
   'tokens:create': TokenCreated;

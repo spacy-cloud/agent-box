@@ -3,6 +3,7 @@ import { parse as parseYaml, YAMLParseError } from 'yaml';
 import { z } from 'zod';
 import { AboxError } from '../errors.js';
 import type { ErrorIssue } from '../errors.js';
+import { parseDuration } from '../template/schema.js';
 
 const MINUTE = 60_000;
 
@@ -61,6 +62,26 @@ export const configSchema = z.strictObject({
   logs: z
     .strictObject({
       retentionDays: z.number().int().nonnegative().default(3),
+    })
+    .prefault({}),
+  /** Package cache volumes (`abox cache`): which ones `abox gc` removes. */
+  caches: z
+    .strictObject({
+      /** A cache nobody used for this long is removed by `abox gc` (duration like `30d`, `12h`). */
+      max_age: z
+        .string()
+        .refine(
+          (v) => {
+            try {
+              parseDuration(v);
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          { error: 'caches.max_age must be a duration such as 30d, 12h or 90m' },
+        )
+        .default('30d'),
     })
     .prefault({}),
 });

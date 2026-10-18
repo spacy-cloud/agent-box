@@ -184,6 +184,20 @@ export function validateTemplate(
     }
   });
 
+  t.caches.forEach((c, i) => {
+    const problem = checkSandboxPath('cache path', c.path);
+    if (problem) bad(`caches[${i}].path`, problem);
+    for (const [key, value] of Object.entries(c.env)) {
+      if (SECRET_KEY_RE.test(key) || SECRET_VALUE_RES.some((re) => re.test(value)))
+        bad(
+          `caches[${i}].env.${key}`,
+          `env variable ${key} of the cache "${c.name}" looks like a secret; a cache only points a tool at its directory`,
+        );
+      if (key.startsWith('ABOX_'))
+        bad(`caches[${i}].env.${key}`, 'env variables starting with ABOX_ are reserved for abox');
+    }
+  });
+
   for (const [key, value] of Object.entries(t.env)) {
     if (SECRET_KEY_RE.test(key)) {
       bad(
