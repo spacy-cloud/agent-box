@@ -303,6 +303,7 @@ const KINDS = [
   'network_domains',
   'strict_mode',
   'exec',
+  'port_forward',
 ];
 /** A finding kind this version has a label for (others are shown generically, never as a raw key). */
 function knownKind(kind: string): string {

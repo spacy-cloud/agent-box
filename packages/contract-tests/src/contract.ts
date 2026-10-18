@@ -38,6 +38,10 @@ import { cleanupSandbox, makeTestSpec, randomId, sleep, waitFor } from './helper
  *   memory limit of a running or stopped sandbox and keeps it across a restart; an empty or
  *   invalid request is `invalid_input`; without the capability the method is absent or rejects
  *   with `unsupported`.
+ * - `addPortForward` / `listPortForwards` / `removePortForward` (only with a non-empty
+ *   `capabilities().portForward`) publish a TCP port of a running sandbox on `127.0.0.1` of the
+ *   machine running abox only, without giving the sandbox any new way out; they end with the
+ *   sandbox (`stop`, `remove`). Real port-forward behaviour is tested per backend, not here.
  * - `copyIn(host, p)` / `copyOut(p, host)`: the entry at the source *becomes* the entry at the
  *   destination path (like `cp -a src dst` with a non-existing `dst`); the destination's parent
  *   must exist. Directories are copied recursively.
@@ -267,6 +271,15 @@ export function defineProviderContract(opts: ContractOptions): void {
         expect(typeof provider.extendExpiry === 'function').toBe(caps.extendExpiry === true);
         // A backend that claims `updateResources` provides it (the python wrapper always has the method).
         if (caps.updateResources) expect(typeof provider.updateResources).toBe('function');
+        // A backend that claims port forwards provides all three methods, and forwards only for
+        // modes it offers (`none` has no interface to reach).
+        if (caps.portForward && caps.portForward.length > 0) {
+          expect(typeof provider.addPortForward).toBe('function');
+          expect(typeof provider.listPortForwards).toBe('function');
+          expect(typeof provider.removePortForward).toBe('function');
+          for (const m of caps.portForward) expect(caps.networkModes).toContain(m);
+          expect(caps.portForward).not.toContain('none');
+        }
         // Snapshot methods are present exactly when snapshots are supported.
         if (caps.snapshots) {
           expect(typeof provider.snapshot).toBe('function');

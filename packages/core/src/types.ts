@@ -494,6 +494,47 @@ export interface DirEntry {
   mtimeMs: number;
 }
 
+/** Lowest and highest host port abox binds for a port forward (privileged ports are refused). */
+export const PORT_FORWARD_MIN_HOST_PORT = 1024;
+export const PORT_FORWARD_MAX_PORT = 65535;
+/** The only host address a port forward binds to. */
+export const PORT_FORWARD_HOST_ADDRESS = '127.0.0.1';
+
+/** What a provider needs to open a port forward of a running sandbox. */
+export interface PortForwardRequest {
+  /** TCP port inside the sandbox (1..65535). */
+  sandboxPort: number;
+  /** Port on `127.0.0.1` of the machine running abox (1024..65535); absent = pick a free one. */
+  hostPort?: number;
+  /**
+   * Deadline (epoch ms) of the sandbox. A backend that holds the forward in a helper that outlives
+   * abox (a sidecar container) makes the helper end itself then.
+   */
+  expiresAt: number;
+}
+
+/**
+ * Whether anything in the sandbox answers on the forwarded port: `up` (the last connection to it
+ * worked), `down` (refused: no server, or it listens on 127.0.0.1 only), `unknown` (not tried yet or
+ * the backend cannot tell).
+ */
+export type PortForwardTarget = 'up' | 'down' | 'unknown';
+
+/** One TCP forward from `127.0.0.1:<hostPort>` on the abox machine to a port inside a sandbox. */
+export interface SandboxPortForward {
+  sandboxPort: number;
+  hostAddress: typeof PORT_FORWARD_HOST_ADDRESS;
+  hostPort: number;
+  /** `http://127.0.0.1:<hostPort>/`: what the "open preview" action opens. */
+  url: string;
+  createdAt: number;
+  target: PortForwardTarget;
+  /** Connections accepted / refused by the host check / that could not reach the sandbox; only where the backend counts them. */
+  connections?: number;
+  rejected?: number;
+  failed?: number;
+}
+
 /** One egress decision made by the proxy (for the audit log). */
 export interface NetworkEvent {
   ts: number;
@@ -533,6 +574,12 @@ export interface ProviderCapabilities {
    * Absent / false: the GUI shows the configured values only.
    */
   stats?: boolean;
+  /**
+   * Network modes of a running sandbox that `addPortForward` can publish a port for (the host side
+   * is always `127.0.0.1`). Absent / empty: the backend has no port forwarding, e.g. because the
+   * sandbox shares the host network anyway (`process`) or runs on a remote host.
+   */
+  portForward?: NetworkMode[];
   /** Which resource limits are actually enforced. */
   limits: { cpus: boolean; memory: boolean; pids: boolean; disk: boolean };
   /** Can run as a non-root user inside the sandbox. */

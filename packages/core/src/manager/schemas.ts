@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { NETWORK_MODES, WORKSPACE_MODES } from '../types.js';
+import { NETWORK_MODES, PORT_FORWARD_MAX_PORT, WORKSPACE_MODES } from '../types.js';
 
 const durationOrMs = z.union([z.string().min(1).max(32), z.number().int().positive()]);
 const sizeOrBytes = z.union([z.string().min(1).max(32), z.number().int().positive()]);
@@ -167,6 +167,14 @@ export const accessSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('ttl'),
     details: z.strictObject({ ttl: durationOrMs }),
+    reason: z.string().max(4000).optional(),
+  }),
+  z.strictObject({
+    kind: z.literal('port'),
+    details: z.strictObject({
+      port: z.number().int().min(1).max(PORT_FORWARD_MAX_PORT),
+      hostPort: z.number().int().min(1).max(PORT_FORWARD_MAX_PORT).optional(),
+    }),
     reason: z.string().max(4000).optional(),
   }),
 ]);

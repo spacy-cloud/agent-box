@@ -20,6 +20,7 @@ kernel; `process` and the Python venv mode provide **no isolation at all**.
 - [Python](#python)
 - [VM](#vm)
 - [Process](#process)
+- [Port forwards](#port-forwards)
 - [What is verified](#what-is-verified)
 
 ## Capabilities matrix
@@ -43,6 +44,7 @@ deliver is rejected with `unsupported` instead of silently losing the feature.
 | secret injection               | proxy, env, file                         | proxy, env, file      | proxy, env, file                         | env, file        |
 | template OS families           | debian, alpine, fedora, arch             | same                  | debian only                              | none (host)      |
 | remote hosts (SSH)             | yes (engine socket tunnel)               | no                    | no                                       | no               |
+| port forwards (previews)       | allowlist, open (local engine only)      | same                  | allowlist, open                          | no               |
 
 (`bind` workspaces are used by the `mount` and `worktree` modes.)
 
@@ -278,6 +280,48 @@ for every use, a warning on every validation.
 - Workspace delivery is `none` or `copy`; no mounts, no package caches (`caches:` in a `process`
   template is an error).
 
+## Port forwards
+
+`abox port add <sandbox> <port>` (also the GUI and the MCP tool `sandbox_port_forward`) publishes a
+TCP port of a running sandbox on `127.0.0.1` of the machine running abox, to preview a dev server in
+your browser. Policy, approval and what it exposes: [security](security.md#port-forwards-previews).
+TCP only; UDP is not forwarded. A forward ends when the sandbox stops, is removed or expires, and
+is not restored by `abox start`. It has to survive the short-lived `abox` command that opened it, so
+each backend keeps it in something that outlives abox: a sidecar container, the QEMU process.
+**The server in the sandbox must listen on `0.0.0.0`** (not only `127.0.0.1`): both backends connect
+to the sandbox's network address. `abox port ls` shows `no server` while nothing answers.
+
+| Backend            | Network mode `none`             | `allowlist`   | `open`        | How                                                                                   |
+| ------------------ | ------------------------------- | ------------- | ------------- | ------------------------------------------------------------------------------------- |
+| docker / podman    | refused (no interface to reach) | yes           | yes           | one small forwarder container per forward, `127.0.0.1:<port>` published by the engine |
+| python (container) | refused                         | yes           | yes           | as docker                                                                             |
+| vm                 | refused (no network card)       | yes           | yes           | QEMU `hostfwd` rule on `127.0.0.1`, added at run time through the monitor             |
+| process, venv      | n/a                             | n/a           | n/a           | not needed: the sandbox is on the host network (`unsupported`)                        |
+| remote (ssh) host  | not supported                   | not supported | not supported | the engine would publish on the remote machine's loopback; use a local sandbox        |
+
+**Docker and Podman.** Published ports are fixed when a container is created, and a container on an
+`internal` network (allowlist mode) cannot publish at all; the address of that network cannot be
+reached from the host either (checked on Docker 29: `curl` to it times out). So each forward is a
+sidecar container `abox-fwd-<id>-<port>` (labelled like the proxy sidecar, role `forward`) from the
+image `abox/forward:<hash>`, built once from `packages/backend-docker/runtime/forward.mjs` on the
+`node:24-alpine` base that the proxy image uses. It is attached to the sandbox's network (allowlist:
+the internal network, plus `abox-egress` for the published side; open: `abox-open`), listens on 8080
+inside, and the engine publishes that on `127.0.0.1:<host port>` (a free port from the engine's
+ephemeral range, or the one you asked for). It runs unprivileged with all capabilities dropped, a
+read-only root file system, 64 MiB of memory and 32 processes, and connects only to the sandbox
+address it was started with. It checks the `Host` header of HTTP requests (see security), counts
+connections, probes the target once when it starts, and ends itself at the sandbox's deadline
+(`abox extend` moves it). `stop` and `remove` delete it before the networks. Podman is expected to
+work the same way (same API calls) but is **not verified**.
+
+**VM.** QEMU's user-mode network has `hostfwd`: `hostfwd_add n0 tcp:127.0.0.1:<port>-:<guest port>`
+through the monitor (`human-monitor-command` over QMP), `hostfwd_remove` to close it. It works with
+`restrict=on` (allowlist mode) and under the seccomp filter, needs no helper process, lists with
+`info usernet` and disappears with the QEMU process. The rule connects to the guest's NIC address
+(10.0.2.15). There is no connection count and no `Host` check. Checked with a real QEMU process
+(no guest); a booted guest needs `/dev/kvm`, which the development machine does not have, so the
+integration test in `vm.integration.test.ts` has not run.
+
 ## What is verified
 
 | Backend | Evidence                                                                                                                                                        | Not verified                                                                                                          |
@@ -287,5 +331,10 @@ for every use, a warning on every validation.
 | python  | unit tests, venv mode with host uv, container mode against Docker                                                                                               | Podman; Alpine bases                                                                                                  |
 | vm      | contract suite and an integration suite that boots real VMs, run on the developer machine with `ABOX_TEST_VM=1` (not in CI)                                     | other hosts and QEMU versions; image checksum list signatures                                                         |
 | process | contract suite                                                                                                                                                  | n/a (no isolation to verify)                                                                                          |
+
+Port forwards: the Docker side is tested against a local rootful Docker engine (loopback-only bind,
+no new egress, Host check, expiry; `packages/backend-docker/src/ports.docker.test.ts`,
+`packages/e2e/src/port-forward.test.ts`, `packages/cli/src/__tests__/port.docker.test.ts`). The VM side
+is tested against a real QEMU process without a guest only.
 
 Full detail and the list of open items: [security: known limitations](security.md#known-limitations-and-not-verified).

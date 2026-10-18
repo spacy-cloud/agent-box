@@ -56,7 +56,7 @@ points before a first publish:
   (`@abox/core`, `@abox/runtime`, the backends, `@abox/mcp`, `@abox/proxy`) via `workspace:*`.
   Either publish all of them under the scope, or bundle them into the CLI package.
 - The package must ship the built-in templates (`packages/core/templates`), the proxy runtime files
-  (`packages/proxy/runtime`) and the plugin-independent assets it reads at run time. `pnpm deploy`
+  (`packages/proxy/runtime`), the port forwarder script (`packages/backend-docker/runtime`) and the plugin-independent assets it reads at run time. `pnpm deploy`
   (see above) shows that a self-contained tree works.
 - `dist/bin.js` needs the executable bit (the build sets it in a postbuild step), and
   `engines.node` stays `>=24`.

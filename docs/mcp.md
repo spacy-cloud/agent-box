@@ -185,14 +185,16 @@ object:
 5. A request nobody decides expires after 15 minutes and counts as denied (`approval_expired`).
    Repeating a request you denied within ten minutes answers `approval_denied` at once.
 6. For `access_request` the agent does **not** repeat the call; the approval is applied when you
-   approve, and the agent checks with `sandbox_inspect`.
+   approve, and the agent checks with `sandbox_inspect`. The same holds for `sandbox_port_forward`:
+   the forward is opened when you approve, and the agent reads the URL with `action: "list"` (or
+   `sandbox_inspect`); repeating the identical call returns it too.
 
 `reasons` and `risks` are computed by abox. The free-text `reason` an agent gives to
 `access_request` is shown to you as untrusted text and never to other agents.
 
 ## Tool reference
 
-21 tools. Sandbox ids look like `local/1a2b3c4d`. `argv` is a program with arguments without a
+22 tools. Sandbox ids look like `local/1a2b3c4d`. `argv` is a program with arguments without a
 shell (preferred); `cmd` is a shell line run with `/bin/sh -c`; give exactly one of them.
 Durations are seconds (a number) or strings such as `90s`, `5m`, `2h`.
 
@@ -237,8 +239,8 @@ look at the whole picture with `sandbox_network_log`.
 
 A sandbox that an agent owns is **paused** while a human has a terminal open in it (GUI or
 `abox shell`): `sandbox_exec`, `sandbox_process_start`, `sandbox_process_stop`, `sandbox_write_file`,
-`sandbox_snapshot`, `sandbox_restore`, `sandbox_start`, `sandbox_stop`, `sandbox_delete` and
-`access_request` (also for a TTL extension) then return `ok: false`, `code: "conflict"`, message `paused: a human is working
+`sandbox_snapshot`, `sandbox_restore`, `sandbox_start`, `sandbox_stop`, `sandbox_delete`,
+`sandbox_port_forward` (add and remove) and `access_request` (also for a TTL extension) then return `ok: false`, `code: "conflict"`, message `paused: a human is working
 in sandbox <id>` and `details: { reason: "human_attached", sessions, since }`. Nothing is queued.
 `sandbox_inspect` and `sandbox_list` carry `human_attached: { sessions, since, actor }` while it
 lasts. Retry later; the pause ends when the terminal closes, or 20 seconds after the person's
@@ -273,6 +275,12 @@ Paths are paths **inside the sandbox**; relative paths start at the workspace.
 | `sandbox_snapshot` | `id`, `name`                                                                                            | `snapshot_id`; `unsupported` on backends without snapshots                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `sandbox_restore`  | `id`, `snapshot_id` (or `name`)                                                                         | `restored`; discards changes since the snapshot. `snapshot_id` or `name` of the snapshot; at least one is required.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `sandbox_export`   | `id`, `format` (`diff`, `patch`, `branch`, `files`), `paths[]`, `branch_name` (must start with `abox/`) | `content` (diff/patch; capped at 256 KiB by default, then `truncated: true` and a `hint`: export `paths[]` in parts), `content_lossy` (`true` when the diff contains bytes that are not valid UTF-8, shown as U+FFFD), `files[]`, `flagged[]` (paths that can run code on your machine later: CI files, hooks, build scripts), `stats`, `branch`/`commit` or `out_dir`/`written`, `warnings`. Paths that the workspace's `.gitignore` ignores and that the copy did not contain (a `node_modules` or `dist` created in the sandbox) are not exported: `stats.ignored` counts them, `stats.ignored_paths` names the first ones and a warning says so. Symlinks are entries with `kind: symlink` (and `symlink_target`), flagged when absolute or leaving the workspace; `files` never writes a link. **Nothing is applied to the host.** Agents cannot choose the destination: files go to an abox-owned directory. |
+
+### Previews
+
+| Tool                   | Parameters                                                         | Result / notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox_port_forward` | `id`, `action` (`add` default, `list`, `remove`), `port`, `reason` | `add` publishes TCP port `port` of the sandbox on `127.0.0.1` of **your** machine and returns `port { sandbox_port, host_address, host_port, url, target }`; the agent cannot choose the host port (abox picks a free one). `reason` is required for `add` and shown to you as untrusted text. By default every forward needs your approval (`pending_approval`, policy item `port_forward`); the profile key `ports: { allow, max }` changes that. `target` is `up` (the server answers), `down` (nothing answers: the server has to listen on `0.0.0.0`, not only on `127.0.0.1`) or `unknown`. `list` returns `ports[]`, `remove` closes the forward of `port` (`removed: true/false`, no approval needed). Needs a running docker, podman or vm sandbox with network mode `allowlist` or `open`; `none`, remote hosts and sandboxes that run on the host answer `unsupported` with the reason. Forwards end when the sandbox stops. `sandbox_inspect` lists them in `ports`. |
 
 ### Access and policy
 

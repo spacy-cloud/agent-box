@@ -1,6 +1,6 @@
 import type { AboxPaths } from '../config/paths.js';
 import type { AboxConfig } from '../config/config.js';
-import type { DirEntry, TtySession } from '../types.js';
+import type { DirEntry, SandboxPortForward, TtySession } from '../types.js';
 import {
   accessRequest,
   applyApprovedAccess,
@@ -53,6 +53,7 @@ import { listCaches, removeCaches } from './caches.js';
 import { estimateFit, hostCapacity } from './capacity.js';
 import { estimateWorkspace } from './estimate.js';
 import { allowNetwork, networkLog, proposeNetworkPolicy } from './network-log.js';
+import { listPortForwards, removePortForward } from './ports.js';
 import { Internals } from './internals.js';
 import type { AboxOptions } from './internals.js';
 import {
@@ -313,6 +314,22 @@ export class Abox {
     o: ExecCallOptions = {},
   ): Promise<AccessResult> {
     return accessRequest(this.I, caller, id, req, o);
+  }
+  /**
+   * The open port forwards of a sandbox (`127.0.0.1` on this machine to a port in the sandbox;
+   * owner or human). Opening one is `accessRequest` with `{ kind: 'port', details: { port } }`
+   * (policy, approval and audit like every other access).
+   */
+  listPortForwards(caller: Caller, id: string): Promise<SandboxPortForward[]> {
+    return listPortForwards(this.I, caller, id);
+  }
+  /** Closes the forward of `port` (owner or human; no approval, it only takes access away). */
+  removePortForward(
+    caller: Caller,
+    id: string,
+    port: number,
+  ): Promise<{ removed: boolean; port?: SandboxPortForward }> {
+    return removePortForward(this.I, caller, id, port);
   }
   /** Human only: apply an approved access request (`approve` already does this). */
   applyApprovedAccess(

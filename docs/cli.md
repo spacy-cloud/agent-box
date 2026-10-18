@@ -726,6 +726,48 @@ Edit policy.yaml in $VISUAL/$EDITOR; validated, shown as a diff and confirmed be
 | ----------- | ------------------------------------------------------------------------------ |
 | `-y, --yes` | save without the final question (the edit itself still happens in your editor) |
 
+### `abox port`
+
+`abox port [options] [command]`
+
+Preview a server of a sandbox in your browser: forward a sandbox port to 127.0.0.1 (TCP, loopback only)
+
+#### `abox port add`
+
+`abox port add [options] <id> <port>`
+
+Forward a TCP port of a running sandbox to 127.0.0.1 on this machine and print the URL. Needs network mode allowlist or open (not none); the sandbox gets no new way out. The server in the sandbox must listen on 0.0.0.0. The forward ends when the sandbox stops
+
+| Argument | Meaning                                           |
+| -------- | ------------------------------------------------- |
+| `id`     | sandbox id or name                                |
+| `port`   | TCP port the server listens on inside the sandbox |
+
+| Option            | Meaning                                                        |
+| ----------------- | -------------------------------------------------------------- |
+| `--host-port <n>` | port on 127.0.0.1 (1024..65535); default: a free one is picked |
+
+#### `abox port ls`
+
+`abox port ls|list [options] <id>`
+
+List the open port forwards of a sandbox
+
+| Argument | Meaning            |
+| -------- | ------------------ |
+| `id`     | sandbox id or name |
+
+#### `abox port rm`
+
+`abox port rm|remove [options] <id> <port>`
+
+Close the forward of a sandbox port
+
+| Argument | Meaning                     |
+| -------- | --------------------------- |
+| `id`     | sandbox id or name          |
+| `port`   | TCP port inside the sandbox |
+
 ### `abox audit`
 
 `abox audit [options] [command]`
@@ -1125,6 +1167,22 @@ log <id> --denied", allow with "abox network allow <id> <domain>"`); with `--jso
 - **`abox export`** never applies anything; see [quickstart](quickstart.md#workspace-modes).
 - **`abox snapshot` / `restore`** depend on the backend. `restore` accepts the snapshot name or its id
   (as printed by `snapshot`); it discards everything changed since the snapshot.
+- **`abox port`** is for previews: a Vite, Flutter web or `php -S` server that runs in a sandbox
+  answers in your browser at `http://127.0.0.1:<port>/`. See [port forwards](security.md#port-forwards-previews)
+  for what this exposes and [backends](backends.md#port-forwards) for what each backend supports.
+  `add` prints the URL (`-q` prints only the URL, `--json` returns the forward) and is the same
+  forward when repeated. The host port is picked from the free ports of the machine unless
+  `--host-port` fixes it; ports below 1024 are refused. The server in the sandbox has to listen on
+  `0.0.0.0` (`vite --host 0.0.0.0`, `php -S 0.0.0.0:8000`, `flutter run -d web-server --web-hostname
+0.0.0.0`): a server bound to `127.0.0.1` inside the sandbox is not reachable from outside, and
+  `abox port ls` then shows the state `no server`. Only TCP is forwarded (no UDP). A sandbox with
+  network mode `none` has no network interface and cannot be forwarded (`unsupported`; create it
+  with network mode `allowlist`, which needs at least one destination, or `open`), nor can a sandbox
+  on a remote ssh host or one that runs on the host itself (isolation `none`). Forwards are closed
+  when the sandbox stops, is removed or expires, and are not brought back by `abox start`; ask for
+  them again. They survive the command that created them: nothing keeps running in your shell.
+  `abox inspect` lists them. Agents ask through the MCP tool `sandbox_port_forward`, which needs
+  your approval by default (`abox approvals approve`).
 - **`abox approvals approve`** is bound to the exact request; see [quickstart](quickstart.md#approvals).
 - **`abox policy edit`** opens `policy.yaml` in `$VISUAL`/`$EDITOR`, validates, shows a diff and
   asks before saving. The change is versioned in the audit log. Agents cannot do any of this.

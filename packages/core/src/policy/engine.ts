@@ -3,6 +3,8 @@ import { expandNetworkPresets } from '../template/network-presets.js';
 import {
   isolationAtLeast,
   ISOLATION_LEVELS,
+  PORT_FORWARD_MAX_PORT,
+  PORT_FORWARD_MIN_HOST_PORT,
   type AccessMode,
   type HostId,
   type IsolationLevel,
@@ -115,6 +117,7 @@ export type ApprovalKind =
   | 'secret_file'
   | 'private_address'
   | 'exec'
+  | 'port_forward'
   | 'extension';
 
 export interface ApprovalItem {
@@ -332,6 +335,9 @@ export function profileDomains(ctx: AgentContext): string[] {
   }
   return out;
 }
+
+const isValidPort = (n: unknown): n is number =>
+  typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= PORT_FORWARD_MAX_PORT;
 
 const list = (xs: readonly string[]): string => (xs.length > 0 ? xs.join(', ') : 'none');
 
@@ -954,6 +960,8 @@ export interface SandboxRef {
    * only the request on its own.
    */
   hostUsage?: HostUsage;
+  /** Port forwards the sandbox has open now (`ports.max` is checked against it). */
+  portForwards?: number;
 }
 
 /** Humans may act on every sandbox; agent contexts only on their own. */
@@ -1030,7 +1038,9 @@ export type AccessRequestSpec =
     }
   | { kind: 'resources'; details: { cpus?: number; memoryBytes?: number } }
   /** `ttlMs` = desired total lifetime measured from sandbox creation. */
-  | { kind: 'ttl'; details: { ttlMs: number } };
+  | { kind: 'ttl'; details: { ttlMs: number } }
+  /** Publish `sandboxPort` on `127.0.0.1` of the abox machine (`hostPort`: a fixed one, humans only). */
+  | { kind: 'port'; details: { sandboxPort: number; hostPort?: number } };
 
 export interface AccessOptions {
   humanConfirmed?: boolean;
@@ -1178,10 +1188,50 @@ export function evaluateAccessRequest(
       }
       break;
     }
+    case 'port': {
+      const d = request.details;
+      if (!isValidPort(d.sandboxPort))
+        f.deny(`sandbox port ${String(d.sandboxPort)} is not a TCP port (1..65535)`);
+      if (d.hostPort !== undefined) {
+        if (
+          !isValidPort(d.hostPort) ||
+          d.hostPort < PORT_FORWARD_MIN_HOST_PORT ||
+          d.hostPort > PORT_FORWARD_MAX_PORT
+        )
+          f.deny(
+            `host port ${String(d.hostPort)} is not allowed: use ${PORT_FORWARD_MIN_HOST_PORT}..${PORT_FORWARD_MAX_PORT} (privileged ports are never bound)`,
+          );
+        else if (ctx.kind === 'agent')
+          f.deny(
+            'agents cannot choose the host port of a forward',
+            'Leave the host port out: abox picks a free one on 127.0.0.1 and reports it.',
+          );
+      }
+      if (ctx.kind === 'agent' && p.ports.allow === false) {
+        f.deny(
+          `port forwarding is not allowed for profile "${p.name}" (ports.allow: false)`,
+          'Ask the human to forward the port (abox port add), or to set ports.allow to ask in policy.yaml.',
+        );
+      }
+      if ((sandbox.portForwards ?? 0) >= p.ports.max) {
+        f.deny(
+          `sandbox ${sandbox.id} already has ${sandbox.portForwards ?? 0} port forward(s); profile "${p.name}" allows ${p.ports.max} (ports.max)`,
+          'Close one first (abox port rm), or ask the human to raise ports.max.',
+        );
+      }
+      if (ctx.kind === 'agent' && p.ports.allow === 'ask') {
+        invariant(f, {
+          kind: 'port_forward',
+          reason: `forward port ${d.sandboxPort} of sandbox ${sandbox.id} to 127.0.0.1 on this machine (profile "${p.name}": ports.allow is ask)`,
+          risk: 'Any process on this machine (other users on a shared computer, a web page open in a browser) can then talk to that port of the sandbox. A server in the sandbox that runs untrusted code or has no login is exposed to them. The sandbox gets no new way out.',
+        });
+      }
+      break;
+    }
     default: {
       f.deny(
         `unknown access request kind "${String((request as { kind?: unknown }).kind)}"`,
-        'Supported kinds: network, mount, resources, ttl.',
+        'Supported kinds: network, mount, resources, ttl, port.',
       );
     }
   }

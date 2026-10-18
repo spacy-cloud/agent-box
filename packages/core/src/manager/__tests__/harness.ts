@@ -85,6 +85,12 @@ profiles:
   tiny:
     extends: agent
     limits: { sandboxes: 1, cpus: 1, memory: 1g, ttl: 30m }
+  ports-free:
+    extends: agent
+    ports: { allow: true, max: 2 }
+  ports-off:
+    extends: agent
+    ports: { allow: false }
 contexts:
   agent-a: { profile: agent }
   agent-b: { profile: agent }
@@ -92,6 +98,8 @@ contexts:
   open-agent: { profile: open-agent }
   nomount-agent: { profile: nomount }
   tiny-agent: { profile: tiny }
+  ports-free-agent: { profile: ports-free }
+  ports-off-agent: { profile: ports-off }
 `;
 }
 

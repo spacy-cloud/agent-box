@@ -9,7 +9,7 @@ need the app: everything works without it.
 > package to download; you can build an AppImage yourself (`pnpm --filter @abox/app dist`, see
 > [packaging](../packaging/README.md#appimage)). This page describes what the source tree
 > contains; check it against the version you run. The end-to-end tests
-> (`pnpm --filter @abox/app test:e2e`, Playwright on a virtual display) run and pass (37 tests; the 5 that
+> (`pnpm --filter @abox/app test:e2e`, Playwright on a virtual display) run and pass (42 tests; the 5 that
 > need docker run with `ABOX_TEST_DOCKER=1`: the terminal, template build, ssh and the takeover with live usage ones; the
 > test of the ssh passphrase dialog starts a throwaway `sshd` of the current user and is skipped when
 > `/usr/bin/sshd` does not exist).
@@ -48,7 +48,7 @@ icon and as a desktop notification (where the desktop supports a tray and notifi
 them the count in the window remains). A request shows:
 
 - who asks (the agent context), what kind of request it is (create, run command, extend access,
-  trust a template, a base image from a registry the profile does not list) and when it expires. A
+  trust a template, forward a port, a base image from a registry the profile does not list) and when it expires. A
   kind this version of the app does not know is shown with a generic label and a warning, never as
   a raw key, together with the exact request;
 - the **exact options compared to the default**, with the differences first;
@@ -194,6 +194,7 @@ engine reported with the request:
 | network destinations beyond the allowlist | add each requested destination to `network.allow`                                             |
 | approval mode `strict`                    | `approval: medium`                                                                            |
 | commands need approval (`exec.approval`)  | `exec.approval: false`                                                                        |
+| an agent's port forward (`ports.allow`)   | `ports.allow: true` (agents of the profile may forward ports without asking)                  |
 
 Everything else is listed with the reason and **not** proposed: isolation `none`, an untrusted
 template and a shared or restricted host zone, which no policy setting can waive (they need your
@@ -237,6 +238,45 @@ Home and End jump to the first and last entry, Enter opens or closes a folder. A
 refreshes the listing and copies the selected entry to the host (or a file or folder from the host
 into the sandbox). The names come from the sandbox, so they are shown as neutralised text (see
 below).
+
+## Preview: port forwards
+
+To look at a dev server that runs _in_ a sandbox (Vite, Flutter web, `php -S`) in your own browser, the
+**Overview** tab of the sandbox detail has a **Preview** (German: **Vorschau**) area at the bottom. It
+lists the forwarded ports of the sandbox: the port in the sandbox, the address on this computer
+(`http://127.0.0.1:<port>/`), whether a server answers there, and how many connections it served
+(where the backend counts them).
+
+- **Forward port** (German: **Port freigeben**) takes the port in the sandbox and, optionally, a port on
+  this computer (1024 to 65535; without it abox picks a free one). It is the same call as
+  `abox port add` and the `access_request` of kind `port`, so the policy applies and the audit log has
+  `sandbox.port.add`. If your policy needs a confirmation, the button turns into **Confirm** and shows
+  why. A refusal (host port taken, port already forwarded, ...) is shown with the manager's hint.
+- **No server answering** means that nothing in the sandbox accepts connections on that port. Most
+  often the server listens on `127.0.0.1` only; it has to listen on `0.0.0.0` (for example
+  `vite --host 0.0.0.0`, `php -S 0.0.0.0:8000`). The state is refreshed every few seconds.
+- **Open preview** (German: **Vorschau öffnen**) opens the address in your default browser;
+  **Remove** closes the forward. Forwards also end when the sandbox stops, is deleted or expires.
+- The area is disabled, with the reason written above the form, when the sandbox is not running, when
+  its network mode is `none` (no path from this computer to it: the template needs `allowlist` or
+  `open`), when it has no isolation (the process backend: a server there already listens on the host)
+  or when it is on a remote host. The manager checks again for every call.
+
+Forwards only ever bind `127.0.0.1`, so other computers cannot reach them, but every program and every
+web page open in a browser on this computer can. Treat the server in the sandbox accordingly.
+
+**What the app opens.** The page never passes a URL: it names the sandbox and the port inside it, and
+the main process asks the manager for the forwards that sandbox really has, builds
+`http://127.0.0.1:<host port>/` itself and hands only that to the system browser. A port that is not
+forwarded, a forward of another sandbox, another scheme, host or path, user info, a host port below
+1024: refused, nothing is opened (unit tests for the check, an e2e test with forged requests).
+
+**Requests from agents.** An agent asks with the MCP tool `sandbox_port_forward`. The request is shown
+in the **Approvals** view as **Port forward (preview)** (German: **Port-Weiterleitung (Vorschau)**),
+with the sandbox and the port in a sentence of its own, the risk notes of the policy (everything on
+this computer can then talk to that port) and the exact request. **Allow once** opens exactly that
+forward. **Allow permanently** proposes the one matching policy change, `ports.allow: true` for the
+profile, as a diff you confirm (see below).
 
 ## Hosts: utilisation, groups, engine
 
@@ -418,8 +458,8 @@ agent's input is paused and the pause is visible. abox does this for sandboxes a
   for good. Closing the terminal, leaving the tab or closing the window removes it at once.
 - Every tool of the agent that runs code in that sandbox or changes it, `sandbox_exec`,
   `sandbox_process_start`, `sandbox_process_stop`, `sandbox_write_file`, `sandbox_snapshot`,
-  `sandbox_restore`, `sandbox_start`, `sandbox_stop`, `sandbox_delete` and `access_request`
-  (a stop or delete would kill your terminal), answer `conflict`: "paused: a human is working in sandbox ...". They are refused, not queued: a
+  `sandbox_restore`, `sandbox_start`, `sandbox_stop`, `sandbox_delete`, `access_request` and
+  `sandbox_port_forward` (a stop or delete would kill your terminal), answer `conflict`: "paused: a human is working in sandbox ...". They are refused, not queued: a
   queued command would run at an arbitrary moment in the middle of your terminal session.
   Reading (files, listing, logs, inspect) keeps working so the agent can see what you did. Your own
   commands are never blocked.

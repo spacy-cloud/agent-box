@@ -226,6 +226,74 @@ is written until you confirm the diff; the save is the normal policy edit (valid
 refused when `policy.yaml` changed since the proposal. It affects every context that uses the profile, and from
 then on agents get the destination without a human decision, so read the diff.
 
+## Port forwards (previews)
+
+A port forward publishes one TCP port of a running sandbox on `127.0.0.1` of the machine that
+runs abox, so that you can open a dev server (Vite, Flutter web, `php -S`) in your browser:
+`abox port add <sandbox> <port>`, the GUI, or the MCP tool `sandbox_port_forward`. It is a hole **in**,
+not **out**: the sandbox gets no new way to reach anything.
+
+**What it exposes.** Anything that can connect to `127.0.0.1:<host port>` on your machine can talk
+to that port of the sandbox, with no authentication from abox. That is:
+
+- every other process on the machine, and every other user on a **shared computer** (the loopback
+  is not per user). Do not forward a port of a sandbox that runs something with write access (a
+  database admin, a code-execution endpoint, a dev server with an "open file" feature) on a
+  multi-user machine;
+- **web pages in your browser.** Any page you open can send requests to `http://127.0.0.1:<port>/`.
+  A page can also try **DNS rebinding**: a name it controls first resolves to its own server and
+  then to `127.0.0.1`, which turns the loopback port into a same-origin target for that page. On the
+  container backends the forwarder defends against that: a connection that starts like an HTTP
+  request is only passed on when its `Host` header names the loopback (`127.0.0.1`, `localhost`,
+  `*.localhost`, `[::1]`); anything else gets `403`. Traffic that does not look like HTTP (TLS,
+  other protocols) is passed on unchanged, and the **VM backend has no such check** (QEMU forwards
+  raw TCP): there a dev server that checks `Host` itself (Vite's `server.allowedHosts`) is the
+  protection. Plain cross-site requests (a page that `fetch`es your loopback port, a form that
+  posts to it) are not stopped by a `Host` check: they carry the loopback host. Treat a forwarded
+  dev server like any local dev server.
+
+**What it does not do.**
+
+- It binds **only `127.0.0.1`** (IPv4 loopback), never `0.0.0.0`, `::` or a LAN address, and it
+  refuses host ports below 1024. The container backends ask the engine for `HostIp 127.0.0.1` and
+  check the answer (a forward that is bound anywhere else is torn down again); QEMU is given
+  `tcp:127.0.0.1:<port>`. There is no IPv6 listener.
+- It gives the sandbox **no new egress.** The sandbox stays on the network it had (allowlist: its
+  internal network with no route out; open: the shared `abox-open` network). On the container
+  backends the forward is a sidecar container with the same properties as the proxy sidecar (not
+  privileged, all capabilities dropped, read-only root, small memory and pid limits) that connects
+  to exactly one address, the sandbox port it was started for. The sandbox can reach that sidecar
+  on the network they share, but the sidecar only leads back to the sandbox itself. For an allowlist
+  sandbox the published side sits on the shared `abox-egress` network, which the sandbox is not on
+  (the proxy sidecars of other allowlist sandboxes are, and they refuse private addresses unless
+  you approved a private-address exception); for an `open` sandbox the sidecar sits on the shared
+  `abox-open` network, where all open sandboxes can already reach each other. A sandbox with
+  network mode `none` has no interface at all, so it **cannot** be forwarded (abox does not
+  weaken `none` for it); create it with mode `allowlist` (a template needs at least one destination there) or `open` if you want previews.
+- It is TCP only. UDP is not forwarded.
+- It is not tied to the abox process that created it. The CLI is short-lived, so the forward is
+  held by the backend (the sidecar container, the QEMU process) and keeps working after
+  `abox port add` returned; nothing runs in the foreground.
+
+**Agents.** A forward is a request like the others and follows the [approval
+model](#policy-model): the profile key `ports: { allow: false | ask | true, max: N }` decides.
+`ask` (the default) needs a human decision for every forward, in every approval mode; `true`
+lets the agent forward without a question (approval mode `strict` still asks); `false` denies it.
+`max` (default 3) limits the forwards one sandbox has open at the same time. The approval is bound
+to the sandbox and the port. An agent cannot choose the host port (abox picks a free one on
+`127.0.0.1`), so it cannot squat on a port you rely on. A human adds forwards directly and may fix
+the host port (1024 and above).
+
+**Lifetime.** Forwards end when the sandbox stops, is removed or reaches its deadline, and are not
+re-created by `abox start`. The sidecar also ends itself at the sandbox's deadline (and follows
+`abox extend`). The audit log has `sandbox.port.add`, `sandbox.port.remove` (requested closing) and
+`sandbox.port.close` (the sandbox ended) with the ports and a connection summary (accepted, refused
+by the Host check, failed); it never records requests, hosts or paths of individual connections.
+
+**Not supported:** sandboxes on remote ssh hosts (the engine would publish the port on the remote
+machine's loopback, not on yours), sandboxes that run on the host itself (isolation `none`; a server
+there already listens on the host), and UDP.
+
 ## Secrets
 
 - Secrets live in the **host keyring** (libsecret via `secret-tool`). They never appear in
@@ -338,6 +406,8 @@ templates, limits (sandbox count, CPUs, memory, TTL), workspace roots and modes,
 presets, mounts, allowed secrets and injection methods, minimum isolation per capability, and the
 [package caches](#package-caches) (`caches: true|false`, `cache_max_bytes`). Profiles can extend
 each other. The agent contexts themselves (which names exist and which profile
+presets, mounts, allowed secrets and injection methods, port forwards (`ports`) and minimum
+isolation per capability. Profiles can extend each other. The agent contexts themselves (which names exist and which profile
 each one uses) are defined in the same `policy.yaml`; there is no separate `agents.yaml`. The
 tokens for HTTP agents are not in a file: they live in the state database (`state.db`), as SHA-256
 hashes only. Illustrative example:
@@ -360,6 +430,7 @@ profiles:
     secrets:
       allowed: [example-token]
       inject: [proxy]
+    ports: { allow: ask, max: 3 } # preview forwards: false, ask (default) or true; at most 3 per sandbox
     min_isolation:
       network_open: vm
     caches: true # per-project package caches (the default); false = none for this profile
@@ -619,6 +690,13 @@ of this documentation; it will be published per release alongside the changelog.
 - TLS interception (for `inject: proxy`) speaks **HTTP/1.1 only**; clients that insist on HTTP/2
   or pin certificates fail for those hosts.
 - Programs that ignore proxy settings simply fail in `allowlist` mode (intended).
+- **Port forwards** are reachable by every process and browser page on the machine, see [port
+  forwards](#port-forwards-previews). The `Host` check against DNS rebinding exists only on the
+  container backends and only for traffic that looks like HTTP; it does not stop plain cross-site
+  requests. The VM backend forwards raw TCP. IPv6 loopback is not bound. Not verified: Podman and
+  rootless engines (the forward needs a published port on a network that has a second, external
+  side), and the VM forward has been tested against QEMU itself but not with a booted guest (no
+  KVM on the development machine).
 - **Secret masking in output is best effort.** Known values and their base64/URL/JSON forms are
   masked; transformed or partial values are not. `inject: env` and `inject: file` expose the
   value to code in the sandbox by design.
