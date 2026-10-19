@@ -1753,6 +1753,8 @@ button.change-file-name:hover {
 .changes-bar .actions {
   margin: 0;
   flex-wrap: nowrap;
+}
+
 /* ---- overview (start page) ---------------------------------------------------------------------------------------- */
 .stat-grid {
   list-style: none;
