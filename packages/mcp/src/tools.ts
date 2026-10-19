@@ -96,17 +96,57 @@ export type Handler<S extends Shape> = (
   rt: Runtime,
 ) => Promise<ToolOutcome>;
 
+/**
+ * What the generated tool catalog (`docs/mcp-catalog.md`) says about a tool beyond its name, schema and
+ * annotations. Required, so adding a tool means documenting who may call it, what it returns and when
+ * it asks a human.
+ */
+export interface ToolDoc {
+  /**
+   * Whose objects the tool reaches: `context` = the caller's own profile and listings, `sandbox` = one of
+   * the caller's own sandboxes, `process` = a process of one of the caller's own sandboxes.
+   */
+  scope: 'context' | 'sandbox' | 'process';
+  /** Answers `conflict` ("paused") while a human has a terminal open in the sandbox. */
+  pausedWhenHumanAttached?: true;
+  /** When a human has to decide (`pending_approval`); `None.` when it never does. */
+  approval: string;
+  /** Top-level fields of the successful result, beside `ok` and `message`. */
+  result: string;
+}
+
 export interface ToolDef<S extends Shape> {
   name: string;
   title: string;
   description: string;
   input: S;
   annotations: ToolAnnotations;
+  doc: ToolDoc;
   handler: Handler<S>;
 }
 
 /** Wraps a tool into the SDK registration; the transport-level runner is injected by server.ts. */
 export type Register = <S extends Shape>(def: ToolDef<S>) => void;
+
+// Approval behaviour shared by several tools (rendered into the generated tool catalog).
+const APPROVAL_WAIT =
+  ' Waits for the decision up to `limits.approvalWaitMs`, then answers `pending_approval`.';
+const APPROVE_CREATE =
+  "Depends on the profile's approval mode: always in `strict`; in `medium` and `open` only when the request goes beyond the profile or needs a human (for example a project template nobody approved yet)." +
+  APPROVAL_WAIT +
+  ' Repeat the identical call (same `request_id`) after approval.';
+const APPROVE_EXEC =
+  'Only when the profile asks for it: approval mode `strict` or `exec.approval: true`.' +
+  APPROVAL_WAIT +
+  ' Repeat the identical call after approval.';
+const APPROVE_ACCESS =
+  "A request within the profile's limits is applied (in `strict` mode a human always decides); beyond the profile a human decides." +
+  APPROVAL_WAIT +
+  ' Do not repeat the call: the change is applied on approval, check with `sandbox_inspect`.';
+const APPROVE_PORT =
+  '`action=add`: by default a human decides every forward (`ports.allow: ask`); `true` allows it without a question (mode `strict` still asks), `false` denies it.' +
+  APPROVAL_WAIT +
+  ' `list` and `remove` never need approval.';
 
 const READ: ToolAnnotations = {
   readOnlyHint: true,
@@ -267,6 +307,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'template_list',
     title: 'List templates',
+    doc: {
+      scope: 'context',
+      approval: 'None.',
+      result:
+        '`templates[]` (`name`, `description`, `use_for`, `backend`, `isolation`, `network_mode`, `usable`, `source`, `project`, `trusted`, `needs_approval`, `shadows`, `allowed`, `backend_available`, `ready`, `not_ready_reason`), `hidden_count`',
+    },
     description:
       "List sandbox templates you may use (language/tooling, isolation, network). Call this first and pick one by its description; never invent a template name. Pass workspace_path (the project you will share) to include that project's own templates from its .sandbox directory; they are marked project=true and need human approval until trusted. A project template named like a built-in one hides it (shadows=[builtin]).",
     input: {
@@ -336,6 +382,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'template_show',
     title: 'Show template',
+    doc: {
+      scope: 'context',
+      approval: 'None.',
+      result:
+        '`template`, `shadows`, `trusted`, `allowed`, `backend_available`, `capabilities`, `effective_limits`, `warnings`',
+    },
     description:
       'Show one template in detail with the limits that apply to you (resources, network, mounts, TTL). For a template of a project (source=project) pass the same workspace_path as for template_list; trusted says whether a human approved its current content.',
     input: {
@@ -382,6 +434,11 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_create',
     title: 'Create sandbox',
+    doc: {
+      scope: 'context',
+      approval: APPROVE_CREATE,
+      result: '`status` (`created`), `idempotent`, `sandbox`, `warnings`',
+    },
     description:
       'Create an isolated sandbox from a template (without workspace the sandbox starts empty; pass workspace.path to share a project). Pass a fresh request_id so a retry returns the same sandbox. If it answers status=pending_approval, tell the human to approve, then repeat the identical call.',
     input: {
@@ -552,6 +609,11 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_list',
     title: 'List sandboxes',
+    doc: {
+      scope: 'context',
+      approval: 'None.',
+      result: '`sandboxes[]` (the `sandbox` object), `unreachable_hosts`',
+    },
     description:
       'List your own sandboxes with state and remaining lifetime. Use it to find leftovers to delete.',
     input: { state: z.enum(SANDBOX_STATES).optional().describe('Only sandboxes in this state.') },
@@ -572,6 +634,11 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_inspect',
     title: 'Inspect sandbox',
+    doc: {
+      scope: 'sandbox',
+      approval: 'None.',
+      result: '`sandbox`, `processes[]`, `pending_approvals`, `ports[]`',
+    },
     description:
       'Show state, effective limits (what policy granted vs. what the backend reports), network, mounts, TTL, processes, port forwards and pending approvals of one of your sandboxes.',
     input: { id: sandboxId },
@@ -597,6 +664,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_start',
     title: 'Start sandbox',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: 'None.',
+      result: '`sandbox`',
+    },
     description:
       'Resume one of your stopped sandboxes (its workspace and files are kept). Expired sandboxes cannot be started: extend the TTL before it ends (access_request kind ttl) or create a new one.',
     input: { id: sandboxId },
@@ -615,6 +688,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_stop',
     title: 'Stop sandbox',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: 'None.',
+      result: '`sandbox`',
+    },
     description:
       'Stop a sandbox (processes end; workspace is kept until sandbox_delete). Prefer sandbox_delete when you are done.',
     input: { id: sandboxId },
@@ -633,6 +712,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_delete',
     title: 'Delete sandbox',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: 'None.',
+      result: '`id`, `removed`',
+    },
     description:
       'Remove a sandbox and its workspace copy for good. Export results first (sandbox_export). Always clean up when finished, also after errors.',
     input: { id: sandboxId },
@@ -655,6 +740,13 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_exec',
     title: 'Run command',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: APPROVE_EXEC,
+      result:
+        '`status` (`completed`), `exit_code`, `stdout`, `stderr`, `truncated`, `timed_out`, `duration_ms`, `network`, `network_hint`, `hint`',
+    },
     description:
       'Run a command in the sandbox and wait for it to finish. Output is capped (~64 KiB per stream) and marked truncated; redirect long output to a file and read it with sandbox_read_file. For servers or long jobs use sandbox_process_start. If a human has taken over the sandbox in a terminal this answers conflict "paused": wait and retry later.',
     input: {
@@ -737,6 +829,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_process_start',
     title: 'Start background process',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: APPROVE_EXEC,
+      result: '`status` (`started`), `process_id`, `process`',
+    },
     description:
       'Start a long-running process (server, watcher, long build) in the background. Returns process_id; read output with sandbox_process_logs and end it with sandbox_process_stop.',
     input: { id: sandboxId, argv: argvSchema, cmd: cmdSchema, cwd: cwdSchema, env: envSchema },
@@ -766,6 +864,11 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_process_logs',
     title: 'Read process logs',
+    doc: {
+      scope: 'process',
+      approval: 'None.',
+      result: '`process`, `content`, `next_offset`, `size`, `truncated`, `hint`',
+    },
     description:
       'Read output of a background process. Use tail for the last N lines, or since (byte offset = next_offset of the previous call) to read only new output.',
     input: {
@@ -816,6 +919,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_process_stop',
     title: 'Stop background process',
+    doc: {
+      scope: 'process',
+      pausedWhenHumanAttached: true,
+      approval: 'None.',
+      result: '`process`',
+    },
     description: 'Stop a background process started with sandbox_process_start (TERM, then KILL).',
     input: { process_id: processId },
     annotations: {
@@ -834,6 +943,11 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_read_file',
     title: 'Read file',
+    doc: {
+      scope: 'sandbox',
+      approval: 'None.',
+      result: '`path`, `size`, `truncated`, `encoding`, `content`, `hint`',
+    },
     description:
       'Read a file inside the sandbox (paths are sandbox paths; relative paths start at the workspace). Large files are cut at max_bytes and marked truncated; binary files come back base64-encoded.',
     input: {
@@ -876,6 +990,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_write_file',
     title: 'Write file',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: 'None.',
+      result: '`path`, `size`',
+    },
     description:
       'Write a file inside the sandbox (sandbox paths only; creates or overwrites). Never write secrets. Use encoding=base64 for binary content. Up to 8 MiB of content per call; for bigger files put them in the project workspace or create them inside the sandbox with sandbox_exec. Writes run as the sandbox user: root-owned and abox-managed paths are refused.',
     input: {
@@ -929,6 +1049,11 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_list_dir',
     title: 'List directory',
+    doc: {
+      scope: 'sandbox',
+      approval: 'None.',
+      result: '`entries[]` (`name`, `type`, `size`, `mode`, `mtime_ms`; at most 1000), `truncated`',
+    },
     description: 'List a directory inside the sandbox (default: the workspace).',
     input: {
       id: sandboxId,
@@ -955,6 +1080,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_network_log',
     title: 'Network log',
+    doc: {
+      scope: 'sandbox',
+      approval: 'None.',
+      result:
+        '`mode`, `totals`, `truncated`, `entries[]` (`host`, `port`, `decision`, `allowed`, `denied`, `count`, `first_seen_at`, `last_seen_at`, `reason`, `allowed_now`, ...)',
+    },
     description:
       'What the egress proxy of one of your allowlist sandboxes allowed and denied, grouped by destination (counts, times, reason). Use it when a download fails or sandbox_exec reports denied network requests. You cannot allow anything yourself: ask with access_request kind=network (details.domains). No request contents, paths or headers.',
     input: {
@@ -1021,6 +1152,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_snapshot',
     title: 'Snapshot sandbox',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: 'None.',
+      result: '`snapshot_id`, `name`',
+    },
     description:
       'Save the sandbox state under a name before a risky step. Answers code=unsupported when the backend cannot snapshot; then carry on.',
     input: {
@@ -1042,6 +1179,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_restore',
     title: 'Restore snapshot',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: 'None.',
+      result: '`restored`',
+    },
     description:
       'Reset the sandbox to a snapshot (discards changes made since). Pass snapshot_id from sandbox_snapshot (or its name).',
     input: {
@@ -1080,6 +1223,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_export',
     title: 'Export result',
+    doc: {
+      scope: 'sandbox',
+      approval: 'None.',
+      result:
+        '`sandbox_id`, `format`, `content`, `content_lossy`, `branch`, `commit`, `out_dir`, `written`, `files[]`, `flagged[]`, `stats`, `warnings[]`, `truncated`, `hint`',
+    },
     description:
       'Hand results back: diff or patch (text), branch (git branch abox/... in the source repo) or files (copied to an abox-owned directory). Nothing is applied to the host project. Show it to the human and report every flagged path (CI files, hooks, build scripts).',
     input: {
@@ -1161,6 +1310,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'access_request',
     title: 'Request more access',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: APPROVE_ACCESS,
+      result: '`status` (`applied`), `kind`, `sandbox`',
+    },
     description:
       'Ask for more rights for a running sandbox: kind=ttl (details.ttl), resources (details.cpus/memory, up to your limits) or network (details.domains/presets, only for an allowlist sandbox). mount and a new network mode are unsupported on a running sandbox: create a new one. Beyond your profile a human decides; give an honest reason. Do not repeat a pending request; poll with sandbox_inspect.',
     input: {
@@ -1217,6 +1372,13 @@ export function registerTools(register: Register): void {
   register({
     name: 'sandbox_port_forward',
     title: 'Forward a sandbox port to the human',
+    doc: {
+      scope: 'sandbox',
+      pausedWhenHumanAttached: true,
+      approval: APPROVE_PORT,
+      result:
+        '`add`: `status` (`applied`), `port` (`sandbox_port`, `host_address`, `host_port`, `url`, `target`); `list`: `ports[]`; `remove`: `removed`',
+    },
     description:
       'Show the human a dev server running in your sandbox (Vite, Flutter web, php -S): action=add publishes TCP port `port` on 127.0.0.1 of their machine and returns the URL. A human approves by default (pending_approval). Loopback only, no new way out; the server must listen on 0.0.0.0, not just 127.0.0.1. Needs a running sandbox with network allowlist or open (not none); ends when it stops. action=list/remove.',
     input: {
@@ -1303,6 +1465,12 @@ export function registerTools(register: Register): void {
   register({
     name: 'policy_show',
     title: 'Show my limits',
+    doc: {
+      scope: 'context',
+      approval: 'None.',
+      result:
+        '`context_id`, `owner`, `kind`, `profile`, `allowed_hosts`, `policy` (`content_hash`, `source`, `revision`)',
+    },
     description:
       'Show the limits of your own profile (templates, resources, network, mounts, TTL, approvals). Read-only; agents cannot change policy.',
     input: {},

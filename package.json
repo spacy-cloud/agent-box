@@ -17,7 +17,9 @@
     "test:docker": "ABOX_TEST_DOCKER=1 vitest run --no-file-parallelism",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "catalogs": "node scripts/gen-catalogs.mjs",
+    "catalogs:check": "node scripts/gen-catalogs.mjs --check"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "abox error envelope",
+  "description": "The failure shape printed by `abox --json` and returned as structuredContent by the MCP tools (see docs/errors.md).",
+  "type": "object",
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "const": false
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "invalid_input",
+        "template_invalid",
+        "not_found",
+        "unsupported",
+        "conflict",
+        "policy_denied",
+        "approval_required",
+        "approval_denied",
+        "approval_expired",
+        "untrusted_template",
+        "backend_error",
+        "backend_unavailable",
+        "host_unreachable",
+        "timeout",
+        "internal",
+        "check_failed"
+      ],
+      "description": "Stable error code, see docs/errors.md."
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable description of the failure."
+    },
+    "hint": {
+      "description": "Actionable next step.",
+      "type": "string"
+    },
+    "issues": {
+      "description": "Field-level problems, when there are some.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "description": "Field path, for example `resources.memory`.",
+            "type": "string"
+          },
+          "line": {
+            "description": "1-based line in the source file.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "column": {
+            "description": "1-based column in the source file.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "message": {
+            "type": "string",
+            "description": "What is wrong."
+          }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+      }
+    },
+    "details": {
+      "description": "Structured extras, for example `reasons` of a policy denial.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {}
+    }
+  },
+  "required": ["ok", "code", "message"],
+  "additionalProperties": false
+}

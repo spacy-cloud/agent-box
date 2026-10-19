@@ -7,3 +7,6 @@ export type { ServeHttpOptions, HttpServerHandle, HttpAddress } from './http.js'
 export type { McpLimits } from './runtime.js';
 export { TOOL_NAMES } from './names.js';
 export { MAX_MESSAGE_BYTES, WRITE_FILE_MAX_BYTES } from './limits.js';
+export { describeTools } from './catalog.js';
+export type { ToolDescription } from './catalog.js';
+export type { ToolDoc } from './tools.js';
