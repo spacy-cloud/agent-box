@@ -17,6 +17,8 @@ import type { Internals } from './internals.js';
 import { destroySandbox } from './lifecycle.js';
 import { collectAllNetworkEvents, collectNetworkEvents } from './network-audit.js';
 import { rotateLogs } from './exec.js';
+import { backendGroups } from './backends.js';
+import { gcSnapshots } from './snapshots.js';
 import { catalogFor, gcImagesInternal } from './templates.js';
 import type {
   AgentTokenView,
@@ -371,23 +373,6 @@ function entry(
   detail: string,
 ): ReconcileEntry {
   return { id: r.id, host: r.host, backend, detail };
-}
-
-/** Every (host, backend) pair worth asking: the ones with registry rows and the local host's backends. */
-async function backendGroups(
-  I: Internals,
-  recs: Array<{ host: string; backend: BackendKind }>,
-): Promise<Array<{ host: string; backend: BackendKind }>> {
-  const groups = new Map<string, { host: string; backend: BackendKind }>();
-  for (const r of recs) groups.set(`${r.host}|${r.backend}`, { host: r.host, backend: r.backend });
-  try {
-    const local = await I.resolveHost('local');
-    for (const b of local.backends)
-      if (I.providerFactories[b]) groups.set(`local|${b}`, { host: 'local', backend: b });
-  } catch {
-    /* no local host */
-  }
-  return [...groups.values()];
 }
 
 export async function reconcileInternal(
@@ -935,6 +920,7 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
     workspaces: [],
     images: [],
     caches: [],
+    snapshots: [],
     logs: { files: 0, bytes: 0 },
     approvalsExpired: 0,
     errors: [],
@@ -999,7 +985,12 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
   report.caches = cacheGc.removed;
   report.errors.push(...cacheGc.errors);
 
-  // 5. logs past retention, 6. approvals
+  // 5. snapshots whose sandbox is gone (removing a sandbox removes its snapshots; this is what that missed)
+  const snapshotGc = await gcSnapshots(I, ctx.owner, dryRun);
+  report.snapshots = snapshotGc.found;
+  report.errors.push(...snapshotGc.errors);
+
+  // 6. logs past retention, 7. approvals
   report.logs = await rotateLogs(I, dryRun);
   if (!dryRun) report.approvalsExpired = (await expireApprovalsOp(I, caller)).length;
   I.audit(ctx.owner, 'gc', {
@@ -1010,6 +1001,7 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
       workspaces: report.workspaces.length,
       images: report.images.flatMap((i) => i.refs).length,
       caches: report.caches.length,
+      snapshots: report.snapshots.length,
       logFiles: report.logs.files,
       errors: report.errors.length,
     },
@@ -1021,7 +1013,8 @@ export async function gc(I: Internals, caller: Caller, o: GcOptions = {}): Promi
 // gc --orphans
 // ---------------------------------------------------------------------------
 
-const ORPHAN_KIND_ORDER = ['container', 'network', 'volume'] as const;
+// Images last: the engine refuses to remove one while a container stands on it.
+const ORPHAN_KIND_ORDER = ['container', 'network', 'volume', 'image'] as const;
 
 /** Resources created or started less than this long ago count as in use. */
 const ORPHAN_ACTIVE_WINDOW_MS = 3_600_000;

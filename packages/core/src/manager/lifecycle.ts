@@ -21,7 +21,7 @@ import {
   normalizeHost,
 } from '../secrets/inject.js';
 import { expandNetworkPresets } from '../template/network-presets.js';
-import { isolationAtLeast, makeSandboxId } from '../types.js';
+import { isolationAtLeast, makeSandboxId, parseSandboxId } from '../types.js';
 import type {
   AccessMode,
   NetworkMode,
@@ -49,6 +49,7 @@ import { collectNetworkEvents } from './network-audit.js';
 import type { Internals, StoredEffective } from './internals.js';
 import { auditPortsClosing, portsOf } from './ports.js';
 import { createRequestSchema } from './schemas.js';
+import { resolveCloneSource, validateSnapshotSource } from './snapshots.js';
 import { requireNotTakenOver } from './takeover.js';
 import {
   checkTemplateForProvider,
@@ -271,7 +272,14 @@ export async function createSandbox(
   I.requirePolicyValid(ctx, 'sandbox.create', 'creating sandboxes');
   const req = parseInput(createRequestSchema, rawReq, 'create request');
   const owner = ctx.owner;
-  const requestHash = hashJson({ ...req, requestId: undefined });
+  // Creating from a snapshot is a human action (the GUI, `abox clone`): an agent never names one.
+  if (opts.fromSnapshot) I.requireHuman(ctx, 'sandbox.clone');
+  const fromSnapshot = opts.fromSnapshot ? validateSnapshotSource(opts.fromSnapshot) : undefined;
+  const requestHash = hashJson({
+    ...req,
+    requestId: undefined,
+    ...(fromSnapshot ? { fromSnapshot } : {}),
+  });
   const waitMs = Math.max(0, opts.waitForApprovalMs ?? I.config.limits.approvalWaitMs);
 
   // 1. idempotency
@@ -281,7 +289,15 @@ export async function createSandbox(
   }
 
   // 2. host
-  const hostId = req.host ?? 'local';
+  // A snapshot lives on the host of its sandbox; a clone is made there.
+  const snapshotHost = fromSnapshot ? parseSandboxId(fromSnapshot.sandboxId).host : undefined;
+  if (snapshotHost !== undefined && req.host !== undefined && req.host !== snapshotHost) {
+    throw new AboxError(
+      'invalid_input',
+      `the snapshot lives on host '${snapshotHost}'; a sandbox made from it is created there, not on '${req.host}'`,
+    );
+  }
+  const hostId = req.host ?? snapshotHost ?? 'local';
   if (
     ctx.kind === 'agent' &&
     !ctx.allowedHosts.includes('*') &&
@@ -320,6 +336,16 @@ export async function createSandbox(
   const provider = I.providerFor(host, template.backend);
   const caps = provider.capabilities();
   throwForIssues(template, checkTemplateForProvider(template, provider).issues);
+  const snapshotImage = fromSnapshot
+    ? await resolveCloneSource(I, provider, template, fromSnapshot)
+    : undefined;
+  if (snapshotImage && template.labels['readonly-rootfs'] === 'true') {
+    throw new AboxError(
+      'unsupported',
+      'a sandbox with a read-only root filesystem cannot be created from a snapshot',
+      { hint: 'Its home and workspace are volumes that a snapshot does not hold.' },
+    );
+  }
 
   // 4. merge overrides
   const ov = req.overrides ?? {};
@@ -456,6 +482,7 @@ export async function createSandbox(
     mounts: mounts.map((m) => `${m.target}\0${m.hostPath}\0${m.access}`).sort(),
     // only the deviation from the default, so requests that did not use it keep their key
     ...(cachePlan.status === 'opted_out' ? { cache: false } : {}),
+    ...(fromSnapshot ? { fromSnapshot } : {}),
   });
   if (req.requestId) {
     const existing = await waitForPeer(I, owner, req.requestId, {
@@ -483,6 +510,15 @@ export async function createSandbox(
     }
   }
   const deliveryKind = deliveryKindFor(wsMode);
+  if (snapshotImage && deliveryKind === 'copy') {
+    throw new AboxError(
+      'invalid_input',
+      `workspace mode '${wsMode}' copies a folder into the sandbox, on top of the workspace the snapshot already holds`,
+      {
+        hint: "Use workspace mode 'empty' to continue with the snapshot's workspace, or 'mount' / 'worktree' to put a host folder over it.",
+      },
+    );
+  }
   if (!caps.workspaceDelivery.includes(deliveryKind)) {
     // On a remote host a bind of a local directory cannot exist: say so, and name what works there.
     const bindOnRemote = caps.remote && deliveryKind === 'bind';
@@ -635,6 +671,7 @@ export async function createSandbox(
           ...(wsGitignore === false ? { gitignore: false } : {}),
         },
         backend: template.backend,
+        ...(fromSnapshot ? { fromSnapshot } : {}),
       },
     };
     const g = await gate(I, {
@@ -890,6 +927,9 @@ export async function createSandbox(
       env: { ...template.env, ...cachePlan.env, ...envSecrets },
       files,
       user: template.user,
+      // Secrets inside the sandbox end up in its snapshots; the backend records it on them.
+      secretMaterial: template.secrets.some((x) => x.inject !== 'proxy'),
+      ...(snapshotImage ? { fromSnapshot: snapshotImage } : {}),
       ...(cachePlan.mounts.length > 0 ? { caches: cachePlan.mounts } : {}),
       createdAt,
       expiresAt,
@@ -936,6 +976,7 @@ export async function createSandbox(
       policy: policyEffective,
       provider: info.effective,
       imageRef: image.ref,
+      ...(fromSnapshot ? { clonedFrom: fromSnapshot } : {}),
       ...(prepared.warnings.length > 0 ? { workspaceWarnings: prepared.warnings } : {}),
       ...(cachePlan.status !== 'none'
         ? {
@@ -991,6 +1032,7 @@ export async function createSandbox(
           ? { caches: { status: cachePlan.status, keys: cachePlan.mounts.map((m) => m.key) } }
           : {}),
         approvalId,
+        ...(fromSnapshot ? { fromSnapshot } : {}),
         notes: ev.decision === 'allow' ? ev.notes : [],
         policy: policyEffective,
         effective: info.effective,

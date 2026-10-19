@@ -11,6 +11,7 @@ import { ActivityTimeline } from '../components/ActivityTimeline';
 import { NetworkTab } from '../components/NetworkLog';
 import { PortsPanel } from '../components/PortsPanel';
 import { ChangesTab } from '../components/Changes';
+import { SnapshotsTab } from '../components/SnapshotsTab';
 import { UnifiedDiff } from '../components/review';
 import {
   Badge,
@@ -203,7 +204,9 @@ export function DetailView(props: { id: string }) {
             {tab === 'files' ? <FilesTab id={s.id} /> : null}
             {tab === 'changes' ? <ChangesTab id={s.id} onCount={setChangeCount} /> : null}
             {tab === 'logs' ? <LogsTab id={s.id} /> : null}
-            {tab === 'snapshots' ? <SnapshotsTab id={s.id} /> : null}
+            {tab === 'snapshots' ? (
+              <SnapshotsTab id={s.id} name={s.name} template={s.template} backend={s.backend} />
+            ) : null}
           </Tabs>
           {extend ? (
             <ExtendDialog
@@ -786,117 +789,6 @@ function LogsTab(props: { id: string }) {
           ) : null}
         </>
       )}
-    </>
-  );
-}
-
-// -- snapshots -----------------------------------------------------------------------------------------------------
-
-function SnapshotsTab(props: { id: string }) {
-  const { t, notify } = useApp();
-  const snapshots = useQuery('snapshots:list', { id: props.id }, { pollMs: 5000 });
-  const [name, setName] = useState('');
-  const [restoreId, setRestoreId] = useState<string | null>(null);
-  const [error, setError] = useState<unknown>();
-  const snaps = snapshots.data ?? [];
-
-  async function create() {
-    setError(undefined);
-    try {
-      const r = await call('snapshots:create', { id: props.id, name });
-      notify('ok', t('detail.snap.created', { id: r.snapshotId }));
-      setName('');
-      await snapshots.reload();
-    } catch (e) {
-      setError(e);
-    }
-  }
-  async function restore(id: string) {
-    setRestoreId(null);
-    try {
-      await call('snapshots:restore', { id: props.id, snapshotId: id });
-      notify('ok', t('detail.snap.restored', { id }));
-    } catch (e) {
-      setError(e);
-    }
-  }
-  return (
-    <>
-      <p className="muted">{t('detail.snap.hint')}</p>
-      <form
-        className="with-button"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void create();
-        }}
-      >
-        <Field label={t('detail.snap.name')} hint={t('detail.snap.nameHint')}>
-          {(id) => (
-            <input
-              id={id}
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              pattern="[A-Za-z0-9._-]{1,64}"
-              required
-            />
-          )}
-        </Field>
-        <button type="submit" className="primary" disabled={!/^[A-Za-z0-9._-]{1,64}$/.test(name)}>
-          {t('detail.snap.create')}
-        </button>
-      </form>
-      {error ? <ErrorBox error={error} /> : null}
-      {snapshots.error ? <ErrorBox error={snapshots.error} /> : null}
-      {snapshots.loading && !snapshots.data ? <Loading /> : null}
-      {snapshots.data && snaps.length === 0 ? (
-        <p className="muted">{t('detail.snap.empty')}</p>
-      ) : null}
-      {snaps.length > 0 ? (
-        <div className="table-wrap">
-          <table>
-            <caption className="sr-only">{t('detail.tab.snapshots')}</caption>
-            <thead>
-              <tr>
-                <th scope="col">{t('detail.snap.name')}</th>
-                <th scope="col">ID</th>
-                <th scope="col">{t('audit.col.time')}</th>
-                <th scope="col">{t('sandboxes.col.actions')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {snaps.map((snap) => (
-                <tr key={snap.id}>
-                  <td>
-                    <Safe text={snap.name} max={80} />
-                  </td>
-                  <td>
-                    <Safe text={snap.id} max={80} className="mono" />
-                  </td>
-                  <td className="mono">{formatTimestamp(snap.createdAt)}</td>
-                  <td>
-                    <button type="button" onClick={() => setRestoreId(snap.id)}>
-                      {t('detail.snap.restore')}
-                      <span className="sr-only"> {safeInline(snap.name, 60)}</span>
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-      {restoreId ? (
-        <ConfirmDialog
-          title={t('detail.snap.restore')}
-          confirmLabel={t('detail.snap.restore')}
-          danger
-          onClose={() => setRestoreId(null)}
-          onConfirm={() => void restore(restoreId)}
-        >
-          <p>{t('detail.snap.restoreConfirm', { id: restoreId })}</p>
-        </ConfirmDialog>
-      ) : null}
     </>
   );
 }

@@ -249,8 +249,27 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
 - `snapshot(caller, id, name) -> {snapshotId}`, `restore(caller, id, snapshotIdOrName)`: `unsupported` (with hint)
   unless `capabilities().snapshots`. `restore` accepts the backend's snapshot id or the name given to `snapshot` (the
   newest snapshot of that name; an exact id wins), resolved through the snapshot index; it returns `{restored: <id>}`. Every snapshot is indexed in the state db (`snapshots` table, forgotten when the
-  sandbox is removed); `listSnapshots` reads that index.
-- `listSnapshots(caller, id) -> Array<{id, name, createdAt}>` (owner/human, oldest first). `id` is what `restore` takes.
+  sandbox is removed). The index is what lists a snapshot for a backend that cannot list its own.
+- `listSnapshots(caller, id) -> SnapshotView[]` (owner/human, oldest first): `{id, name, createdAt, sizeBytes?,
+deletable, cloneable, cloneBlocked?: 'backend'|'secrets'}`. `id` is what `restore` takes. Where the provider has
+  `listSnapshots` the list is the backend's (so it has sizes and no stale rows); otherwise it is the index
+  (`deletable: false`, `cloneable: false`).
+- `listAllSnapshots(caller) -> {snapshots: SnapshotEntry[], totalBytes, unreachable}` (human only): every snapshot of
+  every (host, backend) group, each entry also `{host, backend, sandboxId, sandboxName?, template?, orphaned}`;
+  `orphaned` = no live registry row for the sandbox. `deleteSnapshots(caller, refs: Array<{backend, sandboxId,
+snapshotId}>) -> {removed, errors}` (human only, 1 to 500, audited as `snapshot.delete`, a failing one does not
+  stop the others). Both need provider support: `listSnapshots(opts?)` and `deleteSnapshot(sandboxId, snapshotId)`
+  are optional methods of `SandboxProvider` (a snapshot already gone is not an error; one of another sandbox is
+  `not_found`).
+- `createFromSnapshot(caller, {sandboxId, snapshotId}, req, opts?) -> CreateResult` (human only; a thin wrapper that
+  passes `CreateOptions.fromSnapshot` to `createSandbox`, which refuses it for an agent). Everything of the create
+  path runs unchanged; the snapshot only becomes `SandboxSpec.fromSnapshot` (the backend's image instead of the
+  template image; needs `capabilities().snapshotClone`). Before anything is built: the snapshot must exist for the
+  backend, carry the template's name, and not hold secrets (`ProviderSnapshot.carriesSecrets`, else the registry's
+  `keyringRefs` of the source; unknown counts as holding them); `copy`-delivered workspaces are refused. The
+  request and effective-request hashes include the snapshot, the audit entry has `details.fromSnapshot`, and
+  `StoredEffective.clonedFrom` records it. `SandboxSpec.secretMaterial` tells the backend to record whether the
+  sandbox got env/file secrets (it ends up on every snapshot).
 - `exportSandbox(caller, id, {format: diff|patch|branch|files, paths?, outDir?, branchName?, force?}) -> ExportResult & {sandboxId, outDir?}`
   via `exportWorkspace` with the stored `WorkspaceRecord`. **Never applies anything.** The audit entry lists
   the `flagged` paths. Agents: no `outDir` (files go to `<dataDir>/exports/<short>/<ts>`), branch names
@@ -270,7 +289,7 @@ attach(caller, id, opts: { cols: number; rows: number; argv?: string[] }): Promi
 copyIn(caller, id, hostPath: string, sandboxPath: string): Promise<void>
 copyOut(caller, id, sandboxPath: string, hostPath: string): Promise<void>
 sandboxLogs(caller, id, opts?: { tail?: number; sinceTs?: number }): Promise<string>
-listSnapshots(caller, id): Promise<Array<{ id: string; name: string; createdAt: number }>>
+listSnapshots(caller, id): Promise<SnapshotView[]>
 listPolicyRevisions(caller): Promise<Array<{ rev: number; ts: number; actor: string; contentHash: string }>>
 getPolicyRevision(caller, rev: number): Promise<{ rev; ts; actor; contentHash; content: string }>
 ```
@@ -397,7 +416,9 @@ unknown/revoked tokens or contexts no longer in the policy), `revokeAgentToken(c
   and directory removed), `expired`, `unreachable` backends (nothing concluded for them), pending approvals.
   Orphans are only removed with `apply` **and** `removeOrphans`.
 - `gc(caller, {dryRun?}) -> GcReport`: expired sandboxes (stop+remove+cleanup), stale `<dataDir>/sandboxes/*`
-  directories without a live row, unreferenced images, logs past retention, overdue approvals.
+  directories without a live row, unreferenced images, package caches, snapshots whose sandbox is gone
+  (`snapshots`; `snapshot.gc` audit entries; they are only listed on a dry run), logs past retention, overdue
+  approvals.
 - `sweepTtl(caller)`: the TTL sweep also runs (rate limited) inside every call: overdue sandboxes become
   `expired` and are stopped; removal is left to `gc`.
 

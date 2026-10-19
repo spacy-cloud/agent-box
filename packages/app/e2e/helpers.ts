@@ -82,19 +82,19 @@ export function makeHome(opts: HomeOptions = {}): TestHome {
 }
 
 /**
- * Swaps the docker backend of the GUI process for the in-memory engine of `fake-engine.mjs` (it can forward
- * ports; no docker needed). Electron does not pass `NODE_OPTIONS` to the main process under Playwright, so the
+ * Swaps the docker backend of the GUI process for an in-memory engine (`fake-engine.mjs`: it can forward ports;
+ * `fake-snapshot-engine.mjs`: it manages snapshots; no docker needed). Electron does not pass `NODE_OPTIONS` to the main process under Playwright, so the
  * app is started through a tiny launcher app: its `main.mjs` loads the engine, then the real main module. The
  * `out` folder is linked in, which is where the app looks for the renderer files. Call before `launchGui`.
  */
-export function useFakeEngine(h: TestHome): void {
+export function useFakeEngine(h: TestHome, engineFile = 'fake-engine.mjs'): void {
   const dir = join(h.home, '..', 'launcher');
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, 'package.json'),
     JSON.stringify({ name: 'abox-gui-e2e', version: '0.0.0', type: 'module', main: 'main.mjs' }),
   );
-  const engine = pathToFileURL(join(APP_DIR, 'e2e', 'fake-engine.mjs')).href;
+  const engine = pathToFileURL(join(APP_DIR, 'e2e', engineFile)).href;
   const main = pathToFileURL(join(APP_DIR, 'out', 'main', 'index.js')).href;
   writeFileSync(
     join(dir, 'main.mjs'),

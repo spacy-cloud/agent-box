@@ -20,6 +20,7 @@ import type {
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
+  ProviderSnapshot,
   ResolvedTemplate,
   SandboxFilter,
   SandboxId,
@@ -625,6 +626,34 @@ export class PythonProvider implements SandboxProvider {
     const { provider } = await this.route(id);
     if (!provider.restore) throw unsupported('snapshots are not supported by this sandbox');
     await provider.restore(id, snapshotId);
+  }
+
+  /** Snapshots of both modes; a venv-only setup (no engine) lists its own. */
+  async listSnapshots(opts: { sandboxId?: SandboxId } = {}): Promise<ProviderSnapshot[]> {
+    if (opts.sandboxId !== undefined) {
+      const { provider } = await this.route(opts.sandboxId);
+      return provider.listSnapshots ? provider.listSnapshots(opts) : [];
+    }
+    const out = this.venv ? await this.venv.listSnapshots() : [];
+    try {
+      out.push(...(await this.container.listSnapshots()));
+    } catch (e) {
+      if (!this.venv) throw e;
+    }
+    return out;
+  }
+
+  /** The snapshot of a container sandbox that is gone has to be deletable too, so it is not routed through `inspect`. */
+  async deleteSnapshot(id: SandboxId, snapshotId: string): Promise<void> {
+    if (this.venv) {
+      try {
+        const r = await this.route(id);
+        if (r.mode === 'venv') return await this.venv.deleteSnapshot(id, snapshotId);
+      } catch (e) {
+        if (!(isAboxError(e) && e.code === 'not_found')) throw e;
+      }
+    }
+    await this.container.deleteSnapshot(id, snapshotId);
   }
 
   async updateNetwork(id: SandboxId, network: NetworkSpec): Promise<void> {

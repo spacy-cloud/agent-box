@@ -1244,6 +1244,63 @@ export function defineProviderContract(opts: ContractOptions): void {
         }
       });
 
+      test('listSnapshots and deleteSnapshot (when offered) show a snapshot and delete exactly it', async (ctx) => {
+        if (!caps.snapshots || !provider.snapshot || !provider.listSnapshots) return ctx.skip();
+        expect(typeof provider.deleteSnapshot).toBe('function');
+        const id = await startSandbox();
+        try {
+          await provider.writeFile(id, wsPath('ct-list.txt'), Buffer.from('listed'));
+          const a = await provider.snapshot(id, `ct${randomId('', 4)}a`);
+          const b = await provider.snapshot(id, `ct${randomId('', 4)}b`);
+          const mine = await provider.listSnapshots({ sandboxId: id });
+          expect(mine.map((s) => s.snapshotId).sort()).toEqual([a, b].sort());
+          for (const s of mine) {
+            expect(s.sandboxId).toBe(id);
+            expect(s.createdAt).toBeGreaterThan(0);
+            if (s.sizeBytes !== undefined) expect(s.sizeBytes).toBeGreaterThanOrEqual(0);
+          }
+          expect((await provider.listSnapshots()).map((s) => s.snapshotId)).toEqual(
+            expect.arrayContaining([a, b]),
+          );
+          await provider.deleteSnapshot!(id, a);
+          expect(
+            (await provider.listSnapshots({ sandboxId: id })).map((s) => s.snapshotId),
+          ).toEqual([b]);
+          // deleting twice is fine; the other snapshot and the sandbox are untouched
+          await provider.deleteSnapshot!(id, a);
+          await provider.restore!(id, b);
+          if ((await provider.inspect(id)).state !== 'running') await provider.start(id);
+          expect((await provider.readFile(id, wsPath('ct-list.txt'), 100)).data.toString()).toBe(
+            'listed',
+          );
+        } finally {
+          await finish(id);
+        }
+      });
+
+      test('deleteSnapshot refuses a snapshot of another sandbox', async (ctx) => {
+        if (!caps.snapshots || !provider.snapshot || !provider.deleteSnapshot) return ctx.skip();
+        if (!provider.listSnapshots) return ctx.skip();
+        const one = await startSandbox();
+        const two = await startSandbox();
+        try {
+          const snap = await provider.snapshot(one, `ct${randomId('', 4)}`);
+          // refused (not_found) or a no-op, but never the other sandbox's snapshot that goes
+          const outcome = await provider.deleteSnapshot(two, snap).then(
+            () => undefined,
+            (e: unknown) => e,
+          );
+          if (outcome !== undefined) expect((outcome as { code?: string }).code).toBe('not_found');
+          expect(
+            (await provider.listSnapshots!({ sandboxId: one })).map((s) => s.snapshotId),
+          ).toContain(snap);
+          await provider.deleteSnapshot(one, snap);
+        } finally {
+          await finish(one);
+          await finish(two);
+        }
+      });
+
       test('snapshot of an unknown sandbox rejects with not_found', async (ctx) => {
         if (!caps.snapshots || !provider.snapshot || !provider.restore) return ctx.skip();
         const ghost = `${provider.host.host}/ct${randomId('', 6)}`;

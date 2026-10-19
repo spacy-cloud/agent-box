@@ -353,6 +353,11 @@ there already listens on the host), and UDP.
   in it can read it. They require approval and show a warning.
 - Output from sandboxes passes through a filter that masks known secret values. This is **best
   effort and no guarantee**.
+- **Snapshots contain `inject: env` and `inject: file` secrets**, because they are copies of the
+  sandbox's filesystem and environment. They stay on the engine of the host and are listed and
+  deleted by humans only. abox does not create a new sandbox from a snapshot that holds such
+  secrets, so a snapshot cannot carry a secret to a sandbox whose policy never allowed it; see
+  [backends](backends.md#snapshots).
 
 ## Package caches
 

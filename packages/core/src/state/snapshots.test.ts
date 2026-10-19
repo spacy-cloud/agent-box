@@ -65,6 +65,24 @@ describe('snapshot index', () => {
     expect(s.snapshots.list('local/aaaaaaaa')).toEqual([]);
     expect(s.snapshots.list('local/bbbbbbbb')).toHaveLength(1);
   });
+
+  it('lists every sandbox and forgets a single snapshot', () => {
+    const s = open();
+    s.snapshots.add({ sandboxId: 'local/aaaaaaaa', snapshotId: 's1', name: 'one' });
+    clock += 10;
+    s.snapshots.add({ sandboxId: 'local/bbbbbbbb', snapshotId: 's1', name: 'other' });
+    clock += 10;
+    s.snapshots.add({ sandboxId: 'local/aaaaaaaa', snapshotId: 's2', name: 'two' });
+    expect(s.snapshots.listAll().map((x) => [x.sandboxId, x.snapshotId])).toEqual([
+      ['local/aaaaaaaa', 's1'],
+      ['local/bbbbbbbb', 's1'],
+      ['local/aaaaaaaa', 's2'],
+    ]);
+    expect(s.snapshots.delete('local/aaaaaaaa', 's1')).toBe(true);
+    expect(s.snapshots.delete('local/aaaaaaaa', 's1')).toBe(false);
+    expect(s.snapshots.list('local/aaaaaaaa').map((x) => x.snapshotId)).toEqual(['s2']);
+    expect(s.snapshots.list('local/bbbbbbbb').map((x) => x.snapshotId)).toEqual(['s1']);
+  });
 });
 
 describe('network event cursor', () => {

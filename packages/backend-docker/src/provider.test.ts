@@ -1839,6 +1839,199 @@ describe.skipIf(!dockerEnabled)('DockerProvider (real docker)', () => {
       await provider.remove(s.id);
       await expect(raw.getImage(snap).inspect()).rejects.toMatchObject({ statusCode: 404 });
     }, 60_000);
+
+    it('lists snapshots with the size of their layer and deletes them one by one', async () => {
+      const s = await sb({ secretMaterial: false });
+      const other = await sb({ secretMaterial: true });
+      await run(s, 'head -c 2000000 /dev/urandom > /home/dev/blob; echo hi > /home/dev/a');
+      const first = await provider.snapshot!(s.id, 'one');
+      await run(s, 'echo more >> /home/dev/a');
+      const second = await provider.snapshot!(s.id, 'two');
+      const otherSnap = await provider.snapshot!(other.id, 'theirs');
+      const mine = await provider.listSnapshots!({ sandboxId: s.id });
+      expect(mine.map((x) => x.snapshotId)).toEqual([first, second]);
+      expect(mine[0]).toMatchObject({
+        sandboxId: s.id,
+        name: 'one',
+        template: template.name,
+        carriesSecrets: false,
+      });
+      // a snapshot holds everything the container changed since it was created (its own layer, not
+      // shared with the next snapshot), so both contain the 2 MB file
+      expect(mine[0]!.sizeBytes).toBeGreaterThan(1_900_000);
+      expect(mine[1]!.sizeBytes).toBeGreaterThanOrEqual(mine[0]!.sizeBytes!);
+      expect(Math.abs(mine[0]!.createdAt - Date.now())).toBeLessThan(60_000);
+      const all = await provider.listSnapshots!();
+      expect(all.map((x) => x.snapshotId)).toEqual(
+        expect.arrayContaining([first, second, otherSnap]),
+      );
+      expect(all.find((x) => x.snapshotId === otherSnap)?.carriesSecrets).toBe(true);
+
+      // another sandbox's snapshot is not deletable through this one
+      await expect(provider.deleteSnapshot!(s.id, otherSnap)).rejects.toMatchObject({
+        code: 'not_found',
+      });
+      await provider.deleteSnapshot!(s.id, first);
+      await provider.deleteSnapshot!(s.id, first); // already gone: no error
+      await expect(raw.getImage(first).inspect()).rejects.toMatchObject({ statusCode: 404 });
+      expect((await provider.listSnapshots!({ sandboxId: s.id })).map((x) => x.snapshotId)).toEqual(
+        [second],
+      );
+      expect((await raw.getImage(otherSnap).inspect()).Id).toBeTruthy();
+      expect((await provider.inspect(s.id)).state).toBe('running');
+    }, 90_000);
+
+    it('a snapshot the sandbox was restored from can be deleted; the sandbox keeps running', async () => {
+      const s = await sb();
+      await run(s, 'echo kept > /home/dev/f');
+      const snap = await provider.snapshot!(s.id, 'base');
+      await provider.restore!(s.id, snap);
+      await provider.deleteSnapshot!(s.id, snap);
+      await expect(raw.getImage(snap).inspect()).rejects.toMatchObject({ statusCode: 404 });
+      expect((await run(s, 'cat /home/dev/f')).stdout).toBe('kept\n');
+      await provider.stop(s.id);
+      await provider.start(s.id);
+      expect((await run(s, 'cat /home/dev/f')).stdout).toBe('kept\n');
+      await provider.remove(s.id);
+      expect(
+        await raw.listImages({
+          filters: { reference: [`abox-snap-base/${s.id.split('/')[1]}:*`] },
+        }),
+      ).toEqual([]);
+    }, 90_000);
+
+    it('a legacy container that stands on the snapshot tag itself does not block its deletion', async () => {
+      const s = await sb();
+      const snap = await provider.snapshot!(s.id, 'legacy');
+      // what restore did before the base reference existed: create straight from the snapshot tag
+      const c = await inspectRaw(s);
+      await raw.getContainer(c.Id).stop({ t: 1 });
+      await raw.getContainer(c.Id).rename({ name: `${c.Name.replace(/^\//, '')}-old` });
+      await raw.createContainer({
+        name: c.Name.replace(/^\//, ''),
+        Image: snap,
+        Labels: c.Config.Labels,
+        HostConfig: c.HostConfig,
+        Entrypoint: c.Config.Entrypoint,
+        Cmd: c.Config.Cmd,
+      } as never);
+      await raw.getContainer(`${c.Name.replace(/^\//, '')}-old`).remove({ force: true });
+      await provider.deleteSnapshot!(s.id, snap);
+      await expect(raw.getImage(snap).inspect()).rejects.toMatchObject({ statusCode: 404 });
+      expect((await provider.inspect(s.id)).id).toBe(s.id);
+    }, 90_000);
+
+    describe('create from a snapshot (clone)', () => {
+      const cloneSpec = (snapshotId: string, over: Partial<SandboxSpec> = {}): SandboxSpec =>
+        spec({ fromSnapshot: snapshotId, ...over });
+
+      it('has the files of the snapshot and nothing else of its sandbox', async () => {
+        const src = await sb({
+          env: { FOO: 'bar', LEAKED: 'from-source' },
+          secretMaterial: false,
+          network: {
+            mode: 'open',
+            allow: [],
+            blockPrivate: true,
+            privateExceptions: [],
+            injections: [],
+          },
+        });
+        await run(src, 'mkdir -p /workspace/node_modules && echo dep > /workspace/node_modules/x');
+        await provider.extendExpiry!(src.id, src.expiresAt + 3_600_000);
+        const snap = await provider.snapshot!(src.id, 'installed');
+
+        const newSpec = cloneSpec(snap, {
+          resources: { ...template.resources, memoryBytes: 128 * MiB },
+          expiresAt: Date.now() + 120_000,
+          secretMaterial: false,
+        });
+        const info = await track.create(newSpec);
+        expect(info.id).toBe(newSpec.id);
+        expect((await run(newSpec, 'cat /workspace/node_modules/x')).stdout).toBe('dep\n');
+        // environment: the clone's own, what the source added is emptied
+        expect((await run(newSpec, 'echo "$FOO|$LEAKED|$PATH"')).stdout).toMatch(/^bar\|\|\/.+/);
+        const c = await inspectRaw(newSpec);
+        // limits and network from the new spec, not from the snapshot
+        expect(c.HostConfig.Memory).toBe(128 * MiB);
+        expect(c.HostConfig.NetworkMode).toBe('none');
+        expect(c.HostConfig.CapDrop).toEqual(['ALL']);
+        expect(c.Config.Labels['abox.id']).toBe(newSpec.id);
+        expect(c.Config.Labels['abox.role']).toBe('sandbox');
+        expect(c.Config.Labels['abox.snapshot-of']).toBe('');
+        expect(c.Config.Labels['abox.secret-material']).toBe('0');
+        // the deadline of the source (it was extended) does not come along
+        const fresh = await provider.inspect(newSpec.id);
+        expect(fresh.expiresAt).toBe(newSpec.expiresAt);
+        expect((await run(newSpec, 'cat /usr/local/share/abox/expires')).stdout).toBe('0\n');
+        // it is a sandbox of its own: listing it shows no snapshot, the source keeps its own
+        expect(await provider.listSnapshots!({ sandboxId: newSpec.id })).toEqual([]);
+
+        // deleting the snapshot and the source sandbox leaves the clone running and intact
+        await provider.deleteSnapshot!(src.id, snap);
+        await provider.remove(src.id);
+        expect((await provider.inspect(newSpec.id)).state).toBe('running');
+        expect((await run(newSpec, 'cat /workspace/node_modules/x')).stdout).toBe('dep\n');
+        await provider.stop(newSpec.id);
+        await provider.start(newSpec.id);
+        expect((await run(newSpec, 'cat /workspace/node_modules/x')).stdout).toBe('dep\n');
+        // removing the clone removes the base reference, nothing is left behind
+        await provider.remove(newSpec.id);
+        const short = newSpec.id.split('/')[1];
+        expect(
+          await raw.listImages({ filters: { reference: [`abox-snap-base/${short}:*`] } }),
+        ).toEqual([]);
+        expect(await provider.listSnapshots!()).not.toContainEqual(
+          expect.objectContaining({ snapshotId: snap }),
+        );
+      }, 120_000);
+
+      it('a failed create leaves no base reference behind', async () => {
+        const src = await sb();
+        const snap = await provider.snapshot!(src.id, 'fail');
+        const bad = cloneSpec(snap, {
+          files: [{ sandboxPath: '/tmp', content: Buffer.from('x'), mode: 0o600 }],
+        });
+        await expect(provider.create(bad)).rejects.toBeInstanceOf(AboxError);
+        const short = bad.id.split('/')[1];
+        expect(
+          await raw.listImages({ filters: { reference: [`abox-snap-base/${short}:*`] } }),
+        ).toEqual([]);
+        await expect(raw.getContainer(`abox-local-${short}`).inspect()).rejects.toMatchObject({
+          statusCode: 404,
+        });
+      }, 90_000);
+
+      it('refuses what does not fit: other template, other user, secrets, foreign or unknown snapshots', async () => {
+        const src = await sb({ secretMaterial: true });
+        const snap = await provider.snapshot!(src.id, 'refuse');
+        await expect(provider.create(cloneSpec(snap))).rejects.toMatchObject({
+          code: 'policy_denied',
+        });
+        const clean = await sb({ secretMaterial: false });
+        const cleanSnap = await provider.snapshot!(clean.id, 'clean');
+        await expect(
+          provider.create(cloneSpec(cleanSnap, { template: makeTemplate({ name: 'other' }) })),
+        ).rejects.toMatchObject({ code: 'invalid_input' });
+        await expect(
+          provider.create(cloneSpec(cleanSnap, { user: { name: 'dev', uid: 1001, sudo: false } })),
+        ).rejects.toMatchObject({ code: 'invalid_input' });
+        await expect(provider.create(cloneSpec('abox-snap/00000000:nope'))).rejects.toMatchObject({
+          code: 'not_found',
+        });
+        // an image that is not a snapshot is no source, whatever its name says
+        await expect(provider.create(cloneSpec(prepared.ref))).rejects.toMatchObject({
+          code: 'invalid_input',
+        });
+        await expect(provider.create(cloneSpec('alpine:3.22'))).rejects.toMatchObject({
+          code: 'invalid_input',
+        });
+      }, 90_000);
+
+      it('is advertised for docker but not for the python backend', async () => {
+        expect(provider.capabilities().snapshotClone).toBe(true);
+      });
+    });
   });
 
   describe('logs', () => {
