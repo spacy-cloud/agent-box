@@ -7,7 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Abox } from '@abox/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { serveStdio } from '../src/index.js';
+import { TOOL_NAMES, serveStdio } from '../src/index.js';
 import { makeEnv, openAbox, wrapClient } from './support/harness.js';
 import type { Connected, TestEnv } from './support/harness.js';
 
@@ -122,7 +122,7 @@ describe('serveStdio', () => {
     const a = await spawnClient('agent-a');
     const info = a.client.getServerVersion();
     expect(info?.name).toBe('abox');
-    expect((await a.client.listTools()).tools).toHaveLength(22);
+    expect((await a.client.listTools()).tools).toHaveLength(TOOL_NAMES.length);
 
     const tpl = await a.call('template_list');
     expect((tpl.s['templates'] as Array<{ name: string }>).map((t) => t.name)).toContain(

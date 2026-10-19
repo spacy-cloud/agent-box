@@ -10,7 +10,7 @@ enforced once, in the core.
 - [Tokens for HTTP](#http)
 - [Result format and errors](#result-format-and-errors)
 - [Approval flow for agents](#approval-flow-for-agents)
-- [Tool reference](#tool-reference)
+- [Tool reference](#tool-reference) (and the generated [tool catalog](mcp-catalog.md))
 - [Resources and prompts](#resources-and-prompts)
 - [Limits](#limits)
 - [What is deliberately missing](#what-is-deliberately-missing)
@@ -136,9 +136,9 @@ object:
 - Keys are `snake_case`; fields that end in `At` are ISO timestamps (`created_at`, `expires_at`).
 - `ok`, `message` and, on failure, `code` are always present. Failures also set `isError: true`
   and may carry `hint`, `issues` (with field paths) and `details`.
-- Error codes: `invalid_input`, `template_invalid`, `not_found`, `unsupported`, `conflict`,
-  `policy_denied`, `approval_denied`, `approval_expired`, `untrusted_template`, `backend_error`,
-  `backend_unavailable`, `host_unreachable`, `timeout`, `internal`. `hint` says what to do next.
+- Error codes: see the generated [error catalog](errors.md) (code, exit code, meaning, typical
+  hint; the failure shape is also a [JSON Schema](error-envelope.schema.json)). `hint` says what to
+  do next.
   Unknown internal failures are logged on the server side and reported to the agent as `internal`
   without details.
 - **Unknown parameters are errors.** Every tool takes exactly the parameters listed below, in
@@ -194,7 +194,7 @@ object:
 
 ## Tool reference
 
-22 tools. Sandbox ids look like `local/1a2b3c4d`. `argv` is a program with arguments without a
+The [tool catalog](mcp-catalog.md) lists every tool with its purpose, input schema, result fields, who may call it and its approval behaviour; it is generated from the code, so it is always complete. The tables below add notes. Sandbox ids look like `local/1a2b3c4d`. `argv` is a program with arguments without a
 shell (preferred); `cmd` is a shell line run with `/bin/sh -c`; give exactly one of them.
 Durations are seconds (a number) or strings such as `90s`, `5m`, `2h`.
 

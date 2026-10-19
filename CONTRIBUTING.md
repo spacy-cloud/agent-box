@@ -19,7 +19,16 @@ pnpm build         # tsc -b (project references)
 pnpm test          # fast tests, no container engine needed
 pnpm lint          # eslint
 pnpm format        # prettier --write (use format:check to only verify)
+pnpm catalogs      # regenerate docs/mcp-catalog.md, docs/errors.md, docs/error-envelope.schema.json (after pnpm build)
 ```
+
+The MCP tool catalog and the error catalog are generated from the code (the zod schemas of the MCP
+tools, `ERROR_CODES` and `ERROR_CODE_INFO`). When you add or change a tool or an error code, run
+`pnpm build && pnpm catalogs` and commit the result; CI runs `pnpm catalogs:check` and fails when
+the files are stale. A new tool also needs its `doc` entry (who may call it, result, approval), its
+name in `TOOL_NAMES` (`packages/mcp/src/names.ts`) and in the pinned list of
+`packages/mcp/test/catalog.test.ts`. Do not restate tool counts or code lists in prose: link to the
+catalogs.
 
 The repository is a pnpm monorepo written in strict TypeScript (ESM, `NodeNext`). Relative imports
 need the `.js` suffix, for example `import { x } from './types.js'`. See the
