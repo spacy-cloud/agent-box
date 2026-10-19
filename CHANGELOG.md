@@ -10,6 +10,16 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Overview start page (closes #19): the GUI now starts on an **Overview** ("Übersicht") with four cards (running
+  sandboxes, open approvals, sandboxes expiring within 15 minutes, problems from the `doctor` diagnosis; each leads to
+  its view), the hosts with cpu, memory and sandbox bars against their limits (the numbers of the Hosts view, one
+  independent read-only call per host, an unreachable host says so and never blocks the page), the open approvals
+  with **Allow** / **Deny** / **Details** and the newest agent activity across all sandboxes. **Allow** is only
+  offered where the one-line title says everything to judge (a lifetime extension, a port forward, a few plain
+  destinations); a create, command, template trust or open network goes through the details. Allow and Deny are
+  the Approvals view's `approvals:approve` / `approvals:deny`. The activity list comes from the new
+  human-only, read-only and bounded `Abox.recentActivity` (and the `activity:recent` channel), a view of the audit log
+  that leaves out pure reads and the approval requests.
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):

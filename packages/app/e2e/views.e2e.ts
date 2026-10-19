@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { axeViolations, launchGui, makeHome, openAgent, shot, SHELL_REQ } from './helpers';
+import { SHELL_REQ, axeViolations, launchGui, makeHome, nav, openAgent, shot } from './helpers';
 import type { TestHome } from './helpers';
 
 let h: TestHome;
@@ -142,7 +142,9 @@ test('"Dauerhaft erlauben" with nothing a rule could answer: the dialog explains
   const agent = await openAgent(h);
   try {
     await agent.abox.createSandbox(agent.caller, SHELL_REQ(h.project), { waitForApprovalMs: 0 });
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     await page
       .getByRole('dialog', { name: 'Sandbox erstellen' })
       .getByRole('button', { name: /Dauerhaft erlauben/ })
@@ -177,7 +179,9 @@ test('"Dauerhaft erlauben" shows the policy change as a diff and writes it, revi
   const human = await openAgent(h, 'human');
   try {
     await agent.abox.createSandbox(agent.caller, SHELL_REQ(h.project), { waitForApprovalMs: 0 });
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     await page
       .getByRole('dialog', { name: 'Sandbox erstellen' })
       .getByRole('button', { name: /Dauerhaft erlauben/ })
@@ -330,14 +334,14 @@ test('settings: backend status, doctor, MCP configuration and status, token crea
     // language
     await page.getByLabel('Sprache').selectOption('en');
     await expect(page.getByRole('heading', { name: 'Settings and diagnostics' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Approvals' })).toBeVisible();
+    await expect(nav(page).getByRole('button', { name: 'Approvals' })).toBeVisible();
     // restart: the choice is remembered (the environment no longer forces German)
     await app.close();
     ({ app, page } = await launchGui(
       { ...h, env: { ...h.env, ABOX_GUI_LOCALE: '' } },
       'Main navigation',
     ));
-    await expect(page.getByRole('button', { name: 'Approvals' })).toBeVisible();
+    await expect(nav(page).getByRole('button', { name: 'Approvals' })).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   } finally {
     await agent.close();
@@ -365,6 +369,11 @@ for (const scheme of ['light', 'dark'] as const) {
         expect(await axeViolations(page), `${name} / ${scheme}`).toEqual([]);
       };
 
+      // the start page with a running sandbox and an open request
+      await expect(page.getByTestId('stat-running')).toContainText('1');
+      await expect(page.getByTestId('stat-approvals')).toContainText('1');
+      await check('overview');
+      await nav(page).getByRole('button', { name: 'Sandboxes', exact: true }).click();
       await expect(page.locator('tr', { hasText: 'a11y-box' })).toBeVisible();
       await check('sandboxes');
       await page.getByRole('button', { name: 'Neue Sandbox' }).click();
@@ -381,7 +390,9 @@ for (const scheme of ['light', 'dark'] as const) {
         await page.waitForTimeout(150);
         await check(`detail ${tab}`);
       }
-      await page.getByRole('button', { name: /Freigaben/ }).click();
+      await nav(page)
+        .getByRole('button', { name: /Freigaben/ })
+        .click();
       await expect(page.getByRole('dialog', { name: 'Sandbox erstellen' })).toBeVisible();
       await check('approvals');
       await page.getByRole('button', { name: 'Audit', exact: true }).click();

@@ -53,6 +53,7 @@ export const TTY_MAX_ROWS = 300;
 export const TTY_MAX_INPUT = 65_536;
 export type Locale = (typeof LOCALES)[number];
 export const VIEWS = [
+  'overview',
   'sandboxes',
   'templates',
   'hosts',

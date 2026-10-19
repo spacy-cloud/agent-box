@@ -460,7 +460,7 @@ export function ApprovalDialog(props: {
 const IMAGE_KINDS = ['create', 'template_trust', 'image_registry'];
 
 /** Label of a request kind; a kind this app does not know gets a generic label instead of a raw key. */
-function kindLabel(t: TFn, kind: string, request?: unknown): string {
+export function kindLabel(t: TFn, kind: string, request?: unknown): string {
   const key = kindLabelKey(kind, request);
   return key === 'approvals.kind.unknown'
     ? t('approvals.kind.unknown', { kind: safeText(kind) })
