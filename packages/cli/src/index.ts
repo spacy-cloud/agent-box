@@ -13,6 +13,7 @@ export {
   CliExit,
   describeError,
   CLI_EXIT_CODES,
+  CLI_ONLY_ERROR_INFO,
   type CliErrorCode,
   type ErrorBody,
 } from './errors.js';

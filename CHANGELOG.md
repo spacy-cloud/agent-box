@@ -28,6 +28,15 @@ release. Nothing has been released yet.
   that stands on it. `abox gc` removes the snapshots of sandboxes that no longer exist (`snapshots` in the
   report), and `abox gc --orphans` now also finds the snapshot images of an abox home whose data directory was
   deleted. The Snapshots tab's name field no longer logs an invalid-pattern error.
+- Generated MCP tool and error catalogs (closes #35): `docs/mcp-catalog.md` lists every MCP tool (purpose, input
+  schema as a parameter table, result fields, who may call it, approval behaviour, annotations) and
+  `docs/errors.md` every error code (exit code, meaning, typical hint) with the error envelope, plus
+  `docs/error-envelope.schema.json` (JSON Schema of `{ok:false,code,message,hint?,issues?,details?}` as printed by
+  `abox --json` and returned by the MCP tools). `pnpm catalogs` regenerates them from the built packages (the zod
+  schemas of the tools, `ERROR_CODES` with the new `ERROR_CODE_INFO`, `describeTools()` of `@abox/mcp`) in a
+  deterministic, Prettier-clean form; `pnpm catalogs:check` and a CI step fail when a file is stale. Every tool
+  definition now carries a required `doc` (scope, approval, result), and the tests, the plugin test and the docs
+  take the tool set from `TOOL_NAMES` or the catalog instead of restating counts; one test pins the exact set.
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):
