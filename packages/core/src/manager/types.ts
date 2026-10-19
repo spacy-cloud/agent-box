@@ -1058,6 +1058,79 @@ export interface NetworkLogView {
   maxEvents: number;
 }
 
+// -- activity timeline ---------------------------------------------------------------------------
+
+/** What an activity entry is about. */
+export const ACTIVITY_KINDS = ['exec', 'file', 'network', 'approval', 'lifecycle'] as const;
+export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
+
+/** How it went: `denied` is a refusal by policy, the proxy or a human; `pending` waits for a human. */
+export type ActivityOutcome = 'ok' | 'denied' | 'error' | 'pending' | 'info';
+
+/**
+ * One item of the activity timeline of a sandbox: a view of one audit entry (or of a run of identical proxy
+ * decisions). Only whitelisted, clipped fields of the audit details are carried: commands and environment
+ * variable *names* as the audit log stores them (already masked), paths and sizes of files, never file content.
+ */
+export interface ActivityEntry {
+  /** Audit sequence number of the newest entry the item stands for. */
+  seq: number;
+  /** When it happened (ms since epoch); for a run, the time of the newest request. */
+  ts: number;
+  /** Time of the oldest entry of a run (`count > 1`). */
+  from?: number;
+  kind: ActivityKind;
+  /** The audit action, e.g. `sandbox.exec` (the GUI words its own label from it). */
+  action: string;
+  /** `human`, `system` or the agent context. */
+  actor: string;
+  outcome: ActivityOutcome;
+  /** One line in English: label and subject. */
+  summary: string;
+  /** What the action was about: the command, the path, `host:port`, the approval kind. */
+  subject?: string;
+  /** Whitelisted facts (exit code, size, reason, ...), values clipped. */
+  detail: Record<string, string | number | boolean>;
+  /** Number of audit entries this item stands for (identical proxy decisions in a row are merged). */
+  count: number;
+  /** The approval this entry belongs to (for a link to the approvals view). */
+  approvalId?: string;
+  sandboxId: string;
+  /** Name of the sandbox (set in the cross-sandbox list). */
+  sandboxName?: string;
+}
+
+export interface ActivityOptions {
+  /** Only these kinds (default: all). */
+  kinds?: ActivityKind[];
+  /** Only entries at or after this time (ms since epoch). */
+  since?: number;
+  /** Audit entries to look at per page (default 100, at most 500). */
+  limit?: number;
+  /** `nextCursor` of the previous page. */
+  cursor?: string;
+}
+
+export interface ActivityView {
+  sandboxId: string;
+  /** Newest first. */
+  entries: ActivityEntry[];
+  /** Pass as `cursor` for the next (older) page; absent on the last page. */
+  nextCursor?: string;
+}
+
+export interface RecentActivityOptions {
+  /** Entries to return (default 20, at most 100). */
+  limit?: number;
+  since?: number;
+  kinds?: ActivityKind[];
+}
+
+export interface RecentActivityView {
+  /** Newest first, across the sandboxes the caller may see. */
+  entries: ActivityEntry[];
+}
+
 export interface NetworkAllowInput {
   /** `host`, `host:port` or `*.host`. */
   destinations: string[];

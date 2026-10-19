@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { ActivityEntry, DoctorReport } from '@abox/core';
 import {
   activityBadge,
-  activityText,
+  activityLabelKey,
+  activityResult,
+  agentActivity,
   approvalHeadline,
   expiringSoon,
   overviewHosts,
@@ -155,41 +157,57 @@ describe('activity', () => {
   const entry = (over: Partial<ActivityEntry>): ActivityEntry => ({
     seq: 1,
     ts: NOW,
-    actor: 'agent:x',
-    sandboxId: 'local/x',
+    kind: 'exec',
     action: 'sandbox.exec',
-    decision: 'allow',
+    actor: 'agent:x',
     outcome: 'ok',
-    facts: {},
+    summary: '',
+    detail: {},
+    count: 1,
+    sandboxId: 'local/x',
     ...over,
   });
 
-  it('summarises an exec with its exit code and duration', () => {
-    expect(
-      activityText(entry({ facts: { command: 'pnpm test', exitCode: 0, durationMs: 41_000 } })),
-    ).toEqual({
-      key: 'overview.act.exec',
-      params: { tool: 'sandbox_exec', command: 'pnpm test', code: 0, time: '41s' },
-    });
-  });
-
-  it('summarises denied egress with the port only when it is not a web port', () => {
-    const t = (port: number) =>
-      activityText(entry({ action: 'network.egress', facts: { host: 'a.example', port } }));
-    expect(t(443).params).toEqual({ host: 'a.example' });
-    expect(t(8080).params).toEqual({ host: 'a.example:8080' });
+  it('keeps what agents did; leaves out people, the system, approval requests and allowed proxy requests', () => {
+    const list = [
+      entry({ seq: 6 }),
+      entry({ seq: 5, actor: 'human' }),
+      entry({ seq: 4, actor: 'system' }),
+      entry({ seq: 3, kind: 'approval', action: 'approval.request' }),
+      entry({ seq: 2, kind: 'network', action: 'network.egress' }),
+      entry({ seq: 1, kind: 'network', action: 'network.egress', outcome: 'denied' }),
+    ];
+    expect(agentActivity(list).map((e) => e.seq)).toEqual([6, 1]);
+    expect(agentActivity(list, 1).map((e) => e.seq)).toEqual([6]);
   });
 
   it('badge: refusals and errors first, exports are their own kind', () => {
-    expect(activityBadge(entry({ outcome: 'blocked' }))).toBe('blocked');
+    expect(activityBadge(entry({ outcome: 'denied' }))).toBe('blocked');
     expect(activityBadge(entry({ outcome: 'error' }))).toBe('error');
-    expect(activityBadge(entry({ action: 'sandbox.export' }))).toBe('export');
+    expect(activityBadge(entry({ outcome: 'pending' }))).toBe('pending');
+    expect(activityBadge(entry({ action: 'sandbox.export', kind: 'lifecycle' }))).toBe('export');
+    expect(activityBadge(entry({ outcome: 'info' }))).toBe('ok');
     expect(activityBadge(entry({}))).toBe('ok');
   });
 
-  it('an unknown action falls back to its name', () => {
-    expect(activityText(entry({ action: 'sandbox.future_thing' })).params).toEqual({
-      tool: 'sandbox_future_thing',
+  it("the label is the activity tab's; the proxy has one label per decision", () => {
+    expect(activityLabelKey(entry({}))).toBe('activity.action.sandbox.exec');
+    expect(activityLabelKey(entry({ action: 'network.egress', outcome: 'denied' }))).toBe(
+      'activity.action.network.egress.deny',
+    );
+    expect(activityLabelKey(entry({ action: 'network.egress' }))).toBe(
+      'activity.action.network.egress.allow',
+    );
+  });
+
+  it('the result is an exit code with its duration, or the files an export changed', () => {
+    expect(activityResult(entry({ detail: { exitCode: 2, durationMs: 41_000 } }))).toEqual({
+      code: 2,
+      time: '41s',
     });
+    expect(
+      activityResult(entry({ action: 'sandbox.export', detail: { filesChanged: 4 } })),
+    ).toEqual({ files: 4 });
+    expect(activityResult(entry({}))).toEqual({});
   });
 });

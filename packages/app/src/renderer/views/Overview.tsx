@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { ApprovalView, HostCapacity, SandboxView } from '@abox/core';
+import type { ActivityEntry, ApprovalView, HostCapacity, SandboxView } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
 import { useHostCapacity, useNow, useQuery } from '../hooks';
@@ -10,13 +10,22 @@ import { kindLabel } from './Approvals';
 import { NewSandboxDialog } from './NewSandbox';
 import { barTone, liveBars } from '../../shared/capacity';
 import type { BarTone } from '../../shared/capacity';
+import type { TFn } from '../i18n';
 import { requestTemplateName } from '../../shared/approval-diff';
-import { formatBytes, formatClock, formatTimestamp, safeInline } from '../../shared/format';
-import { hostUtilisation } from '../../shared/host-usage';
 import {
-  OVERVIEW_ACTIVITY_LIMIT,
+  formatBytes,
+  formatClock,
+  formatTimestamp,
+  safeInline,
+  shortId,
+} from '../../shared/format';
+import { hostUtilisation } from '../../shared/host-usage';
+import type { ActivityBadge } from '../../shared/overview-page';
+import {
   activityBadge,
-  activityText,
+  activityLabelKey,
+  activityResult,
+  agentActivity,
   approvalHeadline,
   expiringSoon,
   overviewHosts,
@@ -26,6 +35,37 @@ import {
   sandboxLabel,
 } from '../../shared/overview-page';
 import type { HostRow } from '../../shared/types';
+
+/** Entries asked for; the list shows the newest {@link OVERVIEW_ACTIVITY_LIMIT} that remain after filtering. */
+const ACTIVITY_FETCH = 40;
+const BADGE_TONE: Record<ActivityBadge, 'ok' | 'warn' | 'danger' | 'info'> = {
+  ok: 'ok',
+  blocked: 'warn',
+  error: 'danger',
+  export: 'info',
+  pending: 'warn',
+};
+
+/** "Command: pnpm test (exit 0, 41s)": the activity tab's label, the subject and what came of it. */
+function activitySummary(t: TFn, e: ActivityEntry): string {
+  const r = activityResult(e);
+  const subject = e.subject !== undefined ? safeInline(e.subject, 120) : '';
+  const result =
+    r.code !== undefined
+      ? t(r.time !== undefined ? 'overview.act.exit' : 'overview.act.exitOnly', {
+          code: r.code,
+          time: r.time ?? '',
+        })
+      : r.files !== undefined
+        ? t('overview.act.files', { count: r.files })
+        : '';
+  const repeat = e.count > 1 ? ` ×${e.count}` : '';
+  const reason =
+    e.outcome !== 'ok' && typeof e.detail['reason'] === 'string'
+      ? safeInline(e.detail['reason'], 100)
+      : '';
+  return `${t(activityLabelKey(e))}${subject ? `: ${subject}` : ''}${result ? ` (${result})` : ''}${repeat}${reason ? ` · ${reason}` : ''}`;
+}
 
 /** Open approvals listed on the page; the rest is one click away in the approvals view. */
 const MAX_APPROVALS = 5;
@@ -45,16 +85,15 @@ export function OverviewView() {
   const { t, navigate, notify } = useApp();
   const list = useQuery('sandboxes:list', {}, { pollMs: 4000 });
   const pending = useQuery('approvals:list', { status: 'pending' }, { pollMs: 3000 });
-  const activity = useQuery(
-    'activity:recent',
-    { limit: OVERVIEW_ACTIVITY_LIMIT },
-    { pollMs: 5000 },
-  );
+  // Entries of people and of the system, approval requests and allowed proxy requests are filtered out below:
+  // ask for more than is shown so that the list is still full.
+  const activity = useQuery('activity:recent', { limit: ACTIVITY_FETCH }, { pollMs: 5000 });
   // The doctor probes every backend (ssh hosts included): once a minute, and it never holds up the rest of the page.
   const doctor = useQuery('doctor:run', undefined, { live: false, pollMs: 60_000 });
   const hosts = useQuery('hosts:list', undefined, { pollMs: 10_000 });
   const [creating, setCreating] = useState(false);
   const now = useNow(10_000);
+  const rows = useMemo(() => agentActivity(activity.data?.entries ?? []), [activity.data]);
 
   const sandboxes = useMemo(() => list.data?.sandboxes ?? [], [list.data]);
   const byId = useMemo(() => new Map(sandboxes.map((s) => [s.id, s])), [sandboxes]);
@@ -110,7 +149,7 @@ export function OverviewView() {
       <section className="card ov-wide" aria-labelledby="h-ov-activity">
         <h2 id="h-ov-activity">{t('overview.activity.title')}</h2>
         {activity.error ? <ErrorBox error={activity.error} /> : null}
-        {activity.data && activity.data.length === 0 ? (
+        {activity.data && rows.length === 0 ? (
           <p className="muted">{t('overview.activity.empty')}</p>
         ) : null}
         {!activity.data && !activity.error ? (
@@ -118,19 +157,11 @@ export function OverviewView() {
             {t('common.loading')}
           </p>
         ) : null}
-        {activity.data && activity.data.length > 0 ? (
+        {rows.length > 0 ? (
           <ul className="ov-activity">
-            {activity.data.map((e) => {
-              const text = activityText(e);
-              const params = Object.fromEntries(
-                Object.entries(text.params).map(([k, v]) => [
-                  k,
-                  typeof v === 'string' ? safeInline(v, 120) : v,
-                ]),
-              );
-              const reason =
-                e.outcome !== 'ok' ? safeInline(String(e.facts['reason'] ?? ''), 120) : '';
-              const sb = e.sandboxId ? byId.get(e.sandboxId) : undefined;
+            {rows.map((e) => {
+              const sb = byId.get(e.sandboxId);
+              const name = e.sandboxName ?? sb?.name ?? shortId(e.sandboxId);
               const badge = activityBadge(e);
               return (
                 <li key={e.seq} data-testid="activity-row">
@@ -141,41 +172,21 @@ export function OverviewView() {
                   >
                     {formatClock(e.ts).slice(0, 5)}
                   </time>
-                  {e.sandboxId ? (
-                    sb ? (
-                      <button
-                        type="button"
-                        className="linklike plain ov-sb"
-                        onClick={() => navigate({ view: 'detail', sandboxId: e.sandboxId! })}
-                      >
-                        {safeInline(sb.name, 40)}
-                      </button>
-                    ) : (
-                      <span className="plain ov-sb">
-                        {safeInline(sandboxLabel(e.sandboxId, byId), 40)}
-                      </span>
-                    )
+                  {sb ? (
+                    <button
+                      type="button"
+                      className="linklike plain ov-sb"
+                      onClick={() => navigate({ view: 'detail', sandboxId: e.sandboxId })}
+                    >
+                      {safeInline(name, 40)}
+                    </button>
                   ) : (
-                    <span className="ov-sb muted">&mdash;</span>
+                    <span className="plain ov-sb">{safeInline(name, 40)}</span>
                   )}
                   <span className="ov-sum" title={safeInline(e.actor, 80)}>
-                    <Safe text={t(text.key, params) + (reason ? ` · ${reason}` : '')} max={200} />
+                    <Safe text={activitySummary(t, e)} max={200} />
                   </span>
-                  <Badge
-                    tone={
-                      badge === 'blocked'
-                        ? 'warn'
-                        : badge === 'error'
-                          ? 'danger'
-                          : badge === 'export'
-                            ? 'info'
-                            : badge === 'pending'
-                              ? 'warn'
-                              : 'ok'
-                    }
-                  >
-                    {t(`overview.badge.${badge}`)}
-                  </Badge>
+                  <Badge tone={BADGE_TONE[badge]}>{t(`overview.badge.${badge}`)}</Badge>
                 </li>
               );
             })}

@@ -34,7 +34,7 @@ it).
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Overview**       | the start page: running sandboxes, open approvals, sandboxes that expire within 15 minutes and problems from the diagnosis as four cards that each lead to their view; the hosts with their load; the open approvals; and what agents did lately. See [The overview](#the-overview).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Sandboxes**      | table of all sandboxes (agents' and yours) with state, backend and isolation, owner, resources (live CPU and memory next to the limit, see below), workspace and time left; filter by state, template, agent and text; start, stop, **Shell** (opens the Terminal tab of that sandbox; only for a running sandbox on a reachable host), extend the lifetime, export a diff, delete (the dialog warns that unexported changes are lost). The header says **"as of hh:mm:ss"** for the data on screen; after 20 seconds without a successful refresh, or after a failed one, it is marked **outdated**, and a row the backend no longer reports says so. Orphaned backend objects and stale sandboxes are announced in a banner; nothing is deleted automatically. A wizard (**New sandbox**) walks through template (with an optional **project folder** whose project templates are listed too, see below), options (network, resources, workspace) and a summary; risky settings need your explicit confirmation before anything is created. |
-| **Sandbox detail** | tabs for the overview (effective options with deviations from the template highlighted), **Files** (the workspace as a tree, see below; review the changes since start, flagged files that can run code on the host, save the diff or a patch, export to a branch), **Logs** (background processes), **Snapshots**, **Activity** (the audit entries for this sandbox), **Network** (the egress log, see [below](#network-tab)) and an interactive **Terminal**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Sandbox detail** | tabs for the overview (effective options with deviations from the template highlighted), **Files** (the workspace as a tree, see below; review the changes since start, flagged files that can run code on the host, save the diff or a patch, export to a branch), **Logs** (background processes), **Snapshots**, **Network** (the egress log, see [below](#network-tab)), **Activity** (a timeline of what happened, see [below](#activity-tab)) and an interactive **Terminal**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Templates**      | list of builtin (read-only) and user templates, and the project templates of a **project folder** you pick (marked "project", with their trust state), with a form editor and a YAML editor, live validation with line numbers, duplicate, export as YAML, **Build** (with a note that builds have network access) and, for a project template, **Review …** (what it adds and its risks, see below). A project template is read-only here and is neither built nor tested from this view: it is built when a sandbox is created from it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Hosts**          | host profiles: add, edit, remove, test, confirm the host key by fingerprint, create a sandbox on a host (opens the New sandbox wizard with that host preselected), import from `~/.ssh/config`, saved port forwards, and an SSH terminal. Per host: the **utilisation** against its limits and its live load, the **Limits** to edit, the **engine** (rootless or rootful) and the hardened **runtimes** that were found, and groups (see [Hosts: utilisation, groups, engine](#hosts-utilisation-groups-engine)). See [hosts and SSH](hosts-ssh.md). There are no fields for passwords or keys; an ssh passphrase is asked in a dialog (see below).                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Approvals**      | the queue of requests from agents, see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -65,11 +65,11 @@ wizard as in the sandbox list).
   to judge: a lifetime extension, a port forward, or up to three plain destinations of the allowlist. A create (isolation,
   mounts, secrets), a command, a template to trust, an open network or a private address always go through the
   details first (the "Deny" button stays).
-- **Recent agent activity**: the newest entries of the audit log that agents caused, across all sandboxes
-  (commands with exit code and duration, creates, exports, snapshots, file writes, denied network requests),
-  with the time, the sandbox as a link to its detail view and a badge (ok, blocked, export, error). It comes from
-  one bounded, read-only manager call, `Abox.recentActivity` (human only, at most 50 entries, a fixed scan window of
-  the audit log); pure reads and the approval requests themselves are left out.
+- **Recent agent activity**: the newest entries that agents caused, across all sandboxes (commands with exit
+  code and duration, creates, exports, snapshots, file writes, denied network requests), with the time, the
+  sandbox as a link to its detail view and a badge (ok, blocked, export, error). It uses the same bounded,
+  read-only call as the sandbox's Activity tab (`activity:recent`, `Abox.recentActivity`); approval requests (the
+  card above shows them) and allowed proxy requests are left out.
 
 ## Approvals
 
@@ -143,7 +143,7 @@ grouped by destination (host and port): a decision badge (**Allowed**, **Blocked
 what was blocked before and has been allowed since, **Connection failed**), the number of requests (with the
 blocked / allowed split when both happened), the time of the last one and the reason in words with the proxy's
 own text below it. **Only blocked** filters to the denials. The list refreshes every few seconds and on every
-change, like the Activity tab. It is a view of the audit log: only host, port, method and reason are
+change, like the [Activity tab](#activity-tab). It is a view of the audit log: only host, port, method and reason are
 recorded, never paths, headers or contents, and the entries are in **Audit** as well.
 
 For a blocked destination the app offers what the manager says is possible, and explains what is not:
@@ -166,6 +166,29 @@ For a blocked destination the app offers what the manager says is possible, and 
 
 A sandbox created with network mode `none` or `open` has no log: the tab says so and why (the mode of a sandbox
 cannot change; create a new one with an allowlist).
+
+## Activity tab
+
+The **Activity** tab ("Aktivität" in the German app, right behind Network) is a vertical timeline of what happened
+in a sandbox, newest first: **Commands** (`exec`, background processes, a human's shell or takeover), **Files**
+(writes, reads, copies in and out), **Network** (the proxy's decisions, port forwards, "allow for this sandbox"),
+**Approvals** (requests, decisions, access requests) and **Lifecycle** (create, start, stop, snapshot, restore,
+export, removal). Every entry has the time, a kind badge with an icon, a badge for what is not a plain success
+(**Denied**, **Error**, **Waiting for approval**, a non-zero exit code), a one-line summary and a **Details**
+disclosure with the actor, the audit action and the facts the manager passes on (working directory, names of the
+environment variables, exit code, duration, size, reason, ...). Identical proxy decisions in a row are one entry
+with a count (`3×`). The **kind chips** filter on the manager's side; with none selected all kinds are shown.
+The list refreshes every few seconds and on every change, like the Network tab.
+
+It is a view of the audit log (nothing else is stored): secrets are masked when the audit entry is written, a file
+write shows path and size but never content, environment variables only their names, and text an agent chose
+(commands, paths, reasons) is shown as plain text with control and direction-changing characters made visible.
+A page looks at the newest 100 audit entries; **Show older entries** asks for 200, then 500, and at 500 the tab
+says that older ones are in **Audit** (or `abox activity --cursor`).
+
+Links: an approval entry has **Open approval** (the Approvals view with that approval selected), and the banner
+about open approvals on the detail view has **Show in activity**, which opens this tab with the **Approvals**
+chip selected. The manager method behind the tab (`activity`) is human / GUI only: agents have no MCP tool for it.
 
 ## New sandbox: big folders
 

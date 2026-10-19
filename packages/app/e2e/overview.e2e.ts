@@ -106,7 +106,7 @@ test('an agent request is decided from the overview (same approval path), a crea
     await expect(item).toContainText('flutter-ci');
     await expect(item).toContainText('sim · „the tests are still running“');
     const rows = page.getByTestId('activity-row');
-    await expect(rows.first()).toContainText('sandbox_write_file: /workspace/notes.txt');
+    await expect(rows.first()).toContainText('Datei geschrieben: /workspace/notes.txt');
     await expect(rows.first().getByRole('button', { name: 'flutter-ci' })).toBeVisible();
     await shot(page, 'overview-busy');
     for (const scheme of ['light', 'dark'] as const) {

@@ -58,6 +58,8 @@ export type ManagerChannel =
   | 'processes:list'
   | 'processes:logs'
   | 'sandboxes:logs'
+  | 'activity:list'
+  | 'activity:recent'
   | 'network:log'
   | 'network:allow'
   | 'network:propose'
@@ -224,6 +226,13 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         clean({ tail: i.tail ?? 300, sinceTs: i.sinceTs }),
       ),
     }),
+    'activity:list': (i) =>
+      abox.activity(
+        HUMAN,
+        i.id,
+        clean({ kinds: i.kinds, since: i.since, limit: i.limit, cursor: i.cursor }),
+      ),
+    'activity:recent': (i) => abox.recentActivity(HUMAN, clean({ limit: i.limit, since: i.since })),
     'network:log': (i) =>
       abox.networkLog(HUMAN, i.id, clean({ since: i.since, denied: i.denied, limit: i.limit })),
     'network:allow': (i) =>

@@ -115,37 +115,49 @@ const REPORT = {
   backends: [],
 } as unknown as DoctorReport;
 
+const entry = (over: Partial<ActivityEntry>): ActivityEntry => ({
+  seq: 1,
+  ts: new Date(2026, 9, 19, 13, 20).getTime(),
+  kind: 'exec',
+  action: 'sandbox.exec',
+  actor: 'agent:claude-code',
+  outcome: 'ok',
+  summary: '',
+  detail: {},
+  count: 1,
+  sandboxId: 'local/aaaa1111',
+  sandboxName: 'web-tests',
+  ...over,
+});
+
 const ACTIVITY: ActivityEntry[] = [
-  {
+  entry({
+    seq: 4,
+    subject: 'pnpm test',
+    detail: { exitCode: 0, durationMs: 41_000 },
+  }),
+  entry({
     seq: 3,
-    ts: new Date(2026, 9, 19, 13, 20).getTime(),
-    actor: 'agent:claude-code',
-    sandboxId: 'local/aaaa1111',
-    action: 'sandbox.exec',
-    decision: 'allow',
-    outcome: 'ok',
-    facts: { command: 'pnpm test', exitCode: 0, durationMs: 41_000 },
-  },
-  {
-    seq: 2,
     ts: new Date(2026, 9, 19, 13, 18).getTime(),
-    actor: 'agent:claude-code',
-    sandboxId: 'local/aaaa1111',
+    kind: 'network',
     action: 'network.egress',
-    decision: 'deny',
-    outcome: 'blocked',
-    facts: { host: 'registry.npmjs.org', port: 443 },
-  },
-  {
-    seq: 1,
+    outcome: 'denied',
+    subject: 'registry.npmjs.org',
+  }),
+  entry({
+    seq: 2,
     ts: new Date(2026, 9, 19, 13, 12).getTime(),
-    actor: 'agent:claude-code',
-    sandboxId: 'local/gone0000',
+    kind: 'lifecycle',
     action: 'sandbox.export',
-    decision: 'allow',
-    outcome: 'ok',
-    facts: { filesChanged: 4 },
-  },
+    sandboxId: 'local/gone0000',
+    sandboxName: 'old-box',
+    subject: 'diff',
+    detail: { filesChanged: 4 },
+  }),
+  // left out: a human's own action, an approval request, an allowed proxy request
+  entry({ seq: 7, actor: 'human', subject: 'ls' }),
+  entry({ seq: 6, kind: 'approval', action: 'approval.request', outcome: 'pending' }),
+  entry({ seq: 5, kind: 'network', action: 'network.egress', subject: 'github.com:443' }),
 ];
 
 interface Setup {
@@ -174,7 +186,7 @@ function mount(s: Setup = {}) {
       case 'approvals:list':
         return s.approvals ?? [];
       case 'activity:recent':
-        return s.activity ?? [];
+        return { entries: s.activity ?? [] };
       case 'doctor:run': {
         const d = s.doctor ?? REPORT;
         if (d instanceof Error) throw d;
@@ -320,11 +332,11 @@ describe('OverviewView', () => {
     const rows = await screen.findAllByTestId('activity-row');
     expect(rows).toHaveLength(3);
     expect(rows[0]!.textContent).toContain('13:20');
-    expect(rows[0]!.textContent).toContain('sandbox_exec: pnpm test (exit 0, 41s)');
+    expect(rows[0]!.textContent).toContain('Befehl: pnpm test (exit 0, 41s)');
     expect(rows[0]!.textContent).toContain('ok');
-    expect(rows[1]!.textContent).toContain('Netz verweigert: registry.npmjs.org');
+    expect(rows[1]!.textContent).toContain('Anfrage blockiert: registry.npmjs.org');
     expect(rows[1]!.textContent).toContain('blockiert');
-    expect(rows[2]!.textContent).toContain('sandbox_export: 4 Dateien geändert');
+    expect(rows[2]!.textContent).toContain('Ergebnis exportiert: diff (4 Dateien geändert)');
     expect(rows[2]!.textContent).toContain('Export');
     // a sandbox that is gone is plain text, a live one is a link to its detail view
     expect(within(rows[2]!).queryByRole('button')).toBeNull();
@@ -347,7 +359,7 @@ describe('OverviewView', () => {
       await screen.findByText(/Extend lifetime to 5h 00m: web-tests/, { selector: 'strong' }),
     ).toBeTruthy();
     expect((await screen.findAllByTestId('activity-row'))[1]!.textContent).toContain(
-      'Network denied',
+      'Request blocked',
     );
   });
 
