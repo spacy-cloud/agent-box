@@ -1263,7 +1263,7 @@
   "setup.approvals.intro": "When an agent wants something your policy does not allow outright, abox does not guess and does not refuse silently: the request waits as an approval until you decide. Until then nothing happens.",
   "setup.approvals.where": "Where requests show up",
   "setup.approvals.whereCli": "On the command line:",
-  "setup.approvals.whereGui": "In the Approvals view; the number next to it in the sidebar counts the open requests.",
+  "setup.approvals.whereGui": "On the Overview (with Allow and Deny for simple requests) and in the Approvals view; the number next to it in the sidebar counts the open requests.",
   "setup.approvals.whereTray": "As a tray icon and a desktop notification (you can switch these off under Settings).",
   "setup.back": "Back",
   "setup.check.again": "Check again",

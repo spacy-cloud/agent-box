@@ -1263,7 +1263,7 @@
   "setup.approvals.intro": "Wenn ein Agent etwas will, das deine Policy nicht von sich aus erlaubt, rät abox nicht und lehnt auch nicht stillschweigend ab: Die Anfrage wartet als Freigabe, bis du entscheidest. Bis dahin passiert nichts.",
   "setup.approvals.where": "Wo Anfragen auftauchen",
   "setup.approvals.whereCli": "Auf der Kommandozeile:",
-  "setup.approvals.whereGui": "In der Ansicht Freigaben; die Zahl daneben in der Seitenleiste zählt die offenen Anfragen.",
+  "setup.approvals.whereGui": "Auf der Übersicht (mit Erlauben und Ablehnen für einfache Anfragen) und in der Ansicht Freigaben; die Zahl daneben in der Seitenleiste zählt die offenen Anfragen.",
   "setup.approvals.whereTray": "Als Tray-Symbol und als Desktop-Benachrichtigung (beides lässt sich unter Einstellungen abschalten).",
   "setup.back": "Zurück",
   "setup.check.again": "Erneut prüfen",
