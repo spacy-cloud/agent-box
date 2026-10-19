@@ -34,6 +34,10 @@ setup:
 env:
   PUB_CACHE: /opt/pub-cache
 
+# About how big the built image is: `abox doctor --for <template>` checks the free disk space against it.
+image:
+  size: 3g
+
 workspace:
   mode: copy
   path: /workspace

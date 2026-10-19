@@ -324,4 +324,4 @@ opt out of them for one sandbox (`cache: false`), it cannot list, read, fill, ch
 `ssh_exec`, or any other name that does not exist) gets `not_found`, and the attempt is recorded
 in the audit log as `mcp.unknown_tool` with the tool name, the agent context and the names (never
 the values) of the arguments; it is rate limited, so probing cannot flood the log. Everything else
-a human does (`abox doctor`, `gc`, `reconcile`, `audit`) is not exposed either.
+a human does (`abox doctor`, including the scoped `abox doctor --for <template|host:id>`, `gc`, `reconcile`, `audit`) is not exposed either. (`template_list` already tells an agent which templates are `ready` and why one is not.)

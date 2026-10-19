@@ -48,3 +48,27 @@ describe('IPC: host capacity, fit estimate and host limits', () => {
     );
   });
 });
+
+describe('IPC: readiness check', () => {
+  it('doctor:for names a template (and the host it runs on) or a host, and nothing else', () => {
+    expect(ok('doctor:for', { kind: 'host', host: 'home-server' })).toBe(true);
+    expect(ok('doctor:for', { kind: 'template', template: 'flutter-dev' })).toBe(true);
+    expect(
+      ok('doctor:for', {
+        kind: 'template',
+        template: 'flutter-dev',
+        host: 'home-server',
+        projectDir: '/home/u/proj',
+        workspacePath: '/home/u/proj',
+      }),
+    ).toBe(true);
+    expect(ok('doctor:for', { kind: 'host' })).toBe(false);
+    expect(ok('doctor:for', { kind: 'host', host: '../etc' })).toBe(false);
+    expect(ok('doctor:for', { kind: 'template' })).toBe(false);
+    expect(ok('doctor:for', { kind: 'template', template: 't', projectDir: 'relative/dir' })).toBe(
+      false,
+    );
+    expect(ok('doctor:for', { host: 'srv' })).toBe(false);
+    expect(ok('doctor:for', { kind: 'host', host: 'srv', command: 'id' })).toBe(false);
+  });
+});

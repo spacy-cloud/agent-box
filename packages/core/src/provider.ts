@@ -3,11 +3,13 @@ import type {
   BackendStatus,
   CacheVolume,
   DirEntry,
+  DiskSpace,
   ExecEvent,
   ExecRequest,
   ExecResult,
   ForeignResource,
   HostConnection,
+  ImageStatus,
   IsolationLevel,
   NetworkEvent,
   NetworkSpec,
@@ -71,6 +73,19 @@ export interface SandboxProvider {
 
   /** Build or fetch the environment image for a template (cached by `template.hash`). */
   prepare(template: ResolvedTemplate, opts?: PrepareOptions): Promise<PreparedImage>;
+  /**
+   * Read-only look at the environment image `prepare(template)` would use: does it exist, how big is
+   * it, and (when it does not) is the base image there. Must not build, pull or download anything: it
+   * is one or two engine API `inspect` calls, so `abox doctor --for <template>` can run it any time.
+   * Optional; absent = the backend has no image to look at.
+   */
+  imageStatus?(template: ResolvedTemplate): Promise<ImageStatus>;
+  /**
+   * Free and total space of the file system that holds this backend's images and sandboxes, as far as
+   * it can be measured from here (a local engine's storage root). `undefined` when it cannot be (a remote
+   * engine, a storage root that is not visible). Read-only. Optional; absent = unknown.
+   */
+  diskSpace?(): Promise<DiskSpace | undefined>;
   /** Remove cached environment images not in `keep` (template hashes). Returns removed refs. */
   gcImages(keep: string[]): Promise<string[]>;
 

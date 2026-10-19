@@ -414,6 +414,36 @@ unknown/revoked tokens or contexts no longer in the policy), `revokeAgentToken(c
 - Both refuse agents (`policy_denied`): the machine's load is not for agents, and a coarse version for them was
   deliberately not added.
 
+### Scoped readiness check (human only)
+
+- `doctorFor(caller, {template, hostId?, projectDir?, workspacePath?} | {host}) -> ScopedDoctorReport`
+  (`doctor-for.ts`): `abox doctor --for`. The report is `{scope, ok, summary, checks}` with the checks, severities
+  and `level` of `doctor`; `ok` is false only when a check is an `error`. Problems are checks, not exceptions
+  (an unknown or unparsable template, an unreachable host, an unusable engine); only an invalid request throws.
+  A check that cannot go on without the previous one stops there (no backend, no image check).
+- Template scope (ids `template`, `policy.invalid`, `host.<id>`, `backend`, `compat`, `isolation`, `image`, `disk`,
+  `network`, `caches`, `policy`, `policy.agents`, `capacity`): the template through `loadTemplate`, the backend
+  `status()`, `checkTemplateForProvider` plus the network mode and workspace delivery a create checks, the isolation
+  against the template and the host zone, the optional provider methods `imageStatus(template)` (engine `inspect` of
+  the environment image and, without it, of the base image; **never** a build or a pull) and `diskSpace()` (`statfs` of
+  the engine's storage root; `undefined` for a remote engine), `estimateImageBytes` (`image.size` or the documented
+  heuristic, times `BUILD_SPACE_FACTOR` = 2 for the first build), the network destinations against `profileDomains`
+  of the caller's profile and of each agent profile, `planCaches`, `evaluateCreate` (the very function a create
+  runs, with the template's defaults and no workspace) for the caller and every agent context (grouped by outcome),
+  and `estimateFit` for the room on the host. `deny` of the caller's own evaluation is the `error`, an `approval`
+  a `warning`; what agents would be told is `info` only (their limits are not the caller's problem).
+- Host scope (ids `host.<id>`, `backend.<id>.<kind>`, `backend.<id>`, `disk.<id>`, `capacity.<id>`, `limits.<id>`,
+  `agents.<id>`): `resolveHost` (host key, tunnel, rootless gate), each backend's `status()` (a backend that is not
+  running is `info` like in `doctor`; none usable is an `error`), the isolation the zone requires, `diskSpace()`,
+  `capacityOf` (without sampling sandboxes) and the host limits against their reservations (`>= limit` is an
+  `error`, `>= 90 %` a `warning`), and the agent contexts whose `hosts` allow the host.
+- Read-only and cheap by design: `inspect` and `statfs`, the same `/proc` reading as `hostCapacity` for remote
+  hosts. A check of a remote host is audited as `doctor.for` once per 10 min and host (it opens or reuses the ssh
+  connection); the check of this machine is not.
+- **Agents cannot call it** (`policy_denied`, audited as `doctor.for_denied`) and the MCP server has no tool for it:
+  the answer shows how much room a host has, what the policy allows other contexts and which machines exist. An
+  agent learns what it needs from `template_list` (`ready`, `notReadyReason`) and `policy_show`.
+
 ### Events
 
 `const off = abox.onEvent(listener)`; types: `sandbox.created|state|expired|removed`, `approval.created|decided|expired`,

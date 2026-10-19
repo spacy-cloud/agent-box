@@ -4,7 +4,6 @@ import { useApp } from '../context';
 import { useQuery } from '../hooks';
 import {
   Badge,
-  Banner,
   ConfirmDialog,
   CopyButton,
   Dialog,
@@ -16,6 +15,14 @@ import {
   Safe,
 } from '../components/ui';
 import { CachesSection } from '../components/CachesSection';
+import {
+  CheckItem,
+  DetailLines,
+  DoctorBanner,
+  NoteList,
+  detailLinesOf,
+  severityOf,
+} from '../components/DoctorChecks';
 import { LOCALES, NOTIFICATION_KINDS } from '../../shared/constants';
 import type { Locale, NotificationKind, NotificationPrefs } from '../../shared/ipc';
 import type {
@@ -269,25 +276,6 @@ function DiagnosticsSection() {
   );
 }
 
-/** The severity of a check; a report from before severities existed only has `level`. */
-function severityOf(c: Pick<DoctorCheck, 'level'> & { severity?: DoctorSeverity }): DoctorSeverity {
-  return c.severity ?? (c.level === 'warn' ? 'warning' : c.level);
-}
-
-const SEVERITY_TONE: Record<DoctorSeverity, 'ok' | 'neutral' | 'warn' | 'danger'> = {
-  ok: 'ok',
-  info: 'neutral',
-  warning: 'warn',
-  error: 'danger',
-};
-
-function SeverityBadge(props: { severity: DoctorSeverity }) {
-  const { t } = useApp();
-  return (
-    <Badge tone={SEVERITY_TONE[props.severity]}>{t(`settings.severity.${props.severity}`)}</Badge>
-  );
-}
-
 function backendCheckOf(report: DoctorReport, b: BackendReport): DoctorCheck | undefined {
   return (
     report.checks.find((c) => c.id === `backend.${b.host}.${b.backend}`) ??
@@ -298,62 +286,6 @@ function backendCheckOf(report: DoctorReport, b: BackendReport): DoctorCheck | u
 /** Checks that the Backends table already shows (one row per backend). */
 function shownInBackends(c: DoctorCheck, report: DoctorReport): boolean {
   return report.backends.some((b) => c.id === `backend.${b.host}.${b.backend}`);
-}
-
-function DoctorBanner(props: { report: DoctorReport }) {
-  const { t } = useApp();
-  const counts =
-    props.report.summary ??
-    props.report.checks.reduce((n, c) => ({ ...n, [severityOf(c)]: n[severityOf(c)] + 1 }), {
-      ok: 0,
-      info: 0,
-      warning: 0,
-      error: 0,
-    } as Record<DoctorSeverity, number>);
-  if (!props.report.ok || counts.error > 0)
-    return <Banner tone="warn">{t('settings.doctor.issues')}</Banner>;
-  if (counts.warning > 0)
-    return <Banner tone="warn">{t('settings.doctor.warnings', { count: counts.warning })}</Banner>;
-  return (
-    <Banner tone="ok">
-      {counts.info > 0
-        ? t('settings.doctor.okInfo', { count: counts.info })
-        : t('settings.doctor.ok')}
-    </Banner>
-  );
-}
-
-function NoteList(props: { notes: NonNullable<DoctorCheck['notes']> }) {
-  const { t } = useApp();
-  return (
-    <ul className="plain-list notes">
-      {props.notes.map((n, i) => (
-        <li key={i} className="plain small">
-          <span aria-hidden="true" className={n.severity === 'warning' ? 'warn-text' : 'muted'}>
-            {n.severity === 'warning' ? '!' : 'i'}
-          </span>
-          <span className="sr-only">{t(`settings.severity.${n.severity}`)}: </span>
-          <span>{safeText(n.message)}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function DetailLines(props: { lines: string[] }) {
-  return (
-    <ul className="plain-list detail-lines">
-      {props.lines.map((l, i) => (
-        <li key={i} className="plain muted small">
-          {safeText(l)}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function detailLinesOf(c: DoctorCheck | undefined): string[] {
-  return c?.details ?? (c?.detail ? c.detail.split(/\r?\n/) : []);
 }
 
 function BackendRow(props: { backend: BackendReport; report: DoctorReport }) {
@@ -404,36 +336,6 @@ function BackendRow(props: { backend: BackendReport; report: DoctorReport }) {
         ) : null}
       </td>
     </tr>
-  );
-}
-
-function CheckItem(props: { check: DoctorCheck }) {
-  const { t } = useApp();
-  const c = props.check;
-  const severity = severityOf(c);
-  const lines = detailLinesOf(c);
-  const notes = c.notes ?? [];
-  // what needs a look is shown, the rest is one click away
-  const open = severity === 'warning' || severity === 'error';
-  return (
-    <li>
-      <SeverityBadge severity={severity} /> <strong className="plain">{c.title}</strong>
-      {c.hint && severity !== 'ok' ? <div className="plain small">{c.hint}</div> : null}
-      {lines.length > 0 ? (
-        open ? (
-          <DetailLines lines={lines} />
-        ) : (
-          <Disclosure label={t('settings.detailLines', { count: lines.length })}>
-            <DetailLines lines={lines} />
-          </Disclosure>
-        )
-      ) : null}
-      {notes.length > 0 ? (
-        <Disclosure label={t('settings.notes', { count: notes.length })}>
-          <NoteList notes={notes} />
-        </Disclosure>
-      ) : null}
-    </li>
   );
 }
 

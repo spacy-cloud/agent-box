@@ -15,6 +15,7 @@ import {
   Safe,
 } from '../components/ui';
 import { hostColor } from '../components/Terminal';
+import { ReadinessDialog } from '../components/ReadinessCheck';
 import { useSshTabs } from './ssh-tabs';
 import { NewSandboxDialog } from './NewSandbox';
 import {
@@ -63,6 +64,8 @@ export function HostsView() {
   );
   const [forwardsFor, setForwardsFor] = useState<string | null>(null);
   const [removeFor, setRemoveFor] = useState<HostRow | null>(null);
+  /** Host id the readiness check dialog is open for. */
+  const [checkFor, setCheckFor] = useState<string | null>(null);
   /** Host id the New sandbox wizard is open for (`local` = this computer). */
   const [createOn, setCreateOn] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -254,6 +257,7 @@ export function HostsView() {
                       now={now}
                       busy={busy === r.profile.id}
                       onCreate={() => setCreateOn(r.profile.id)}
+                      onCheck={() => setCheckFor(r.profile.id)}
                       onFavorite={() => void toggleFavorite(r)}
                       onTest={() => void test(r)}
                       onTerminal={() => void terminal(r)}
@@ -319,6 +323,12 @@ export function HostsView() {
           onClose={() => setForwardsFor(null)}
         />
       ) : null}
+      {checkFor ? (
+        <ReadinessDialog
+          target={{ kind: 'host', host: checkFor }}
+          onClose={() => setCheckFor(null)}
+        />
+      ) : null}
       {createOn ? (
         <NewSandboxDialog
           host={createOn}
@@ -370,6 +380,7 @@ function HostLine(props: {
   now: number;
   busy: boolean;
   onCreate(): void;
+  onCheck(): void;
   onFavorite(): void;
   onTest(): void;
   onTerminal(): void;
@@ -464,6 +475,10 @@ function HostLine(props: {
         <div className="row-actions">
           <button type="button" onClick={props.onCreate}>
             {t('hosts.action.create')}
+            <span className="sr-only"> {p.id}</span>
+          </button>
+          <button type="button" title={t('hosts.action.check.hint')} onClick={props.onCheck}>
+            {t('hosts.action.check')}
             <span className="sr-only"> {p.id}</span>
           </button>
           {local ? (

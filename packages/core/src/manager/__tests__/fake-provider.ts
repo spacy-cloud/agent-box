@@ -7,11 +7,13 @@ import type {
   BackendStatus,
   CacheVolume,
   DirEntry,
+  DiskSpace,
   ExecEvent,
   ExecRequest,
   ExecResult,
   ForeignResource,
   HostConnection,
+  ImageStatus,
   NetworkEvent,
   NetworkMode,
   PreparedImage,
@@ -67,6 +69,12 @@ export interface FakeOptions {
   portForward?: boolean | NetworkMode[];
   /** Provide `hostResources` (cpus and memory of the machine the engine runs on). */
   hostResources?: { cpus: number; memoryBytes: number };
+  /** Provide `imageStatus` (the environment image of a template): a fixed answer, or one per template. */
+  imageStatus?: Omit<ImageStatus, 'ref'> | ((t: ResolvedTemplate) => Omit<ImageStatus, 'ref'>);
+  /** Provide `diskSpace` (`null`: the backend cannot measure it). */
+  diskSpace?: DiskSpace | null;
+  /** The engine reports this status (default: ok, `fake`). */
+  status?: BackendStatus;
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -120,6 +128,8 @@ export class FakeProvider implements SandboxProvider {
   listPortForwards?: SandboxProvider['listPortForwards'];
   removePortForward?: SandboxProvider['removePortForward'];
   hostResources?: SandboxProvider['hostResources'];
+  imageStatus?: SandboxProvider['imageStatus'];
+  diskSpace?: SandboxProvider['diskSpace'];
   /** Every `hostResources` call. */
   hostResourcesCalls = 0;
   snapshot?: SandboxProvider['snapshot'];
@@ -182,6 +192,18 @@ export class FakeProvider implements SandboxProvider {
         if (had) this.cacheRemoved.push(key);
         return Promise.resolve({ removed: had });
       };
+    }
+    if (opts.imageStatus) {
+      const answer = opts.imageStatus;
+      this.imageStatus = (t) =>
+        Promise.resolve({
+          ref: `abox/${t.name}:${t.hash.slice(0, 16)}`,
+          ...(typeof answer === 'function' ? answer(t) : answer),
+        });
+    }
+    if (opts.diskSpace !== undefined) {
+      const answer = opts.diskSpace;
+      this.diskSpace = () => Promise.resolve(answer ?? undefined);
     }
     if (!opts.noExtendExpiry) {
       this.caps.extendExpiry = true;
@@ -340,7 +362,9 @@ export class FakeProvider implements SandboxProvider {
   }
 
   status(): Promise<BackendStatus> {
-    return Promise.resolve({ ok: true, version: 'fake', details: ['in-memory'], warnings: [] });
+    return Promise.resolve(
+      this.opts.status ?? { ok: true, version: 'fake', details: ['in-memory'], warnings: [] },
+    );
   }
 
   prepare(template: ResolvedTemplate, opts: PrepareOptions = {}): Promise<PreparedImage> {

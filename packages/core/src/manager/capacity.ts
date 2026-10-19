@@ -159,7 +159,7 @@ function limitUse(limit: number | undefined, reserved: number): HostLimitUse | u
   return limit === undefined ? undefined : { limit, reserved };
 }
 
-async function capacityOf(
+export async function capacityOf(
   I: Internals,
   caller: Caller,
   hostId: string,

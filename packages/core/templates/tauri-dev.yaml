@@ -33,6 +33,10 @@ tools:
 setup:
   - run: rustup component add clippy rustfmt
 
+# About how big the built image is: `abox doctor --for <template>` checks the free disk space against it.
+image:
+  size: 2g
+
 workspace:
   mode: copy
   path: /workspace
