@@ -60,8 +60,10 @@ export const DEFAULT_CACHE_MAX_BYTES = '10g';
 export const BUILTIN_AGENT_CONTEXTS: readonly string[] = [
   'default',
   'claude-code',
+  'claude-desktop',
   'codex',
   'cursor',
+  'gemini-cli',
   'orca',
 ];
 
@@ -88,7 +90,7 @@ export const DEFAULT_WORKSPACE_ROOTS: readonly string[] = Object.freeze([
  * `~/.ssh`, `~/.config`, ...) plus the rule against hidden home directories still apply. Free
  * image names are limited to the official Docker Hub images (`DEFAULT_IMAGE_REGISTRIES`). The agent
  * context `default` lets an MCP/CLI connection started with `--agent <id>` work out of the box for the
- * built-in agent contexts (`BUILTIN_AGENT_CONTEXTS`: default, claude-code, codex, cursor, orca; all
+ * built-in agent contexts (`BUILTIN_AGENT_CONTEXTS`: default, claude-code, claude-desktop, codex, cursor, gemini-cli, orca; all
  * mapped to profile `default`); every other context id is unknown and therefore denied.
  * A policy.yaml replaces this policy completely (and so may redefine or drop these contexts).
  */
@@ -116,8 +118,10 @@ contexts:
   # Agent contexts of the supported agent integrations (\`abox mcp serve --agent <id>\`), all with the same profile.
   default: { profile: default }
   claude-code: { profile: default }
+  claude-desktop: { profile: default }
   codex: { profile: default }
   cursor: { profile: default }
+  gemini-cli: { profile: default }
   orca: { profile: default }
 `;
 

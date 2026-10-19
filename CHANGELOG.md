@@ -63,6 +63,25 @@ release. Nothing has been released yet.
   have `template_list`), and a refused attempt is audited as `doctor.for_denied`; the check of a remote host is
   audited as `doctor.for`. The builtin templates `flutter-dev`, `tauri-dev`, `php-dev` and `shell-dev` declare
   their image size.
+- `abox setup`: register the MCP server and the agent rules with the agents on the machine, with preview and backup
+  (closes #34). `abox setup` detects Claude Code, Claude Desktop, Codex, Cursor and Gemini CLI (Orca is listed but
+  not written: it needs an HTTP token), offers a numbered multi-select (agents where abox is registered are
+  preselected, newly detected ones are not), shows the exact file paths, unified diffs and commands, and writes only
+  after a yes (`--yes` without a terminal; `--dry-run`, `--list`, `--uninstall`; non-interactive
+  `--client <name> --yes --json`). Writes keep unrelated entries and comments (JSON, JSONC with comments and trailing
+  commas, TOML), keep a first-snapshot backup of every file under the data directory, are staged and verified in a
+  private directory, replace the file atomically (temp file in the same directory, `0600`, fsync, mode restored,
+  `link` for new files), compare size, mtime and hash right before the rename, refuse symbolic links (`lstat`,
+  `O_NOFOLLOW`) and files that changed since the preview. Claude Code gets the agent-kit plugin through the `claude`
+  CLI (`claude plugin marketplace add` / `install`, argv, no shell) or, with `--claude-code-method mcp`, `claude mcp
+add --scope user abox -- abox mcp serve --agent claude-code`; the plugin and a manual entry are never both
+  registered. The rules snippet goes into `~/.claude/CLAUDE.md` (MCP method), `~/.codex/AGENTS.md` and
+  `~/.gemini/GEMINI.md` between `abox:begin` / `abox:end` markers; `--uninstall` reverts all of it. The logic lives in
+  `@abox/core` (`packages/core/src/setup/`, new dependencies `jsonc-parser` and `smol-toml`) behind the human-only
+  facade methods `setupDetect` / `setupPlan` / `setupApply` (confirmation plus the digest of the previewed plan,
+  audited as `setup.apply` / `setup.uninstall`) for the GUI wizard (#22) to call later; agents cannot reach it (no MCP
+  tool). New built-in agent contexts `claude-desktop` and `gemini-cli`; `abox init --agent` knows them too. Config
+  locations and what is verified on a real install: [Setting up agents](docs/setup.md).
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):

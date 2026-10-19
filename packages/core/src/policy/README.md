@@ -22,7 +22,7 @@ Built-in profiles: `human` (always present; approval `open`, broad rights; a `hu
 profile in the file is merged on top of it unless it uses `extends`) and, without a
 policy file, `default` (workspace roots `DEFAULT_WORKSPACE_ROOTS`: `~/projects`, `~/Projekte`, `~/src`, `~/code`,
 `~/dev`, `~/work`, `~/git`, `~/repos`; never `~` itself) plus
-the agent contexts `default`, `claude-code`, `codex`, `cursor` and `orca` (`BUILTIN_AGENT_CONTEXTS`), all using
+the agent contexts `default`, `claude-code`, `claude-desktop`, `codex`, `cursor`, `gemini-cli` and `orca` (`BUILTIN_AGENT_CONTEXTS`), all using
 profile `default`, so `abox mcp serve --agent claude-code` works without a policy.yaml. A policy.yaml replaces the
 built-in policy completely and defines its own contexts. Every other context id is unknown -> `policy_denied`.
 Context `human` is built in and cannot be redefined. Agent owners are `agent:<id>`.

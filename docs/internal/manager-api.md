@@ -68,7 +68,7 @@ interface Caller {
   `abox.verifyAgentToken(token)`), **never from a tool argument the agent controls**. Unknown ids ->
   `policy_denied`.
 - **Built-in agent contexts.** Without a `policy.yaml` the built-in default policy defines the agent contexts
-  `default`, `claude-code`, `codex`, `cursor` and `orca`, all mapped to the built-in profile `default`
+  `default`, `claude-code`, `claude-desktop`, `codex`, `cursor`, `gemini-cli` and `orca`, all mapped to the built-in profile `default`
   (`BUILTIN_AGENT_CONTEXTS`), so `abox mcp serve --agent claude-code` works out of the box. A `policy.yaml` replaces the
   built-in policy as a whole: it must define the contexts it wants (`abox policy edit` starts from the built-in text as a
   starting point). Every other id stays unknown.
@@ -388,6 +388,21 @@ unknown/revoked tokens or contexts no longer in the policy), `revokeAgentToken(c
   directories without a live row, unreferenced images, logs past retention, overdue approvals.
 - `sweepTtl(caller)`: the TTL sweep also runs (rate limited) inside every call: overdue sandboxes become
   `expired` and are stopped; removal is left to `gc`.
+
+### Agent setup (human only)
+
+- `setupDetect(caller, {command?}) -> ClientStatus[]`: which agents (Claude Code, Claude Desktop, Codex, Cursor, Gemini
+  CLI, Orca) are on this machine, whether abox is registered (MCP entry or plugin) and the rules block is installed.
+  Reads config files, writes nothing.
+- `setupPlan(caller, SetupRequest) -> SetupPlan`: the preview for `abox setup`: steps (file: path, action, unified diff,
+  fingerprint, backup yes/no; command: argv and the files it touches), `warnings`, `notes` and a `digest` bound to the
+  exact steps. Adds a warning when an agent context is not defined in `policy.yaml`. Writes nothing.
+- `setupApply(caller, SetupRequest, digest) -> SetupResult`: needs `caller.humanConfirmed` (else `approval_required`)
+  and the digest of the plan the human saw (else `conflict`). First-snapshot backups, staged and verified atomic writes,
+  no symbolic links, audited as `setup.apply` / `setup.uninstall` (paths and statuses, never contents). An agent gets
+  `policy_denied` and `setup.*_denied` in the audit log; there is no MCP tool. The library behind it
+  (`packages/core/src/setup/`) takes an explicit `SetupEnvironment` (home, env, platform, directories) and is
+  documented in [Setting up agents](../setup.md).
 
 ### Host capacity and fit estimate (human only)
 

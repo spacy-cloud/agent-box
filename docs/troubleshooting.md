@@ -206,7 +206,7 @@ always refused, regardless of roots: use a dedicated project directory. A bare `
 
 `abox mcp serve --agent X` needs `X` to be a context of the active policy. A `policy.yaml`
 **replaces** the built-in policy completely, including the built-in contexts `default`,
-`claude-code`, `codex`, `cursor` and `orca`. Add the context under `contexts:`
+`claude-code`, `claude-desktop`, `codex`, `cursor`, `gemini-cli` and `orca`. Add the context under `contexts:`
 ([MCP: identity and contexts](mcp.md#identity-and-contexts)).
 
 ### `approval_required` / "confirmation required and not given"

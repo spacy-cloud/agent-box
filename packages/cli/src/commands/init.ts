@@ -9,7 +9,14 @@ import { ANY_ROOT, canonicalizePath, checkHostPath, type PolicyView } from '@abo
 import type { Cli } from '../cli.js';
 import { safe } from '../format.js';
 
-export const AGENTS = ['claude-code', 'codex', 'cursor', 'orca'] as const;
+export const AGENTS = [
+  'claude-code',
+  'claude-desktop',
+  'codex',
+  'cursor',
+  'gemini-cli',
+  'orca',
+] as const;
 export type AgentName = (typeof AGENTS)[number];
 
 export function projectTemplateName(dir: string): string {
@@ -74,20 +81,34 @@ export function mcpSnippet(agent: AgentName): {
     case 'claude-code':
       return {
         description:
-          'Claude Code: run the command below, or put the JSON into .mcp.json in the project.',
+          'Claude Code: run the command below, or put the JSON into .mcp.json in the project. "abox setup --client claude-code" does it (or installs the plugin) with a preview.',
         command: `claude mcp add abox -- abox mcp serve --agent ${agent}`,
+        json: { mcpServers: { abox: server } },
+      };
+    case 'claude-desktop':
+      return {
+        description:
+          'Claude Desktop: put this into claude_desktop_config.json (Linux: ~/.config/Claude/, macOS: ~/Library/Application Support/Claude/, Windows: %APPDATA%\\Claude\\) and restart it. "abox setup --client claude-desktop" does it with a preview.',
+        json: { mcpServers: { abox: server } },
+      };
+    case 'gemini-cli':
+      return {
+        description:
+          'Gemini CLI: put this into ~/.gemini/settings.json (or .gemini/settings.json in the project). "abox setup --client gemini-cli" does it with a preview.',
         json: { mcpServers: { abox: server } },
       };
     case 'codex':
       return {
-        description: 'Codex: run the command below, or put the TOML into ~/.codex/config.toml.',
+        description:
+          'Codex: run the command below, or put the TOML into ~/.codex/config.toml. "abox setup --client codex" does it with a preview.',
         command: `codex mcp add abox -- abox mcp serve --agent ${agent}`,
         toml: `[mcp_servers.abox]\ncommand = "abox"\nargs = ["mcp", "serve", "--agent", "${agent}"]`,
         json: { mcpServers: { abox: server } },
       };
     case 'cursor':
       return {
-        description: 'Cursor: put this into .cursor/mcp.json (project) or ~/.cursor/mcp.json.',
+        description:
+          'Cursor: put this into .cursor/mcp.json (project) or ~/.cursor/mcp.json. "abox setup --client cursor" does it with a preview.',
         json: { mcpServers: { abox: server } },
       };
     case 'orca':
