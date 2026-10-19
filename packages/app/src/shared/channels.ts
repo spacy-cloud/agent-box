@@ -19,6 +19,7 @@ export const IPC_CHANNEL_NAMES = [
   'capacity:host',
   'capacity:estimate',
   'templates:list',
+  'templates:suggest',
   'templates:show',
   'templates:review',
   'projects:recent',

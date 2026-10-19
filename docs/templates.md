@@ -20,6 +20,7 @@ can never grant itself more than the policy allows.
 - [Validation](#validation)
 - [Where templates live](#where-templates-live-and-which-one-wins)
 - [Project templates and trust](#project-templates-and-trust)
+- [Choosing a template for a project](#choosing-a-template-for-a-project)
 - [Built-in templates](#built-in-templates)
 - [Examples](#examples)
 
@@ -697,6 +698,40 @@ ask for mounts, network and secrets. So abox treats it like `direnv allow` does:
   line), and the review starts with the line "shadows the built-in template ...".
 
 `abox init` creates an example project template to start from.
+
+## Choosing a template for a project
+
+abox can suggest the template that fits a project folder: `abox template suggest [path]`,
+`abox create --auto` (see [CLI](cli.md)) and the project folder field of the GUI's New-sandbox
+wizard (preselected, with the reason; you can still pick another one). The rules, strongest first:
+
+1. **The project's own `.sandbox/*.yaml` templates always win.** With several, the one named like a
+   detected template comes first, then one named `default`, then alphabetical. Broken files and
+   templates the policy does not allow are skipped.
+2. Otherwise the **marker files** decide (a template per row; the strongest match is the suggestion,
+   every other match is listed as an alternative):
+
+| Marker files                                                                                        | Template      |
+| --------------------------------------------------------------------------------------------------- | ------------- |
+| `tauri.conf.json` (or `src-tauri/tauri.conf.json`) **and** `Cargo.toml` (or `src-tauri/Cargo.toml`) | `tauri-dev`   |
+| `pubspec.yaml`                                                                                      | `flutter-dev` |
+| `Cargo.toml`                                                                                        | `rust-dev`    |
+| `composer.json`                                                                                     | `php-dev`     |
+| `pyproject.toml` or `uv.lock`                                                                       | `py-uv`       |
+| `package.json`                                                                                      | `node-dev`    |
+| any `*.php` file in the top level (weakest)                                                         | `php-dev`     |
+
+A Tauri app is also a Rust and usually a Node project, so `tauri-dev` ranks above `rust-dev`
+and `node-dev`, which stay as alternatives. `pubspec.yaml` does not tell Flutter from a plain
+Dart package; check the suggestion.
+
+The detection is read-only and bounded: it lists the top level of the folder (at most 5000 entries)
+and looks at two fixed files below `src-tauri/`. It reads no file content, walks no other
+subdirectory (`node_modules` included), runs nothing, and follows no symbolic link (a linked marker
+does not count). A template that does not exist, or that the caller's policy does not allow, is never
+the suggestion; it is reported as `skipped` / `left out`. The suggestion is available to the human
+surfaces (CLI, GUI); it is deliberately **not** an MCP tool: an agent sees `template_list` and the
+policy, and which host folder it works on is decided by the human.
 
 ## Built-in templates
 

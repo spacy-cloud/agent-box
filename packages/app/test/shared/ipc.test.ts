@@ -284,6 +284,20 @@ describe('IPC contract', () => {
 describe('project folders in the IPC surface', () => {
   const ok = (c: keyof typeof IPC, v: unknown) => IPC[c].safeParse(v).success;
 
+  it('templates:suggest takes exactly one absolute folder', () => {
+    expect(ok('templates:suggest', { path: '/home/u/project' })).toBe(true);
+    for (const bad of [
+      undefined,
+      {},
+      { path: '' },
+      { path: 'relative' },
+      { path: '~/p' },
+      { path: '/p\0' },
+    ])
+      expect(ok('templates:suggest', bad), JSON.stringify(bad)).toBe(false);
+    expect(ok('templates:suggest', { path: '/p', projectDir: '/p' })).toBe(false);
+  });
+
   it('templates:list takes an optional absolute project folder, nothing else', () => {
     expect(ok('templates:list', undefined)).toBe(true);
     expect(ok('templates:list', {})).toBe(true);

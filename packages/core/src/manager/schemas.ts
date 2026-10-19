@@ -74,6 +74,8 @@ export const estimateFitSchema = z.strictObject({
   workspacePath: hostPathStr.optional(),
 });
 
+export const templateSuggestSchema = z.strictObject({ path: hostPathStr });
+
 export const workspaceEstimateSchema = z.strictObject({
   path: hostPathStr,
   mode: z.enum(WORKSPACE_MODES).optional(),

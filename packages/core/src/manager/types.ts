@@ -984,6 +984,52 @@ export interface WorkspaceEstimate {
   durationMs: number;
 }
 
+// -- template suggestion ---------------------------------------------------------------------------
+
+export interface TemplateSuggestionInput {
+  /** Host path of the project folder (relative paths resolve against the project dir). */
+  path: string;
+}
+
+/** One template the project folder points to. */
+export interface TemplateSuggestionEntry {
+  template: string;
+  /**
+   * Why: `project_template` = the folder has its own `.sandbox/*.yaml` template (always wins over
+   * markers), `markers` = marker files such as `package.json` matched.
+   */
+  basis: 'project_template' | 'markers';
+  /** The files behind it, relative to the folder: the template file or the marker files. */
+  files: string[];
+  /** One line of English text (surfaces with i18n build their own from `basis` and `files`). */
+  reason: string;
+}
+
+/** A template the markers point to that cannot be suggested. */
+export interface TemplateSuggestionSkipped {
+  template: string;
+  files: string[];
+  /** `not_found` = no such template here, `not_allowed` = the active policy does not allow it. */
+  why: 'not_found' | 'not_allowed';
+}
+
+/**
+ * Answer to "which template fits this project folder?" (`suggestTemplate`): read-only, from the names of
+ * a few marker files (see docs/templates.md), never from the content of the project. `primary` is the
+ * best template that exists and that the caller's policy allows; `alternatives` follow in order of priority.
+ * No match: `primary` is null.
+ */
+export interface TemplateSuggestion {
+  /** Canonical path that was looked at. */
+  path: string;
+  primary: TemplateSuggestionEntry | null;
+  alternatives: TemplateSuggestionEntry[];
+  /** Marker matches left out because the template does not exist or is not allowed. */
+  skipped: TemplateSuggestionSkipped[];
+  /** The folder has more entries than the scan looks at; markers may be missing. */
+  truncated: boolean;
+}
+
 // -- network log -----------------------------------------------------------------------------------------
 
 /** Why the proxy decided as it did, in a form surfaces can act on (the proxy's wording is in `reason`). */

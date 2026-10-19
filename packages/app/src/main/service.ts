@@ -19,7 +19,7 @@ import type { McpConfig, McpContextStatus, McpStatus, Outputs } from '../shared/
 import { mcpClaudeCommand, mcpJsonConfig } from '../shared/mcp-config';
 import { describeBase } from '../shared/image-ref';
 import { templateTarget } from './approval-context';
-import { projectOption } from './projects';
+import { projectOption, resolveProjectDir } from './projects';
 
 export interface ServiceRuntime {
   abox: Abox;
@@ -51,6 +51,7 @@ export type ManagerChannel =
   | 'capacity:host'
   | 'capacity:estimate'
   | 'templates:list'
+  | 'templates:suggest'
   | 'templates:show'
   | 'templates:review'
   | 'files:list'
@@ -200,6 +201,9 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
       return { cancelled: ctl !== undefined };
     },
     'templates:list': async (i) => abox.listTemplates(HUMAN, await projectOption(i?.projectDir)),
+    // read-only: file names of the project folder only; the folder is checked like any project folder first
+    'templates:suggest': async (i) =>
+      abox.suggestTemplate(HUMAN, { path: await resolveProjectDir(i.path) }),
     'templates:show': async (i) =>
       abox.showTemplate(HUMAN, i.name, await projectOption(i.projectDir)),
     'templates:review': async (i) =>
