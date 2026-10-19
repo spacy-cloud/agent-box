@@ -86,7 +86,7 @@ test('detail tabs: activity, files (directory + diff export), logs, snapshots, t
     ).toBeEnabled();
 
     await page.getByRole('tab', { name: 'Aktivität' }).click();
-    await expect(page.getByRole('tabpanel')).toContainText('sandbox.create');
+    await expect(page.getByRole('tabpanel')).toContainText('Sandbox erstellt');
 
     await page.getByRole('tab', { name: 'Dateien' }).click();
     await expect(

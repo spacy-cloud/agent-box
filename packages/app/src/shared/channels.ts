@@ -32,6 +32,8 @@ export const IPC_CHANNEL_NAMES = [
   'processes:list',
   'processes:logs',
   'sandboxes:logs',
+  'activity:list',
+  'activity:recent',
   'network:log',
   'network:allow',
   'network:propose',

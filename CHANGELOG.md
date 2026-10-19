@@ -82,6 +82,20 @@ add --scope user abox -- abox mcp serve --agent claude-code`; the plugin and a m
   audited as `setup.apply` / `setup.uninstall`) for the GUI wizard (#22) to call later; agents cannot reach it (no MCP
   tool). New built-in agent contexts `claude-desktop` and `gemini-cli`; `abox init --agent` knows them too. Config
   locations and what is verified on a real install: [Setting up agents](docs/setup.md).
+- Per-sandbox activity timeline (closes #21): `Abox.activity` derives a timeline of what happened in a sandbox from
+  the audit log: commands (`exec`, background processes, human shell or takeover), file writes, reads and copies,
+  the proxy's network decisions and port forwards, approvals and access requests, and lifecycle steps. Newest
+  first, filterable by kind (`exec`, `file`, `network`, `approval`, `lifecycle`) and time, paged by a cursor (a
+  page looks at most at 500 audit entries); runs of identical proxy decisions are merged. It has no storage of its
+  own, so the audit log's rules hold (secrets masked, append-only, hash-chained); only whitelisted, clipped facts
+  are passed on, file writes show path and size but never content, environment variables only their names.
+  Owner or human (an agent only for its own sandboxes); there is deliberately no MCP tool for it.
+  `Abox.recentActivity` lists the newest activity across the visible sandboxes (bounded, denials but no allowed
+  requests or reads) for an overview page. `abox activity <sandbox> [--kind exec,file,network,approval] [--since 1h]
+[--limit n] [--cursor c] [--json]` prints it. The GUI's **Activity** ("Aktivität") tab, now behind **Network**,
+  is a vertical timeline (time, kind icon and badge, outcome badge, summary, expandable details), with kind chips,
+  live refresh like the Network tab, **Open approval** on approval entries and **Show in activity** on the banner
+  of open approvals (opens the tab with the Approvals filter). The audit query got `beforeSeq` and `sandboxIds`.
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):

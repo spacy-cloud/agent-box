@@ -674,6 +674,23 @@ Deny a request
 | --------------- | ----------------------------- |
 | `--note <text>` | note stored with the decision |
 
+### `abox activity`
+
+`abox activity [options] <sandbox>`
+
+Timeline of what happened in a sandbox: commands, files, network, approvals
+
+| Argument  | Meaning            |
+| --------- | ------------------ |
+| `sandbox` | sandbox id or name |
+
+| Option              | Meaning                                                                     |
+| ------------------- | --------------------------------------------------------------------------- |
+| `--kind <kinds>`    | only these kinds, comma separated: exec, file, network, approval, lifecycle |
+| `--since <when>`    | only newer entries: a duration (10m, 2h) or an ISO date                     |
+| `--limit <n>`       | audit entries per page, newest first (at most 500) (default: "100")         |
+| `--cursor <cursor>` | continue behind the last entry of the previous page                         |
+
 ### `abox network`
 
 `abox network [options] [command]`
@@ -1232,6 +1249,15 @@ Print a shell completion script (bash, zsh or fish)
   requests while the command ran (`network: 2 requests to registry.example.org denied; see "abox network
 log <id> --denied", allow with "abox network allow <id> <domain>"`); with `--json` the result has
   `network {denied, hosts[], moreHosts}`. The exit code stays the command's.
+- **`abox activity`** prints the timeline of one sandbox, newest first: time, kind (`exec`, `file`,
+  `network`, `approval`, `lifecycle`), outcome (`ok`, `denied`, `error`, `pending`, `info`), actor, what happened
+  and notes (exit code, file size, reason, the approval id). It is derived from the audit log, so it has the
+  audit log's rules: secrets masked, file writes with path and size only, environment variables by name. Runs
+  of identical proxy decisions are merged (`3x`). One call looks at up to `--limit` audit entries (500 at
+  most); when older ones exist the text output ends with the `--cursor` to continue and `--json` has
+  `nextCursor`. `--json` prints `entries[]` with `seq`, `ts`, `from`, `kind`, `action` (the audit action),
+  `actor`, `outcome`, `summary`, `subject`, `detail`, `count`, `approvalId`, `sandboxId`. See
+  [security](security.md#the-activity-timeline).
 - **`abox network log`** groups the proxy's decisions by destination (host and port) with counts, the
   first and last time, the newest decision, the reason of a denial and, for a denied destination, what
   can be done about it (the exact `abox network allow` line, or why it cannot be allowed). `--json` prints

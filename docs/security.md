@@ -522,6 +522,24 @@ the context files. A project template may only use a Dockerfile inside its own p
   TTL sweep) and when you query the audit log, never continuously. A connection made by a process
   nobody touches shows up only at the next of those moments.
 
+### The activity timeline
+
+`abox activity` and the GUI's Activity tab show what happened in one sandbox: commands, file writes, network
+decisions, approvals and lifecycle steps. Like the network log it is a **view of the audit log** (`Abox.activity`
+derives the entries; there is no storage of its own), so it has the audit log's rules: append-only,
+hash-chained, secrets masked when the entry is written, no deletion. On top of that it passes on only a
+whitelist of facts per action and clips every string: a command is the masked text of the audit entry,
+environment variables appear as names, a file write as path and size (never content), a copy between host and
+sandbox only with its sandbox side (the host path stays in the audit log). Runs of identical proxy decisions are
+merged. What is bounded is the work for one answer: a page looks at most at the newest 500 audit entries of
+the sandbox and the next page continues behind the last one (`cursor`).
+
+Who may ask: a human always; an agent context only for its own sandboxes (anything else is `not_found`, like
+`sandbox_inspect`). The MCP server deliberately has **no tool** for it: agents already have `sandbox_network_log`
+and the results of their own calls, and the timeline contains human decisions (notes on approvals, takeovers)
+that an agent has no use for. The method that lists the newest activity across sandboxes (`recentActivity`, for
+the GUI overview) is bounded the same way and sees only the caller's own sandboxes for an agent.
+
 The hash chain detects modification by accident or by a process that does not recompute it. It
 does not stop an attacker with full write access to the database from rewriting the whole chain.
 
