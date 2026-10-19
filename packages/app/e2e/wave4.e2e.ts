@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { openAbox } from '@abox/runtime';
 import { trustHostKey } from '@abox/core';
-import { axeViolations, launchGui, makeHome, openAgent, shot, SHELL_REQ } from './helpers';
+import { SHELL_REQ, axeViolations, launchGui, makeHome, nav, openAgent, shot } from './helpers';
 import type { TestHome } from './helpers';
 
 let h: TestHome;
@@ -31,6 +31,7 @@ test('sandboxes list: says when the data is from; the Shell action opens the ter
   const box = await humanSandbox('shell-box');
   const { app, page } = await launchGui(h);
   try {
+    await nav(page).getByRole('button', { name: 'Sandboxes', exact: true }).click();
     await expect(page.getByTestId('as-of')).toContainText(/Stand: \d\d:\d\d:\d\d/);
     const row = page.locator('tr', { hasText: 'shell-box' });
     await row.getByRole('button', { name: 'Shell öffnen: shell-box' }).click();
@@ -55,6 +56,7 @@ test('files tab: a tree that loads folders on demand and works with the keyboard
   await human.abox.writeFile(caller, box.id, 'src/b.txt', 'b\n');
   const { app, page } = await launchGui(h);
   try {
+    await nav(page).getByRole('button', { name: 'Sandboxes', exact: true }).click();
     await page
       .locator('tr', { hasText: 'tree-box' })
       .getByRole('button', { name: 'tree-box', exact: true })
@@ -169,7 +171,9 @@ test('agent text: bidi and zero-width characters are made visible, a long reason
     });
     expect(made.status).toBe('pending_approval');
     // first approve the creation, then let the agent ask for more time with an evil reason
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     await page
       .getByRole('dialog', { name: 'Sandbox erstellen' })
       .getByRole('button', { name: 'Einmal erlauben' })
@@ -188,7 +192,9 @@ test('agent text: bidi and zero-width characters are made visible, a long reason
     });
     expect(pending.status).toBe('pending_approval');
 
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     const dlg = page.locator('section.approval-dialog');
     await expect(dlg).toBeVisible();
     const text = await dlg.innerText();

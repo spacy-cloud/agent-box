@@ -32,14 +32,44 @@ it).
 
 | View               | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Overview**       | the start page: running sandboxes, open approvals, sandboxes that expire within 15 minutes and problems from the diagnosis as four cards that each lead to their view; the hosts with their load; the open approvals; and what agents did lately. See [The overview](#the-overview).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | **Sandboxes**      | table of all sandboxes (agents' and yours) with state, backend and isolation, owner, resources (live CPU and memory next to the limit, see below), workspace and time left; filter by state, template, agent and text; start, stop, **Shell** (opens the Terminal tab of that sandbox; only for a running sandbox on a reachable host), extend the lifetime, export a diff, delete (the dialog warns that unexported changes are lost). The header says **"as of hh:mm:ss"** for the data on screen; after 20 seconds without a successful refresh, or after a failed one, it is marked **outdated**, and a row the backend no longer reports says so. Orphaned backend objects and stale sandboxes are announced in a banner; nothing is deleted automatically. A wizard (**New sandbox**) walks through template (with an optional **project folder** whose project templates are listed too and which preselects the template that fits it, see below), options (network, resources, workspace) and a summary; risky settings need your explicit confirmation before anything is created. |
-| **Sandbox detail** | tabs for the overview (effective options with deviations from the template highlighted), **Files** (the workspace as a tree, see below; review the changes since start, flagged files that can run code on the host, save the diff or a patch, export to a branch), **Logs** (background processes), **Snapshots**, **Activity** (the audit entries for this sandbox), **Network** (the egress log, see [below](#network-tab)) and an interactive **Terminal**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Sandbox detail** | tabs for the overview (effective options with deviations from the template highlighted), **Files** (the workspace as a tree, see below; review the changes since start, flagged files that can run code on the host, save the diff or a patch, export to a branch), **Changes** (side-by-side diff with selective apply, see [below](#changes-tab)), **Logs** (background processes), **Snapshots**, **Network** (the egress log, see [below](#network-tab)), **Activity** (a timeline of what happened, see [below](#activity-tab)) and an interactive **Terminal**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **Templates**      | list of builtin (read-only) and user templates, and the project templates of a **project folder** you pick (marked "project", with their trust state), with a form editor and a YAML editor, live validation with line numbers, duplicate, export as YAML, **Build** (with a note that builds have network access), **Check** (can it run here? see [below](#check-can-this-template-or-host-run)) and, for a project template, **Review …** (what it adds and its risks, see below). A project template is read-only here and is neither built nor tested from this view: it is built when a sandbox is created from it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **Hosts**          | host profiles: add, edit, remove, test, **Check** (can the host run sandboxes?), confirm the host key by fingerprint, create a sandbox on a host (opens the New sandbox wizard with that host preselected), import from `~/.ssh/config`, saved port forwards, and an SSH terminal. Per host: the **utilisation** against its limits and its live load, the **Limits** to edit, the **engine** (rootless or rootful) and the hardened **runtimes** that were found, and groups (see [Hosts: utilisation, groups, engine](#hosts-utilisation-groups-engine)). See [hosts and SSH](hosts-ssh.md). There are no fields for passwords or keys; an ssh passphrase is asked in a dialog (see below).                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Approvals**      | the queue of requests from agents, see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Audit**          | the audit log with filters (time, actor, sandbox, action, decision), verification of the hash chain and export as JSON Lines.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Policy**         | the profiles and agent contexts in force as cards (isolation `none` in red), an editor with a **form** for profiles and limits next to the **YAML** text, live validation by the manager, a diff and a confirmation before saving, and the revision history. See [The Policy view](#the-policy-view).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **Settings**       | language, closing the window to the tray (optional), **which desktop notifications** are sent (see [Notifications and the tray](#notifications-and-the-tray)), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)); the **Check** buttons of Templates and Hosts run the scoped version (see [Check: can this template or host run?](#check-can-this-template-or-host-run)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **package caches** (see [Package caches](#package-caches)), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                 |
+
+## The overview
+
+The app starts on the **Overview** page. It shows nothing that another view does not show; it brings the
+numbers together and refreshes with them ("as of hh:mm:ss" in the header; **New sandbox** opens the same
+wizard as in the sandbox list).
+
+- **Four cards**, each a button to its view: running sandboxes (badge "all good", or how many have a
+  problem: failed, no longer reported by their backend, on an unreachable host), open approvals (badge
+  "waiting for you"), running sandboxes that expire in less than 15 minutes (the badge names them) and the
+  problems of the diagnosis (errors and warnings of `abox doctor`; advisories are counted as notes). The
+  diagnosis runs once a minute in the background and never holds up the page.
+- **Hosts**: per host (this computer first, then favorites, then hosts that run sandboxes; at most six,
+  **All hosts** opens the Hosts view) cpu and memory in use, and the sandboxes against the host's limit. These are
+  the numbers of the Hosts view from the same read-only call (`capacity:host`, cached by the manager, one
+  independent call per host, a failing host is asked less often): a slow or unreachable ssh host shows
+  "unreachable" and never blocks the rest of the page.
+- **Open approvals**: each request with a one-line title, the agent and its reason (shortened, plain text),
+  and **Allow**, **Deny** and **Details** (opens the request in the Approvals view). Allow and Deny are the
+  same calls as in the Approvals view (`approvals:approve` / `approvals:deny`: the manager's approval is bound
+  to the exact request, human only, audited). **Allow** is only offered where the title says everything you have
+  to judge: a lifetime extension, a port forward, or up to three plain destinations of the allowlist. A create (isolation,
+  mounts, secrets), a command, a template to trust, an open network or a private address always go through the
+  details first (the "Deny" button stays).
+- **Recent agent activity**: the newest entries that agents caused, across all sandboxes (commands with exit
+  code and duration, creates, exports, snapshots, file writes, denied network requests), with the time, the
+  sandbox as a link to its detail view and a badge (ok, blocked, export, error). It uses the same bounded,
+  read-only call as the sandbox's Activity tab (`activity:recent`, `Abox.recentActivity`); approval requests (the
+  card above shows them) and allowed proxy requests are left out.
 
 ## Approvals
 
@@ -155,7 +185,7 @@ grouped by destination (host and port): a decision badge (**Allowed**, **Blocked
 what was blocked before and has been allowed since, **Connection failed**), the number of requests (with the
 blocked / allowed split when both happened), the time of the last one and the reason in words with the proxy's
 own text below it. **Only blocked** filters to the denials. The list refreshes every few seconds and on every
-change, like the Activity tab. It is a view of the audit log: only host, port, method and reason are
+change, like the [Activity tab](#activity-tab). It is a view of the audit log: only host, port, method and reason are
 recorded, never paths, headers or contents, and the entries are in **Audit** as well.
 
 For a blocked destination the app offers what the manager says is possible, and explains what is not:
@@ -178,6 +208,29 @@ For a blocked destination the app offers what the manager says is possible, and 
 
 A sandbox created with network mode `none` or `open` has no log: the tab says so and why (the mode of a sandbox
 cannot change; create a new one with an allowlist).
+
+## Activity tab
+
+The **Activity** tab ("Aktivität" in the German app, right behind Network) is a vertical timeline of what happened
+in a sandbox, newest first: **Commands** (`exec`, background processes, a human's shell or takeover), **Files**
+(writes, reads, copies in and out), **Network** (the proxy's decisions, port forwards, "allow for this sandbox"),
+**Approvals** (requests, decisions, access requests) and **Lifecycle** (create, start, stop, snapshot, restore,
+export, removal). Every entry has the time, a kind badge with an icon, a badge for what is not a plain success
+(**Denied**, **Error**, **Waiting for approval**, a non-zero exit code), a one-line summary and a **Details**
+disclosure with the actor, the audit action and the facts the manager passes on (working directory, names of the
+environment variables, exit code, duration, size, reason, ...). Identical proxy decisions in a row are one entry
+with a count (`3×`). The **kind chips** filter on the manager's side; with none selected all kinds are shown.
+The list refreshes every few seconds and on every change, like the Network tab.
+
+It is a view of the audit log (nothing else is stored): secrets are masked when the audit entry is written, a file
+write shows path and size but never content, environment variables only their names, and text an agent chose
+(commands, paths, reasons) is shown as plain text with control and direction-changing characters made visible.
+A page looks at the newest 100 audit entries; **Show older entries** asks for 200, then 500, and at 500 the tab
+says that older ones are in **Audit** (or `abox activity --cursor`).
+
+Links: an approval entry has **Open approval** (the Approvals view with that approval selected), and the banner
+about open approvals on the detail view has **Show in activity**, which opens this tab with the **Approvals**
+chip selected. The manager method behind the tab (`activity`) is human / GUI only: agents have no MCP tool for it.
 
 ## New sandbox: big folders
 
@@ -280,6 +333,42 @@ Home and End jump to the first and last entry, Enter opens or closes a folder. A
 refreshes the listing and copies the selected entry to the host (or a file or folder from the host
 into the sandbox). The names come from the sandbox, so they are shown as neutralised text (see
 below).
+
+## Changes tab
+
+The **Changes** (German: **Änderungen**) tab reviews what a sandbox changed and takes selected files or
+single hunks over into **your project**. It is the one place in the GUI that writes into a project, so it is
+built around checks that the manager (not the window) enforces; see
+[security](security.md#applying-the-changes-of-a-sandbox).
+
+- The **Files** list (left) has a checkbox per changed file, the status letter (`M` modified, `A` added, `D`
+  deleted, `R` renamed), the path, `+added −removed` and the number of hunks, and badges: **Dependency**
+  (package manifests and lock files), **executable**, **binary**, **symlink**, **large** and **Flagged**
+  (what the export flags: CI files, hooks, build scripts, scripts, changed `package.json` scripts, ...; the
+  reasons are in the tooltip and above the diff). Flagged files are never preselected. A note at the end names
+  what the workspace's `.gitignore` kept out of the comparison (for example a `node_modules` the sandbox
+  created); the count is the number of ignored entries, a directory counts once.
+- The **diff** (right) shows the selected file hunk by hunk, **Side by side** (German: **Nebeneinander**) or
+  **Unified** (**Untereinander**). Every hunk of a modified file has **Apply hunk** (**Abschnitt
+  übernehmen**). Added, deleted, renamed, mode-changed, binary and large files are applied as a whole.
+  Binary files and files too large for the view show no content (limits: 256 KiB of diff per file and 8 MiB
+  in all; the lines of long files are cut after 400 rows with **Show more**). `+` and `-` stay visible as
+  characters in both layouts, the colour is only a hint. File names and lines come from the sandbox and are
+  shown as neutralised text.
+- The bar at the bottom says how many files and hunks are selected and where they would go (**Target:** the
+  project the sandbox was created from, with its state: clean git state, uncommitted changes in affected
+  files, or not a git repository). **Save as patch** writes the selection as a `git apply` patch to a file
+  you choose and changes nothing else. **Apply selection** (**Auswahl übernehmen**) first runs every check
+  against the project (nothing is written) and then opens the summary dialog: the files, hunks and line
+  counts, the target, and for flagged files a list with the reasons and a checkbox you have to tick (**I have
+  reviewed the flagged files**); for a project that is not a git repository another checkbox, because
+  uncommitted work cannot be detected there. Only the final button writes, all selected files or none.
+- A file with uncommitted changes in the project cannot be selected (it is marked **changed locally**);
+  commit or discard them and reload. A sandbox that changed since you opened the tab is refused with the
+  hint to reload; applied files are marked **applied** and deselected. A sandbox whose workspace is mounted
+  (it works in the project directly) or empty has no target; the tab says so.
+- The tab count (**Changes (4)**) shows the number of changed files once the tab has been loaded. The data is
+  read when you open the tab and on **Reload changes**, not continuously (reading it fetches the workspace).
 
 ## Preview: port forwards
 

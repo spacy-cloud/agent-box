@@ -39,3 +39,28 @@ export {
   type ScanProgress,
   type ScanResult,
 } from './scan.js';
+export {
+  buildReviewModel,
+  buildPatch,
+  diffDigest,
+  isDependencyFile,
+  expectedPatchNames,
+  REVIEW_LIMITS,
+  type ChangeBadge,
+  type ChangeFile,
+  type ChangeHunk,
+  type ChangeSelection,
+  type NotApplicableReason,
+  type ReviewModel,
+  type SelectedFile,
+  type BuiltPatch,
+} from './changes.js';
+export {
+  openTarget,
+  dirtyPaths,
+  checkTargetPath,
+  checkPatch,
+  applyPatchToTarget,
+  type Target,
+  type TargetKind,
+} from './apply.js';

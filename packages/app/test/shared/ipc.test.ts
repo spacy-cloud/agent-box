@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ACTIVITY_KINDS,
   APPROVAL_MODES,
   AUDIT_DECISIONS,
   ISOLATION_LEVELS,
@@ -33,6 +34,7 @@ describe('IPC contract', () => {
     expect([...ui.WORKSPACE_MODES]).toEqual([...WORKSPACE_MODES]);
     expect([...ui.AUDIT_DECISIONS]).toEqual([...AUDIT_DECISIONS]);
     expect([...ui.APPROVAL_MODES]).toEqual([...APPROVAL_MODES]);
+    expect([...ui.ACTIVITY_KINDS]).toEqual([...ACTIVITY_KINDS]);
   });
 
   it('no channel exposes a shell, path-write or arbitrary eval capability', () => {
@@ -63,6 +65,10 @@ describe('IPC contract', () => {
     expect(ok('sandboxes:extend', { id: 'local/x', ttl: '90m' })).toBe(true);
     expect(ok('approvals:approve', { id: 'abc' })).toBe(true);
     expect(ok('network:log', { id: 'local/x', denied: true, limit: 500, since: 0 })).toBe(true);
+    expect(
+      ok('activity:list', { id: 'local/x', kinds: ['exec', 'file'], limit: 50, cursor: '123' }),
+    ).toBe(true);
+    expect(ok('activity:recent', { limit: 10 })).toBe(true);
     expect(ok('network:allow', { id: 'local/x', destinations: ['a.example.org'] })).toBe(true);
     expect(ok('network:propose', { id: 'local/x', destinations: ['*.example.org'] })).toBe(true);
     expect(ok('export:run', { id: 'local/x', format: 'branch', branchName: 'abox/result' })).toBe(

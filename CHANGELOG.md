@@ -10,6 +10,21 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Side-by-side diff with selective apply (closes #20): the sandbox detail view has a **Changes** ("Änderungen")
+  tab that lists the changed files (status, `+added −removed`, hunks, badges for dependency manifests, executables,
+  binaries, symlinks, large and flagged files, a note on what `.gitignore` kept out) and shows each file
+  side by side or unified with a checkbox per hunk. **Apply selection** runs every check, shows a summary dialog
+  (flagged files and projects without git need their own confirmation) and writes the selected files and hunks into
+  the project the sandbox was created from; **Save as patch** writes the selection as a `git apply` patch.
+  `abox apply <sandbox> [--path p ...] [--dry-run] [--yes] [--allow-flagged] [--allow-non-git]` does it per file on
+  the command line. Applying is a new human-only manager operation (`Abox.reviewChanges`, `applyChanges`,
+  `changesPatch`, `requireHuman`, audited as `sandbox.changes` / `sandbox.apply` / `sandbox.changes_patch`; no MCP
+  tool): the caller sends only paths, hunk indexes and the digest of the diff it reviewed, the manager recomputes the
+  diff, refuses a changed sandbox state and builds the patch itself; the target is the recorded source project and
+  cannot be chosen; paths with `..`, `.git`, symbolic links or nested repositories are refused; a git project with
+  uncommitted changes in an affected file is refused (a project without git needs `--allow-non-git`); the write is
+  all or nothing (`git apply --check`, then `git apply`, no index, hardened argv) and flagged files are never
+  preselected and need an explicit confirmation. See [security](docs/security.md#applying-the-changes-of-a-sandbox).
 - Generated MCP tool and error catalogs (closes #35): `docs/mcp-catalog.md` lists every MCP tool (purpose, input
   schema as a parameter table, result fields, who may call it, approval behaviour, annotations) and
   `docs/errors.md` every error code (exit code, meaning, typical hint) with the error envelope, plus
@@ -82,6 +97,31 @@ add --scope user abox -- abox mcp serve --agent claude-code`; the plugin and a m
   audited as `setup.apply` / `setup.uninstall`) for the GUI wizard (#22) to call later; agents cannot reach it (no MCP
   tool). New built-in agent contexts `claude-desktop` and `gemini-cli`; `abox init --agent` knows them too. Config
   locations and what is verified on a real install: [Setting up agents](docs/setup.md).
+- Overview start page (closes #19): the GUI now starts on an **Overview** ("Übersicht") with four cards (running
+  sandboxes, open approvals, sandboxes expiring within 15 minutes, problems from the `doctor` diagnosis; each leads to
+  its view), the hosts with cpu, memory and sandbox bars against their limits (the numbers of the Hosts view, one
+  independent read-only call per host, an unreachable host says so and never blocks the page), the open approvals
+  with **Allow** / **Deny** / **Details** and the newest agent activity across all sandboxes. **Allow** is only
+  offered where the one-line title says everything to judge (a lifetime extension, a port forward, a few plain
+  destinations); a create, command, template trust or open network goes through the details. Allow and Deny are
+  the Approvals view's `approvals:approve` / `approvals:deny`. The activity list is built on the
+  `activity:recent` channel (`Abox.recentActivity`, from the activity timeline below): the newest entries that agents
+  caused, without approval requests and allowed proxy requests; the badges (ok, blocked, export, error) are mapped
+  in the app.
+- Per-sandbox activity timeline (closes #21): `Abox.activity` derives a timeline of what happened in a sandbox from
+  the audit log: commands (`exec`, background processes, human shell or takeover), file writes, reads and copies,
+  the proxy's network decisions and port forwards, approvals and access requests, and lifecycle steps. Newest
+  first, filterable by kind (`exec`, `file`, `network`, `approval`, `lifecycle`) and time, paged by a cursor (a
+  page looks at most at 500 audit entries); runs of identical proxy decisions are merged. It has no storage of its
+  own, so the audit log's rules hold (secrets masked, append-only, hash-chained); only whitelisted, clipped facts
+  are passed on, file writes show path and size but never content, environment variables only their names.
+  Owner or human (an agent only for its own sandboxes); there is deliberately no MCP tool for it.
+  `Abox.recentActivity` lists the newest activity across the visible sandboxes (bounded, denials but no allowed
+  requests or reads) for an overview page. `abox activity <sandbox> [--kind exec,file,network,approval] [--since 1h]
+[--limit n] [--cursor c] [--json]` prints it. The GUI's **Activity** ("Aktivität") tab, now behind **Network**,
+  is a vertical timeline (time, kind icon and badge, outcome badge, summary, expandable details), with kind chips,
+  live refresh like the Network tab, **Open approval** on approval entries and **Show in activity** on the banner
+  of open approvals (opens the tab with the Approvals filter). The audit query got `beforeSeq` and `sandboxIds`.
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):

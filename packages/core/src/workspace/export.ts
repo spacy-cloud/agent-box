@@ -516,6 +516,7 @@ async function doExport(
     case 'diff': {
       if (newTree === baseTree) {
         result.content = '';
+        if (input.keepRaw) result.contentBytes = Buffer.alloc(0);
         break;
       }
       const r = await runGit(
@@ -534,6 +535,7 @@ async function doExport(
         { gitDir: git },
       );
       setContent(result, r.raw);
+      if (input.keepRaw) result.contentBytes = r.raw;
       break;
     }
     case 'patch': {

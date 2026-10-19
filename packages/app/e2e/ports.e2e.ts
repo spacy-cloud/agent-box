@@ -5,6 +5,7 @@ import {
   axeViolations,
   launchGui,
   makeHome,
+  nav,
   shot,
   useFakeEngine,
   writeFakeEngineTemplates,
@@ -274,8 +275,10 @@ test('an agent request for a port is understandable in the queue; "Einmal erlaub
       state.close();
     }
 
-    await expect(page.getByRole('button', { name: /Freigaben/ })).toContainText('1');
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await expect(nav(page).getByRole('button', { name: /Freigaben/ })).toContainText('1');
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     const item = page.getByRole('button', { name: /Port-Weiterleitung \(Vorschau\)/ });
     await expect(item).toContainText('Port 5173');
     const dialog = page.getByRole('dialog', { name: 'Port-Weiterleitung (Vorschau)' });

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
-import { axeViolations, launchGui, makeHome, openAgent, shot, SHELL_REQ } from './helpers';
+import { axeViolations, launchGui, makeHome, nav, openAgent, shot, SHELL_REQ } from './helpers';
 import type { TestHome } from './helpers';
 
 interface Probe {
@@ -54,8 +54,10 @@ test('a new approval request shows a notification with enough to judge it and th
     expect(n.body).not.toContain('Einmal erlauben');
 
     // the count follows the queue, in the window and in the tray
-    await expect(page.getByRole('button', { name: /Freigaben/ })).toContainText('1');
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await expect(nav(page).getByRole('button', { name: /Freigaben/ })).toContainText('1');
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     const dialog = page.getByRole('dialog', { name: 'Sandbox erstellen' });
     await dialog.getByRole('button', { name: 'Ablehnen' }).click();
     await expect.poll(async () => (await probe(app)).tray.count).toBe(0);

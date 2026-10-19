@@ -11,6 +11,8 @@ export interface Route {
   sandboxId?: string;
   tab?: string;
   approvalId?: string;
+  /** Detail view, activity tab: start with these kinds selected (`exec`, `file`, ...). */
+  activityKinds?: string[];
   /** Audit view: start with this actor filter (e.g. coming from the MCP status). */
   actor?: string;
 }

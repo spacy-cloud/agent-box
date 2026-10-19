@@ -56,9 +56,13 @@ export type ManagerChannel =
   | 'templates:review'
   | 'files:list'
   | 'export:run'
+  | 'changes:review'
+  | 'changes:apply'
   | 'processes:list'
   | 'processes:logs'
   | 'sandboxes:logs'
+  | 'activity:list'
+  | 'activity:recent'
   | 'network:log'
   | 'network:allow'
   | 'network:propose'
@@ -220,6 +224,19 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         i.id,
         clean({ format: i.format, paths: i.paths, branchName: i.branchName }),
       ),
+    'changes:review': (i) => abox.reviewChanges(HUMAN, i.id),
+    'changes:apply': (i) =>
+      abox.applyChanges(
+        confirmedHuman(i.confirmed),
+        i.id,
+        clean({
+          digest: i.digest,
+          selection: i.selection,
+          acknowledgeFlagged: i.acknowledgeFlagged,
+          allowNonGit: i.allowNonGit,
+          dryRun: i.dryRun,
+        }),
+      ),
     'processes:list': (i) => abox.listProcesses(HUMAN, i.id),
     'processes:logs': (i) => abox.processLogs(HUMAN, i.processId, clean({ tail: i.tail ?? 200 })),
     'sandboxes:logs': async (i) => ({
@@ -229,6 +246,13 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         clean({ tail: i.tail ?? 300, sinceTs: i.sinceTs }),
       ),
     }),
+    'activity:list': (i) =>
+      abox.activity(
+        HUMAN,
+        i.id,
+        clean({ kinds: i.kinds, since: i.since, limit: i.limit, cursor: i.cursor }),
+      ),
+    'activity:recent': (i) => abox.recentActivity(HUMAN, clean({ limit: i.limit, since: i.since })),
     'network:log': (i) =>
       abox.networkLog(HUMAN, i.id, clean({ since: i.since, denied: i.denied, limit: i.limit })),
     'network:allow': (i) =>

@@ -21,7 +21,15 @@ import type {
   WorkspaceMode,
   BackendStatus,
 } from '../types.js';
-import type { ExportFormat, ExportResult, ProgressInfo } from '../workspace/index.js';
+import type {
+  ChangeBadge,
+  ChangeFile,
+  ChangeSelection,
+  ExportFormat,
+  ExportResult,
+  FileStatus,
+  ProgressInfo,
+} from '../workspace/index.js';
 
 /**
  * Who is calling. `contextId` comes from the surface configuration (CLI: `human`; MCP:
@@ -555,6 +563,95 @@ export interface ExportSandboxResult extends ExportResult {
   sandboxId: SandboxId;
   /** `files` format: the host directory the files were written to (`written` is relative to it). */
   outDir?: string;
+}
+
+// -- reviewing and applying a sandbox's changes (human only) ---------------------
+
+/** Where the changes would go: the project the sandbox was created from. */
+export interface ChangesTarget {
+  /**
+   * `git`: a repository (uncommitted changes in affected files are detected and refuse the apply).
+   * `plain`: a directory without its own repository (needs an extra confirmation).
+   * `unavailable`: nothing can be applied (see `reason`).
+   */
+  kind: 'git' | 'plain' | 'unavailable';
+  path?: string;
+  reason?: 'mount' | 'no_source' | 'missing' | 'not_allowed';
+  message?: string;
+  /** Affected paths that have uncommitted changes in the project (git targets). */
+  dirtyPaths: string[];
+}
+
+export interface ChangesView {
+  sandboxId: SandboxId;
+  /** Digest of the exact diff shown here; an apply or a patch must name it. */
+  digest: string;
+  files: ChangeFile[];
+  /** Flagged paths that are not changed files (tampered `.git`, entries that were not exported…). */
+  notices: Array<{ path: string; reason: string }>;
+  stats: { filesChanged: number; insertions: number; deletions: number };
+  /** Entries `.gitignore` rules of the workspace kept out of the comparison. */
+  ignored?: { count: number; paths: string[] };
+  warnings: string[];
+  target: ChangesTarget;
+}
+
+export interface ApplyChangesParams {
+  digest: string;
+  selection: ChangeSelection[];
+  acknowledgeFlagged?: string[];
+  allowNonGit?: boolean;
+  dryRun?: boolean;
+}
+
+export interface ChangesSelectionParams {
+  digest: string;
+  selection: ChangeSelection[];
+}
+
+export interface ApplyPlanFile {
+  path: string;
+  oldPath?: string;
+  status: FileStatus;
+  /** Hunks that are applied / that the file has. */
+  hunks: number;
+  totalHunks: number;
+  insertions: number;
+  deletions: number;
+  badges: ChangeBadge[];
+  flagged: boolean;
+}
+
+export interface ApplyPlan {
+  target: string;
+  targetKind: 'git' | 'plain';
+  files: ApplyPlanFile[];
+  insertions: number;
+  deletions: number;
+  hunks: number;
+  /** Selected files that needed the extra confirmation. */
+  flaggedPaths: string[];
+}
+
+export interface ApplyChangesResult {
+  status: 'applied' | 'dry_run';
+  sandboxId: SandboxId;
+  digest: string;
+  plan: ApplyPlan;
+  message: string;
+}
+
+/** Everything checked, nothing written: the human must confirm the plan (repeat with `humanConfirmed`). */
+export interface ApplyConfirmationRequired extends ConfirmationRequired {
+  plan: ApplyPlan;
+}
+
+export interface ChangesPatchResult {
+  sandboxId: SandboxId;
+  digest: string;
+  /** Byte-exact `git apply` patch of the selection. */
+  patch: Buffer;
+  plan: Omit<ApplyPlan, 'target' | 'targetKind'>;
 }
 
 // -- access requests / approvals -------------------------------------------------
@@ -1130,6 +1227,79 @@ export interface NetworkLogView {
   truncated: boolean;
   /** Most requests the log looks at per sandbox. */
   maxEvents: number;
+}
+
+// -- activity timeline ---------------------------------------------------------------------------
+
+/** What an activity entry is about. */
+export const ACTIVITY_KINDS = ['exec', 'file', 'network', 'approval', 'lifecycle'] as const;
+export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
+
+/** How it went: `denied` is a refusal by policy, the proxy or a human; `pending` waits for a human. */
+export type ActivityOutcome = 'ok' | 'denied' | 'error' | 'pending' | 'info';
+
+/**
+ * One item of the activity timeline of a sandbox: a view of one audit entry (or of a run of identical proxy
+ * decisions). Only whitelisted, clipped fields of the audit details are carried: commands and environment
+ * variable *names* as the audit log stores them (already masked), paths and sizes of files, never file content.
+ */
+export interface ActivityEntry {
+  /** Audit sequence number of the newest entry the item stands for. */
+  seq: number;
+  /** When it happened (ms since epoch); for a run, the time of the newest request. */
+  ts: number;
+  /** Time of the oldest entry of a run (`count > 1`). */
+  from?: number;
+  kind: ActivityKind;
+  /** The audit action, e.g. `sandbox.exec` (the GUI words its own label from it). */
+  action: string;
+  /** `human`, `system` or the agent context. */
+  actor: string;
+  outcome: ActivityOutcome;
+  /** One line in English: label and subject. */
+  summary: string;
+  /** What the action was about: the command, the path, `host:port`, the approval kind. */
+  subject?: string;
+  /** Whitelisted facts (exit code, size, reason, ...), values clipped. */
+  detail: Record<string, string | number | boolean>;
+  /** Number of audit entries this item stands for (identical proxy decisions in a row are merged). */
+  count: number;
+  /** The approval this entry belongs to (for a link to the approvals view). */
+  approvalId?: string;
+  sandboxId: string;
+  /** Name of the sandbox (set in the cross-sandbox list). */
+  sandboxName?: string;
+}
+
+export interface ActivityOptions {
+  /** Only these kinds (default: all). */
+  kinds?: ActivityKind[];
+  /** Only entries at or after this time (ms since epoch). */
+  since?: number;
+  /** Audit entries to look at per page (default 100, at most 500). */
+  limit?: number;
+  /** `nextCursor` of the previous page. */
+  cursor?: string;
+}
+
+export interface ActivityView {
+  sandboxId: string;
+  /** Newest first. */
+  entries: ActivityEntry[];
+  /** Pass as `cursor` for the next (older) page; absent on the last page. */
+  nextCursor?: string;
+}
+
+export interface RecentActivityOptions {
+  /** Entries to return (default 20, at most 100). */
+  limit?: number;
+  since?: number;
+  kinds?: ActivityKind[];
+}
+
+export interface RecentActivityView {
+  /** Newest first, across the sandboxes the caller may see. */
+  entries: ActivityEntry[];
 }
 
 export interface NetworkAllowInput {

@@ -53,8 +53,10 @@ import {
 } from './interactive.js';
 import { listCaches, removeCaches } from './caches.js';
 import { estimateFit, hostCapacity } from './capacity.js';
+import { applyChanges, changesPatch, reviewChanges } from './changes.js';
 import { estimateWorkspace } from './estimate.js';
 import { suggestTemplate } from './suggest.js';
+import { activity, recentActivity } from './activity.js';
 import { allowNetwork, networkLog, proposeNetworkPolicy } from './network-log.js';
 import { listPortForwards, removePortForward } from './ports.js';
 import { Internals } from './internals.js';
@@ -103,6 +105,12 @@ import type {
   ExecCallOptions,
   ExecParams,
   ExecOutcome,
+  ApplyChangesParams,
+  ApplyChangesResult,
+  ApplyConfirmationRequired,
+  ChangesPatchResult,
+  ChangesSelectionParams,
+  ChangesView,
   ExportParams,
   ExportSandboxResult,
   FitEstimate,
@@ -114,6 +122,10 @@ import type {
   HostCapacity,
   InspectResult,
   NetworkAllowInput,
+  ActivityOptions,
+  ActivityView,
+  RecentActivityOptions,
+  RecentActivityView,
   NetworkLogOptions,
   NetworkLogView,
   NetworkPolicyProposal,
@@ -357,6 +369,21 @@ export class Abox {
     return applyApprovedAccess(this.I, caller, approvalId);
   }
 
+  // -- activity timeline -----------------------------------------------------------------------------------
+  /**
+   * What happened in a sandbox, newest first and one page at a time: commands, file writes, network decisions,
+   * approvals and lifecycle steps, derived from the audit log (no storage of its own, so the audit log's masking
+   * and retention rules hold; file content is never part of it). Owner or human; an agent never sees another
+   * agent's sandbox. Not offered over MCP.
+   */
+  activity(caller: Caller, id: string, o: ActivityOptions = {}): Promise<ActivityView> {
+    return activity(this.I, caller, id, o);
+  }
+  /** The newest activity across the sandboxes the caller may see (human: all, agent: its own), bounded. */
+  recentActivity(caller: Caller, o: RecentActivityOptions = {}): Promise<RecentActivityView> {
+    return recentActivity(this.I, caller, o);
+  }
+
   // -- network log -----------------------------------------------------------------------------------------
   /**
    * What the egress proxy allowed and denied for a sandbox, grouped by destination (host and port) with counts,
@@ -475,6 +502,34 @@ export class Abox {
   /** Produces diff/patch/branch/files; never applies anything to the original project. */
   exportSandbox(caller: Caller, id: string, params: ExportParams): Promise<ExportSandboxResult> {
     return exportSandbox(this.I, caller, id, params);
+  }
+
+  /**
+   * Human only. The sandbox's changes as files and hunks (flags, digest) and the state of the project
+   * they would go to. Reads the sandbox, writes nothing.
+   */
+  reviewChanges(caller: Caller, id: string): Promise<ChangesView> {
+    return reviewChanges(this.I, caller, id);
+  }
+  /**
+   * Human only. Applies selected files / hunks of the sandbox's changes to the project it was created
+   * from: all or nothing, only after the digest of the reviewed diff matches, flagged files confirmed one by
+   * one, a clean target (git) and a `humanConfirmed` plan. Audited as `sandbox.apply`.
+   */
+  applyChanges(
+    caller: Caller,
+    id: string,
+    params: ApplyChangesParams,
+  ): Promise<ApplyChangesResult | ApplyConfirmationRequired> {
+    return applyChanges(this.I, caller, id, params);
+  }
+  /** Human only. The `git apply` patch of a selection (same selection rules and digest as `applyChanges`). */
+  changesPatch(
+    caller: Caller,
+    id: string,
+    params: ChangesSelectionParams,
+  ): Promise<ChangesPatchResult> {
+    return changesPatch(this.I, caller, id, params);
   }
 
   // -- approvals -----------------------------------------------------------------------------------------

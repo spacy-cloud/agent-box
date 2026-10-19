@@ -1,6 +1,7 @@
 /**
  * The complete tool surface. Deliberately absent: anything that changes policy, approves or denies,
- * manages hosts or tokens, touches other agents' sandboxes or runs commands on a host (`ssh_exec`).
+ * manages hosts or tokens, touches other agents' sandboxes, runs commands on a host (`ssh_exec`) or writes
+ * into the user's project (applying the changes of a sandbox is a human-only operation: GUI and `abox apply`).
  */
 export const TOOL_NAMES = [
   'template_list',

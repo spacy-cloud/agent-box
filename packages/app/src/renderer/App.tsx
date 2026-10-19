@@ -5,6 +5,7 @@ import { call } from './api';
 import { Banner, ToastRegion } from './components/ui';
 import type { AppInfo } from '../shared/types';
 import type { Locale, ViewName } from '../shared/ipc';
+import { OverviewView } from './views/Overview';
 import { SandboxesView } from './views/Sandboxes';
 import { ApprovalsView } from './views/Approvals';
 import { DetailView } from './views/Detail';
@@ -18,6 +19,7 @@ import { AskpassHost } from './components/AskpassDialog';
 import logoMark from './assets/logo-mark.png';
 
 const NAV: Array<{ view: Exclude<ViewName, 'detail'>; key: string }> = [
+  { view: 'overview', key: 'nav.overview' },
   { view: 'sandboxes', key: 'nav.sandboxes' },
   { view: 'templates', key: 'nav.templates' },
   { view: 'hosts', key: 'nav.hosts' },
@@ -29,7 +31,7 @@ const NAV: Array<{ view: Exclude<ViewName, 'detail'>; key: string }> = [
 
 export function App(props: { info: AppInfo }) {
   const [locale, setLocaleState] = useState<Locale>(props.info.locale);
-  const [route, setRoute] = useState<Route>({ view: 'sandboxes' });
+  const [route, setRoute] = useState<Route>({ view: 'overview' });
   const [tick, setTick] = useState(0);
   const [pending, setPending] = useState(0);
 
@@ -144,6 +146,7 @@ function Shell() {
             <div className="plain">{info.managerError}</div>
           </Banner>
         ) : null}
+        {active === 'overview' ? <OverviewView /> : null}
         {active === 'sandboxes' ? <SandboxesView /> : null}
         {active === 'templates' ? <TemplatesView /> : null}
         {active === 'hosts' ? <HostsView /> : null}

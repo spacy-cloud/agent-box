@@ -7,8 +7,10 @@ import { TerminalPane } from '../components/Terminal';
 import { FileTree } from '../components/FileTree';
 import type { TreeSelection } from '../components/FileTree';
 import { UsageLines } from '../components/usage';
+import { ActivityTimeline } from '../components/ActivityTimeline';
 import { NetworkTab } from '../components/NetworkLog';
 import { PortsPanel } from '../components/PortsPanel';
+import { ChangesTab } from '../components/Changes';
 import { UnifiedDiff } from '../components/review';
 import {
   Badge,
@@ -36,7 +38,16 @@ import {
 } from '../../shared/format';
 import { ExtendDialog } from './Sandboxes';
 
-const TABS = ['overview', 'terminal', 'activity', 'network', 'files', 'logs', 'snapshots'] as const;
+const TABS = [
+  'overview',
+  'terminal',
+  'files',
+  'changes',
+  'network',
+  'activity',
+  'logs',
+  'snapshots',
+] as const;
 type Tab = (typeof TABS)[number];
 
 export function DetailView(props: { id: string }) {
@@ -45,9 +56,14 @@ export function DetailView(props: { id: string }) {
   const [tab, setTab] = useState<Tab>(
     (TABS as readonly string[]).includes(route.tab ?? '') ? (route.tab as Tab) : 'overview',
   );
+  // a link to a tab (with a filter) of the sandbox that is open already
+  useEffect(() => {
+    if ((TABS as readonly string[]).includes(route.tab ?? '')) setTab(route.tab as Tab);
+  }, [route.tab, route.activityKinds]);
   const [extend, setExtend] = useState(false);
   const [del, setDel] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [changeCount, setChangeCount] = useState<number | null>(null);
   const now = useNow(1000);
   const s = q.data;
   const usage = useSandboxUsage(s && s.state === 'running' && !s.stale ? [s.id] : []);
@@ -132,6 +148,19 @@ export function DetailView(props: { id: string }) {
               <button type="button" onClick={() => navigate({ view: 'approvals' })}>
                 {t('nav.approvals')}
               </button>
+              <button
+                type="button"
+                onClick={() =>
+                  navigate({
+                    view: 'detail',
+                    sandboxId: s.id,
+                    tab: 'activity',
+                    activityKinds: ['approval'],
+                  })
+                }
+              >
+                {t('detail.pendingApprovals.activity')}
+              </button>
             </Banner>
           ) : null}
           {s.error ? (
@@ -143,7 +172,13 @@ export function DetailView(props: { id: string }) {
             label={t('detail.tabs')}
             active={tab}
             onChange={(x) => setTab(x as Tab)}
-            tabs={TABS.map((id) => ({ id, label: t(`detail.tab.${id}`) }))}
+            tabs={TABS.map((id) => ({
+              id,
+              label:
+                id === 'changes' && changeCount !== null
+                  ? t('detail.tab.changesCount', { count: changeCount })
+                  : t(`detail.tab.${id}`),
+            }))}
           >
             {tab === 'overview' ? (
               <OverviewTab
@@ -157,9 +192,16 @@ export function DetailView(props: { id: string }) {
             {tab === 'terminal' ? (
               <TerminalTab id={s.id} name={s.name} state={s.state} owner={s.owner} />
             ) : null}
-            {tab === 'activity' ? <ActivityTab id={s.id} /> : null}
             {tab === 'network' ? <NetworkTab id={s.id} /> : null}
+            {tab === 'activity' ? (
+              <ActivityTimeline
+                key={(route.activityKinds ?? []).join(',')}
+                id={s.id}
+                {...(route.activityKinds ? { initialKinds: route.activityKinds } : {})}
+              />
+            ) : null}
             {tab === 'files' ? <FilesTab id={s.id} /> : null}
+            {tab === 'changes' ? <ChangesTab id={s.id} onCount={setChangeCount} /> : null}
             {tab === 'logs' ? <LogsTab id={s.id} /> : null}
             {tab === 'snapshots' ? <SnapshotsTab id={s.id} /> : null}
           </Tabs>
@@ -410,15 +452,6 @@ export function AuditTable(props: { entries: AuditEntry[]; onSandbox?: (id: stri
 function summaryOf(d: Record<string, unknown>): string {
   const keys = Object.keys(d).slice(0, 4);
   return safeInline(keys.join(', '), 120) || '{}';
-}
-
-function ActivityTab(props: { id: string }) {
-  const { t } = useApp();
-  const q = useQuery('audit:query', { sandboxId: props.id, limit: 200 }, { pollMs: 4000 });
-  if (q.error) return <ErrorBox error={q.error} />;
-  if (!q.data) return <Loading />;
-  if (q.data.length === 0) return <p className="muted">{t('detail.activity.empty')}</p>;
-  return <AuditTable entries={q.data} />;
 }
 
 // -- files ------------------------------------------------------------------------------------------------

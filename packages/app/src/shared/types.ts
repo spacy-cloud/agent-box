@@ -4,12 +4,20 @@
  */
 import type {
   AccessApplied,
+  ActivityEntry,
+  ActivityKind,
+  ActivityOutcome,
+  ActivityView,
+  RecentActivityView,
   AccessResult,
   AgentTokenView,
+  ApplyChangesResult,
+  ApplyConfirmationRequired,
   ApprovalDecision,
   ApprovalView,
   AuditEntry,
   ChainVerification,
+  ChangesView,
   CreateResult,
   DirEntry,
   BackendReport,
@@ -55,6 +63,11 @@ import type { NotificationPrefs } from './constants';
 
 export type {
   AccessApplied,
+  ActivityEntry,
+  ActivityKind,
+  ActivityOutcome,
+  ActivityView,
+  RecentActivityView,
   AccessResult,
   AgentTokenView,
   ApprovalDecision,
@@ -368,9 +381,14 @@ export interface Outputs {
   'files:copyOut': { copied: string | null };
   'export:run': ExportSandboxResult;
   'export:save': SaveResult;
+  'changes:review': ChangesView;
+  'changes:apply': ApplyChangesResult | ApplyConfirmationRequired;
+  'changes:savePatch': SaveResult;
   'processes:list': ProcessView[];
   'processes:logs': ProcessLogsResult;
   'sandboxes:logs': { content: string };
+  'activity:list': ActivityView;
+  'activity:recent': RecentActivityView;
   'network:log': NetworkLogView;
   'network:allow': AccessResult;
   'network:propose': NetworkPolicyProposal;

@@ -1,14 +1,16 @@
 import { expect, test } from '@playwright/test';
 import { StateStore } from '@abox/core';
 import type { Page } from '@playwright/test';
-import { DOCKER, axeViolations, launchGui, makeHome, openAgent, SHELL_REQ } from './helpers';
+import { DOCKER, SHELL_REQ, axeViolations, launchGui, makeHome, nav, openAgent } from './helpers';
 import type { TestHome } from './helpers';
 
 let h: TestHome;
 test.afterEach(() => h?.cleanup());
 
 async function approveInGui(page: Page): Promise<void> {
-  await page.getByRole('button', { name: /Freigaben/ }).click();
+  await nav(page)
+    .getByRole('button', { name: /Freigaben/ })
+    .click();
   await page
     .getByRole('dialog', { name: 'Sandbox erstellen' })
     .getByRole('button', { name: 'Einmal erlauben' })

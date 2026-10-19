@@ -37,6 +37,7 @@ export const AUDIT_DECISIONS = [
 export const APPROVAL_MODES = ['strict', 'medium', 'open'] as const;
 export const APPROVAL_STATUSES = ['pending', 'approved', 'denied', 'expired'] as const;
 export const EXPORT_FORMATS = ['diff', 'patch', 'branch'] as const;
+export const ACTIVITY_KINDS = ['exec', 'file', 'network', 'approval', 'lifecycle'] as const;
 export const LOCALES = ['de', 'en'] as const;
 export const HOST_ZONES = ['workstation', 'lab', 'shared', 'restricted'] as const;
 export const HOST_BACKENDS = ['docker', 'podman', 'process', 'vm'] as const;
@@ -63,6 +64,7 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   failed: true,
 };
 export const VIEWS = [
+  'overview',
   'sandboxes',
   'templates',
   'hosts',

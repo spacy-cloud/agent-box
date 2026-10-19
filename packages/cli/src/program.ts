@@ -1,6 +1,7 @@
 import { Command, CommanderError } from 'commander';
 import { Cli, jsonRequested, processIo, type RunOptions } from './cli.js';
 import { CliError } from './errors.js';
+import { registerApply } from './commands/apply.js';
 import { registerApprovals } from './commands/approvals.js';
 import { registerCache } from './commands/cache.js';
 import { registerCompletion } from './commands/completion.js';
@@ -8,6 +9,7 @@ import { registerData } from './commands/data.js';
 import { registerHost } from './commands/host.js';
 import { registerInit } from './commands/init.js';
 import { registerMcp } from './commands/mcp.js';
+import { registerActivity } from './commands/activity.js';
 import { registerNetwork } from './commands/network.js';
 import { registerOps } from './commands/ops.js';
 import { registerPolicy } from './commands/policy.js';
@@ -68,7 +70,9 @@ export function buildProgram(cli: Cli): Command {
   registerSandbox(program, cli);
   registerRun(program, cli);
   registerData(program, cli);
+  registerApply(program, cli);
   registerApprovals(program, cli);
+  registerActivity(program, cli);
   registerNetwork(program, cli);
   registerPolicy(program, cli);
   registerPort(program, cli);

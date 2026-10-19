@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { _electron as electron } from '@playwright/test';
-import type { ElectronApplication, Page } from '@playwright/test';
+import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { openAbox } from '@abox/runtime';
 import type { AboxRuntime } from '@abox/runtime';
 
@@ -134,6 +134,14 @@ export async function launchGui(
   });
   await page.waitForSelector(`nav[aria-label="${navLabel}"]`);
   return { app, page, errors };
+}
+
+/**
+ * The main navigation. The overview (the start page) has buttons of its own that mention approvals, hosts and
+ * sandboxes: reach a view through the sidebar, never through a name that the page content shares.
+ */
+export function nav(page: Page): Locator {
+  return page.locator('nav.sidebar');
 }
 
 /** The "agent simulator": a second manager in the test process with an agent context (like an MCP server would be). */

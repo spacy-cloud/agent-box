@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { launchGui, makeHome, openAgent, shot, SHELL_REQ } from './helpers';
+import { SHELL_REQ, launchGui, makeHome, nav, openAgent, shot } from './helpers';
 import type { TestHome } from './helpers';
 
 let h: TestHome;
@@ -10,6 +10,7 @@ test.afterEach(() => h.cleanup());
 
 test('new sandbox flow (template -> options -> summary -> confirmation) and restart keeps the sandbox (reconcile)', async () => {
   let { app, page } = await launchGui(h);
+  await nav(page).getByRole('button', { name: 'Sandboxes', exact: true }).click();
   await expect(page.getByText('Noch keine Sandbox').first()).toBeVisible();
 
   await page.getByRole('button', { name: 'Neue Sandbox' }).click();
@@ -45,6 +46,7 @@ test('new sandbox flow (template -> options -> summary -> confirmation) and rest
   app.process().kill('SIGKILL');
   await new Promise((r) => setTimeout(r, 800));
   ({ app, page } = await launchGui(h));
+  await nav(page).getByRole('button', { name: 'Sandboxes', exact: true }).click();
   const row = page.locator('tr', { hasText: 'gui-box' });
   await expect(row).toBeVisible();
   await expect(row).toContainText('Läuft');
@@ -61,7 +63,9 @@ test('detail tabs: activity, files (directory + diff export), logs, snapshots, t
     expect(first.status).toBe('pending_approval');
     if (first.status !== 'pending_approval') return;
     // approve through the GUI queue
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     await page
       .getByRole('dialog', { name: 'Sandbox erstellen' })
       .getByRole('button', { name: 'Einmal erlauben' })
@@ -86,7 +90,7 @@ test('detail tabs: activity, files (directory + diff export), logs, snapshots, t
     ).toBeEnabled();
 
     await page.getByRole('tab', { name: 'Aktivität' }).click();
-    await expect(page.getByRole('tabpanel')).toContainText('sandbox.create');
+    await expect(page.getByRole('tabpanel')).toContainText('Sandbox erstellt');
 
     await page.getByRole('tab', { name: 'Dateien' }).click();
     await expect(

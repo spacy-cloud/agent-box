@@ -103,6 +103,8 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       deny: rec('deny'),
       queryAudit: rec('queryAudit', []),
       networkLog: rec('networkLog', { entries: [] }),
+      activity: rec('activity', { entries: [] }),
+      recentActivity: rec('recentActivity', { entries: [] }),
       allowNetwork: rec('allowNetwork', { status: 'applied' }),
       proposeNetworkPolicy: rec('proposeNetworkPolicy', { proposed: null }),
       exportSandbox: rec('exportSandbox'),
@@ -344,6 +346,22 @@ describe('manager handlers are thin: always the human caller, confirmation only 
     expect(calls[1]!.args[0]).toEqual({ contextId: 'human', humanConfirmed: true });
     expect(calls[2]!.args).toEqual([{ contextId: 'human' }, 'a1', 'ok']);
     expect(calls[3]!.args[0]).toEqual({ contextId: 'human' });
+  });
+
+  it('activity: the human caller, undefined members stripped', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await h['activity:list']({ id: 'local/x', kinds: ['exec'], limit: 50, cursor: '9' }, {});
+    await h['activity:list']({ id: 'local/x' }, {});
+    await h['activity:recent']({ limit: 5 }, {});
+    expect(calls.map((c) => c.fn)).toEqual(['activity', 'activity', 'recentActivity']);
+    expect(calls[0]!.args).toEqual([
+      { contextId: 'human' },
+      'local/x',
+      { kinds: ['exec'], limit: 50, cursor: '9' },
+    ]);
+    expect(calls[1]!.args[2]).toEqual({});
+    expect(calls[2]!.args).toEqual([{ contextId: 'human' }, { limit: 5 }]);
   });
 
   it('network log and allow: the human caller, a wildcard confirmation only when given, undefined members stripped', async () => {
