@@ -26,7 +26,7 @@ import {
   registerAppScheme,
   rendererRoot,
 } from './security';
-import { GuiSettings, resolveLocale } from './settings';
+import { GuiSettings, resolveLocale, showSetupWizard } from './settings';
 import { TrayController } from './tray';
 
 registerAppScheme();
@@ -241,8 +241,11 @@ async function boot(): Promise<void> {
       notificationsAvailable: notificationSink?.supported ?? false,
       closeToTray: settings.closeToTray,
       notifications: settings.notifications,
+      setupWizard: settings.setupWizard,
+      showSetupWizard: showSetupWizard(settings.setupWizard, process.env['ABOX_GUI_SETUP_WIZARD']),
     }),
     setCloseToTray: (on) => settings.setCloseToTray(on),
+    setSetupWizard: (state) => settings.setSetupWizard(state),
     setNotifications: (change) => settings.setNotifications(change),
     recentProjects: () => settings.recentProjects,
     rememberProject: (dir) => settings.addRecentProject(dir),

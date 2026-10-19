@@ -133,6 +133,7 @@ export function SettingsView() {
           </div>
         ))}
       </div>
+      <SetupSection />
       <DiagnosticsSection />
       <CachesSection />
       <SnapshotsSection />
@@ -140,6 +141,23 @@ export function SettingsView() {
       <McpSection />
       <TokensSection />
     </section>
+  );
+}
+
+// -- first-run setup ----------------------------------------------------------------------------------------
+
+function SetupSection() {
+  const { t, setSetupOpen } = useApp();
+  return (
+    <>
+      <h2>{t('settings.setup')}</h2>
+      <p className="muted">{t('settings.setup.hint')}</p>
+      <div className="actions">
+        <button type="button" onClick={() => setSetupOpen(true)}>
+          {t('settings.setup.run')}
+        </button>
+      </div>
+    </>
   );
 }
 

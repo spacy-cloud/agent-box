@@ -124,13 +124,21 @@ CLI skills are not installed (their skill directories are not verified, and the 
 of the plugin, `mcp__plugin_abox_abox__*`, which differ from a manual registration); the rules snippet
 works everywhere. Claude Code's skill comes with the plugin.
 
-## For the GUI wizard (later)
+## The GUI wizard
+
+The desktop app's first-run wizard (and Settings > Run setup again, see [the GUI](gui.md#first-run-setup)) is the
+same engine with a multi-select: it calls `Abox.setupDetect` to list what is installed, `setupPlan` for the
+preview (files with their diff, commands, warnings) and `setupApply` with the digest of that preview after you
+clicked **Apply these changes**. Claude Code is ticked when it is installed and abox is not registered yet,
+nothing else; the choice between the plugin and the MCP entry is the same `--claude-code-method`, and the plugin
+and a manual entry are never written together. The wizard cannot uninstall, and it cannot choose another command
+or marketplace (use the CLI for that). The same guarantees apply: preview first, backups, nothing changes if a
+file moved since the preview, every application is audited.
 
 The logic lives in `@abox/core` (`packages/core/src/setup/`): `detectSetupClients`, `planSetup`,
 `applySetup` take a `SetupEnvironment` (home, env, platform, backup and staging directories) and know
-nothing about the CLI. The `Abox` facade wraps them as `setupDetect` / `setupPlan` / `setupApply` with
-`requireHuman`, the confirmation and the audit entries; a main-process handler can call these three
-methods. The first-run wizard (#22) can offer the same multi-select.
+nothing about the CLI or the GUI. The `Abox` facade wraps them as `setupDetect` / `setupPlan` / `setupApply` with
+`requireHuman`, the confirmation and the audit entries.
 
 ## Exit codes and errors
 

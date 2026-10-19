@@ -44,6 +44,21 @@ export const HOST_BACKENDS = ['docker', 'podman', 'process', 'vm'] as const;
 export const FORWARD_KINDS = ['local', 'remote', 'dynamic'] as const;
 export const TEMPLATE_BACKENDS = ['docker', 'podman', 'process', 'python', 'vm'] as const;
 export const TEMPLATE_SOURCES = ['builtin', 'user', 'project'] as const;
+/** Agents `abox setup` can register abox with, and the two ways to do it for Claude Code (keep in sync with @abox/core). */
+export const SETUP_CLIENTS = [
+  'claude-code',
+  'claude-desktop',
+  'codex',
+  'cursor',
+  'gemini-cli',
+  'orca',
+] as const;
+export const CLAUDE_CODE_METHODS = ['plugin', 'mcp'] as const;
+export type SetupClientId = (typeof SETUP_CLIENTS)[number];
+export type ClaudeCodeMethod = (typeof CLAUDE_CODE_METHODS)[number];
+/** What happened to the first-run setup wizard: absent = it has not been dealt with yet. */
+export const SETUP_WIZARD_STATES = ['completed', 'skipped'] as const;
+export type SetupWizardState = (typeof SETUP_WIZARD_STATES)[number];
 /** Port forwards of a sandbox (keep in sync with @abox/core: a unit test compares them). */
 export const PORT_FORWARD_MIN_HOST_PORT = 1024;
 export const PORT_FORWARD_MAX_PORT = 65_535;

@@ -33,6 +33,9 @@ export interface AppContextValue {
   /** Increments whenever the main process reports a change (live updates). */
   tick: number;
   pendingApprovals: number;
+  /** The first-run setup wizard is open (it opens by itself on the first start and from Settings). */
+  setupOpen: boolean;
+  setSetupOpen(open: boolean): void;
   toasts: Toast[];
   notify(kind: Toast['kind'], text: string): void;
   dismissToast(id: number): void;
@@ -58,9 +61,13 @@ export function AppProvider(props: {
   navigate(r: Route): void;
   tick: number;
   pendingApprovals: number;
+  setupOpen?: boolean;
+  setSetupOpen?: (open: boolean) => void;
   children: ReactNode;
 }) {
   const { info, locale, setLocale, route, navigate, tick, pendingApprovals } = props;
+  const setupOpen = props.setupOpen ?? false;
+  const setSetupOpen = props.setSetupOpen ?? (() => undefined);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextId = useRef(1);
   const dismissToast = useCallback(
@@ -87,6 +94,8 @@ export function AppProvider(props: {
       navigate,
       tick,
       pendingApprovals,
+      setupOpen,
+      setSetupOpen,
       toasts,
       notify,
       dismissToast,
@@ -100,6 +109,8 @@ export function AppProvider(props: {
       navigate,
       tick,
       pendingApprovals,
+      setupOpen,
+      setSetupOpen,
       toasts,
       notify,
       dismissToast,

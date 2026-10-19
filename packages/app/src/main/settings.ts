@@ -1,7 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { DEFAULT_NOTIFICATION_PREFS, LOCALES, NOTIFICATION_KINDS } from '../shared/ipc';
-import type { Locale, NotificationKind, NotificationPrefs } from '../shared/ipc';
+import {
+  DEFAULT_NOTIFICATION_PREFS,
+  LOCALES,
+  NOTIFICATION_KINDS,
+  SETUP_WIZARD_STATES,
+} from '../shared/ipc';
+import type { Locale, NotificationKind, NotificationPrefs, SetupWizardState } from '../shared/ipc';
 
 interface StoredSettings {
   locale?: Locale;
@@ -10,6 +15,8 @@ interface StoredSettings {
   notifications?: Partial<NotificationPrefs>;
   /** Project folders used for templates, most recent first. */
   recentProjects?: string[];
+  /** How the first-run wizard ended; absent until it was finished or skipped. */
+  setupWizard?: SetupWizardState;
 }
 
 const MAX_RECENT_PROJECTS = 8;
@@ -27,11 +34,18 @@ export class GuiSettings {
         closeToTray?: unknown;
         notifications?: unknown;
         recentProjects?: unknown;
+        setupWizard?: unknown;
       };
       if (typeof raw.locale === 'string' && (LOCALES as readonly string[]).includes(raw.locale)) {
         this.data.locale = raw.locale as Locale;
       }
       if (typeof raw.closeToTray === 'boolean') this.data.closeToTray = raw.closeToTray;
+      if (
+        typeof raw.setupWizard === 'string' &&
+        (SETUP_WIZARD_STATES as readonly string[]).includes(raw.setupWizard)
+      ) {
+        this.data.setupWizard = raw.setupWizard as SetupWizardState;
+      }
       if (typeof raw.notifications === 'object' && raw.notifications !== null) {
         const stored = raw.notifications as Record<string, unknown>;
         const prefs: Partial<NotificationPrefs> = {};
@@ -66,6 +80,11 @@ export class GuiSettings {
     return { ...DEFAULT_NOTIFICATION_PREFS, ...(this.data.notifications ?? {}) };
   }
 
+  /** Whether the first-run wizard was finished or skipped; `null` = not yet (it opens on the next start). */
+  get setupWizard(): SetupWizardState | null {
+    return this.data.setupWizard ?? null;
+  }
+
   /** Project folders used for templates, most recent first. */
   get recentProjects(): string[] {
     return [...(this.data.recentProjects ?? [])];
@@ -86,6 +105,11 @@ export class GuiSettings {
 
   setCloseToTray(on: boolean): void {
     this.data.closeToTray = on;
+    this.save();
+  }
+
+  setSetupWizard(state: SetupWizardState): void {
+    this.data.setupWizard = state;
     this.save();
   }
 
@@ -118,4 +142,12 @@ export function resolveLocale(
   if (env && (LOCALES as readonly string[]).includes(env)) return env as Locale;
   if (stored) return stored;
   return system.toLowerCase().startsWith('en') ? 'en' : 'de';
+}
+
+/**
+ * The first-run wizard opens on start while it was neither finished nor skipped. `ABOX_GUI_SETUP_WIZARD=off` keeps it
+ * from opening by itself (the end-to-end tests set it so they start on the sandbox list; one test switches it on).
+ */
+export function showSetupWizard(stored: SetupWizardState | null, env: string | undefined): boolean {
+  return stored === null && env !== 'off';
 }
