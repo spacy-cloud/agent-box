@@ -99,10 +99,10 @@ Failure (the exit code is set as usual):
 }
 ```
 
-`code` is one of `invalid_input`, `template_invalid`, `not_found`, `unsupported`, `conflict`,
-`policy_denied`, `approval_required`, `approval_denied`, `approval_expired`, `untrusted_template`,
-`backend_error`, `backend_unavailable`, `host_unreachable`, `timeout`, `internal` or (CLI only)
-`check_failed`. `hint`, `issues` and `details` appear only when there is something to say.
+`code` is one of the codes of the generated [error catalog](errors.md), which also lists the exit
+code, meaning and typical hint of each (`check_failed` is CLI only); the shape is also available as a
+[JSON Schema](error-envelope.schema.json). `hint`, `issues` and `details` appear only when there is
+something to say.
 
 The shape of `data` per command (field names are camelCase; timestamps are milliseconds since the
 epoch):

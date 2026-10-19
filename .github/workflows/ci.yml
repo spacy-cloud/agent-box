@@ -42,6 +42,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # docs/mcp-catalog.md, docs/errors.md and docs/error-envelope.schema.json are generated from the
+      # code; this fails when one is stale (fix: pnpm build && pnpm catalogs, commit the result).
+      - name: Generated catalogs are up to date
+        run: pnpm catalogs:check
 
   test:
     name: Test
