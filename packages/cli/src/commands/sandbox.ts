@@ -223,7 +223,10 @@ export function registerSandbox(program: Command, cli: Cli): void {
           ? await resolveSnapshot(cli, o.fromSnapshot)
           : undefined;
         const template =
-          auto?.template ?? templateArg ?? fromSnapshot?.template ?? rt.abox.config.defaults.template;
+          auto?.template ??
+          templateArg ??
+          fromSnapshot?.template ??
+          rt.abox.config.defaults.template;
         if (!template) {
           throw invalid(
             'no template given',

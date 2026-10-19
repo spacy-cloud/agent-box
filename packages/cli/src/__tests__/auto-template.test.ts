@@ -73,6 +73,13 @@ describe('create --auto', () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain('--auto and a template name exclude each other');
   });
+
+  it('cannot be combined with --from-snapshot', async () => {
+    writeFileSync(join(t.project, 'package.json'), '{}');
+    const r = await run(t, ['create', '--auto', '--from-snapshot', 'x:y', '-w', '.']);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('--auto and --from-snapshot exclude each other');
+  });
 });
 
 describe('template suggest', () => {
