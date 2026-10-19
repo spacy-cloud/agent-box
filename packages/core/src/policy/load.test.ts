@@ -50,9 +50,11 @@ describe('defaultPolicy', () => {
     expect(Object.keys(p.profiles).sort()).toEqual(['default', 'human']);
     expect(Object.keys(p.contexts).sort()).toEqual([
       'claude-code',
+      'claude-desktop',
       'codex',
       'cursor',
       'default',
+      'gemini-cli',
       'human',
       'orca',
     ]);

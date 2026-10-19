@@ -250,7 +250,7 @@ $ abox policy show --context claude-code     # the resolved rights of one agent 
 ```
 
 Without a `policy.yaml`, a built-in policy applies, with the agent contexts
-`default`, `claude-code`, `codex`, `cursor` and `orca`, all using the profile `default`: up to 3
+`default`, `claude-code`, `claude-desktop`, `codex`, `cursor`, `gemini-cli` and `orca`, all using the profile `default`: up to 3
 sandboxes, 4 CPUs, 8 GB, 4 hours, every built-in template except `host-shell`, workspace modes `worktree`, `clone`, `copy`, `empty`, network `none` or `allowlist`
 with the `npm`, `pypi`, `crates`, `pub`, `packagist` and `github` presets, no extra mounts, no secrets.
 
@@ -277,7 +277,7 @@ The simplest way is to register abox as an MCP server. The server runs as a chil
 Claude Code and acts as the agent context `claude-code`:
 
 ```sh
-claude mcp add abox -- abox mcp serve --agent claude-code
+claude mcp add abox -- abox mcp serve --agent claude-code      # or: abox setup --client claude-code
 ```
 
 Or put this into the project's `.mcp.json` (`abox init --agent claude-code` prints it):
@@ -298,8 +298,10 @@ Claude when to use a sandbox, slash commands and an optional subagent:
 /plugin install abox@agent-box
 ```
 
-Details, other agents (Codex, Cursor, Orca) and the rule snippets for `CLAUDE.md` / `AGENTS.md`
-are in [Claude Code and other agents](claude-code.md). The tools the agent gets and how errors
+`abox setup` does the registration for you, for several agents at once, with a preview of every
+change (see [Setting up agents](setup.md)). Details, other agents (Codex, Cursor, Gemini CLI, Orca)
+and the rule snippets for `CLAUDE.md` / `AGENTS.md` are in
+[Claude Code and other agents](claude-code.md). The tools the agent gets and how errors
 and approvals look to it are in the [MCP reference](mcp.md).
 
 `abox init` also writes an example project template to `.sandbox/<dir>-dev.yaml` in the current

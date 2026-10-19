@@ -70,7 +70,7 @@ If you open a terminal in a sandbox that Claude owns (GUI terminal tab, `abox sh
 
 ### Rules for agents without plugin support
 
-`templates/CLAUDE.md.snippet` and `templates/AGENTS.md.snippet` contain a ready-made project rule ("run unknown code only in an abox sandbox ...") for `CLAUDE.md` / `AGENTS.md`, for Codex, Cursor, Orca agents and others. For those agents register the MCP server yourself: `abox mcp serve --agent <name>` (`abox init --agent <name>` prints the configuration).
+`templates/CLAUDE.md.snippet` and `templates/AGENTS.md.snippet` contain a ready-made project rule ("run unknown code only in an abox sandbox ...") for `CLAUDE.md` / `AGENTS.md`, for Codex, Cursor, Orca agents and others. For those agents register the MCP server with `abox setup` (preview, backup, uninstall; see [Setting up agents](../../docs/setup.md)) or yourself: `abox mcp serve --agent <name>` (`abox init --agent <name>` prints the configuration). `abox setup --client claude-code` installs this plugin (and does not add a second, manual MCP entry).
 
 ## Plugin security note
 

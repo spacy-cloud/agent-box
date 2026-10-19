@@ -157,15 +157,20 @@ Run unknown or untrusted code only in an abox sandbox, never directly on the hos
 
 ## Other agents
 
-`abox init --agent <name>` prints the MCP entry and the rules snippet for `claude-code`, `codex`,
-`cursor` and `orca`. All of them use the same stdio command with their own context name:
+`abox setup` registers the MCP server (and the rules snippet) for you, with a preview and a backup,
+for Claude Code, Claude Desktop, Codex, Cursor and Gemini CLI: see [Setting up agents](setup.md).
+`abox init --agent <name>` only prints the MCP entry and the rules snippet, for `claude-code`,
+`claude-desktop`, `codex`, `cursor`, `gemini-cli` and `orca`. All of them use the same stdio command with
+their own context name:
 
-| Agent         | Where the entry goes                                                                                                                               | Command                                                                |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Codex         | `codex mcp add abox -- abox mcp serve --agent codex`, or the `[mcp_servers.abox]` TOML in `~/.codex/config.toml` (both shown by `abox init`)       | `abox mcp serve --agent codex`                                         |
-| Cursor        | `.cursor/mcp.json` (project) or `~/.cursor/mcp.json`                                                                                               | `abox mcp serve --agent cursor`                                        |
-| Orca          | HTTP: start `abox mcp serve --http 127.0.0.1:8765`, create a token with `abox token create orca`, put the URL and a bearer header into `.mcp.json` | see [MCP: HTTP](mcp.md#http)                                           |
-| anything else | its MCP configuration                                                                                                                              | `abox mcp serve --agent <name>` with `<name>` defined in `policy.yaml` |
+| Agent          | Where the entry goes                                                                                                                                 | Command                                                                |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Codex          | `codex mcp add abox -- abox mcp serve --agent codex`, or the `[mcp_servers.abox]` TOML in `~/.codex/config.toml` (both shown by `abox init`)         | `abox mcp serve --agent codex`                                         |
+| Cursor         | `.cursor/mcp.json` (project) or `~/.cursor/mcp.json`                                                                                                 | `abox mcp serve --agent cursor`                                        |
+| Gemini CLI     | `mcpServers` in `~/.gemini/settings.json` (or `.gemini/settings.json` in the project)                                                                | `abox mcp serve --agent gemini-cli`                                    |
+| Claude Desktop | `mcpServers` in `claude_desktop_config.json` (Linux `~/.config/Claude/`, macOS `~/Library/Application Support/Claude/`, Windows `%APPDATA%\Claude\`) | `abox mcp serve --agent claude-desktop`                                |
+| Orca           | HTTP: start `abox mcp serve --http 127.0.0.1:8765`, create a token with `abox token create orca`, put the URL and a bearer header into `.mcp.json`   | see [MCP: HTTP](mcp.md#http)                                           |
+| anything else  | its MCP configuration                                                                                                                                | `abox mcp serve --agent <name>` with `<name>` defined in `policy.yaml` |
 
 These contexts exist without a policy file; with one, define them.
 

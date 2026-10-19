@@ -18,3 +18,4 @@ export type { SecretConfig } from './config/index.js';
 export type { SecretConfig as InjectionSecretConfig } from './secrets/index.js';
 export * from './manager/index.js';
 export * from './hosts/index.js';
+export * from './setup/index.js';

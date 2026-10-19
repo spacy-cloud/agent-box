@@ -15,6 +15,7 @@ import { registerPort } from './commands/port.js';
 import { registerRun } from './commands/run.js';
 import { registerSandbox } from './commands/sandbox.js';
 import { registerSecret } from './commands/secret.js';
+import { registerSetup } from './commands/setup.js';
 import { registerTemplate } from './commands/template.js';
 import { cliVersion } from './version.js';
 
@@ -75,6 +76,7 @@ export function buildProgram(cli: Cli): Command {
   registerCache(program, cli);
   registerMcp(program, cli);
   registerInit(program, cli);
+  registerSetup(program, cli);
   registerHost(program, cli);
   registerSecret(program, cli);
   registerCompletion(program, cli);
