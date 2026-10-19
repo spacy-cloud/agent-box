@@ -12,6 +12,16 @@ test.beforeEach(() => {
 test.afterEach(() => h.cleanup());
 
 const yamlText = (page: Page) => page.locator('.cm-content').innerText();
+/** Duplicate and the exports live in the "⋯" menu of the editor toolbar: this opens it and returns the entry. */
+const toolbarMenuItem = (page: Page, name: string) => {
+  const entry = page.getByRole('menuitem', { name });
+  return {
+    async click() {
+      await page.getByRole('button', { name: 'Weitere Aktionen', exact: true }).click();
+      await entry.click();
+    },
+  };
+};
 
 async function openTemplates(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Templates', exact: true }).click();
@@ -50,7 +60,7 @@ test('template editor: list + search, builtin is read-only, duplicate, form and 
     expect(await axeViolations(page)).toEqual([]);
 
     // duplicate -> editable draft
-    await page.getByRole('button', { name: 'Duplizieren' }).click();
+    await toolbarMenuItem(page, 'Duplizieren').click();
     await expect(page.locator('#f-name')).toHaveValue('alpine-min-copy');
     await expect(page.locator('.tpl-toolbar')).toContainText('Entwurf');
     await expect(page.locator('#f-memory')).toBeEnabled();
@@ -121,7 +131,7 @@ test('template editor: list + search, builtin is read-only, duplicate, form and 
 
     const out = join(h.home, 'export.yaml');
     await mockSave(app, out);
-    await page.getByRole('button', { name: 'YAML exportieren' }).click();
+    await toolbarMenuItem(page, 'YAML exportieren').click();
     await expect(page.getByText(/YAML gespeichert/)).toBeVisible();
     expect(readFileSync(out, 'utf8')).toBe(readFileSync(saved, 'utf8'));
 
@@ -166,7 +176,7 @@ test.describe('build, test and Dockerfile export (docker)', () => {
     try {
       await openTemplates(page);
       await openItem(page, 'alpine-min');
-      await page.getByRole('button', { name: 'Duplizieren' }).click();
+      await toolbarMenuItem(page, 'Duplizieren').click();
       await page.locator('#f-name').fill('e2e-git');
       await page.locator('.tool-row[data-tool="git"] input[type="checkbox"]').check();
       await expect(page.getByText('Das Template ist gültig.')).toBeVisible();
@@ -205,7 +215,7 @@ test.describe('build, test and Dockerfile export (docker)', () => {
       await mockSave(app, out);
       await page.getByRole('button', { name: 'Templates', exact: true }).click();
       await openItem(page, 'e2e-git');
-      await page.getByRole('button', { name: 'Dockerfile exportieren' }).click();
+      await toolbarMenuItem(page, 'Dockerfile exportieren').click();
       await expect(page.getByText(/YAML gespeichert/)).toBeVisible();
       const df = readFileSync(out, 'utf8');
       expect(df).toContain('FROM alpine:3.22');
