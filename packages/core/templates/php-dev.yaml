@@ -18,6 +18,10 @@ tools:
   - composer@2.10.3
   - git
 
+# About how big the built image is: `abox doctor --for <template>` checks the free disk space against it.
+image:
+  size: 250m
+
 workspace:
   mode: copy
   path: /workspace

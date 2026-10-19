@@ -339,6 +339,21 @@ recommended.
 | `cloudInit` | accepted by the schema but **rejected** by the backend: the backend owns the first-boot setup                                          |
 | `diskSize`  | size of the virtual disk (for example `40g`); the disk is `max(image, resources.disk, vm.diskSize)`, so it only ever enlarges the disk |
 
+### `image`
+
+| Key    | Meaning                                                                                                                                                                                    |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `size` | about how much disk the built environment image takes (`3g`); `abox doctor --for <template>` compares it with the free disk space before the first build. A hint only: nothing enforces it |
+
+`image.size` is not part of the build hash (changing it does not rebuild anything) and merges field by
+field with `extends`. Without it, `abox doctor --for` uses a conservative estimate that adds up the base
+image (about 50 MiB for Alpine, 150 MiB for Debian and Ubuntu, more for the others, 1 GiB plus the build
+context for your own Dockerfile), every tool preset (from 50 MiB for `git` to 3 GiB for `flutter`;
+300 MiB for a preset it does not know), 60 MiB per distro package, 30 MiB per `pip` or `npm` package and
+200 MiB per `setup` command. The estimate errs on the high side and is marked "(estimated)" in the
+report; a template that knows its size, such as `flutter-dev` (3 GB), should say so. The first build
+needs twice the image size free (layers and build cache), plus some room for sandboxes.
+
 ## Defaults are restrictive
 
 Everything a template leaves out falls back to the safe side:
@@ -602,6 +617,9 @@ template build <name> --update` ignores both the pin and the cache and fetches t
 - VM base images are immutable, checksum-verified files in the cache; the pin looks like
   `debian-12@sha512:<hex>`. The `python` backend does not pin the base; pin it yourself in
   `base.os` (`python:3.13-slim-bookworm@sha256:...`) if you need reproducible rebuilds.
+- To see whether an image is built already (and whether the disk has room for it) without building,
+  run `abox doctor --for <template>`: it only asks the engine to inspect the image and never pulls
+  or builds.
 - Builds always have network access, independent of the network mode of the sandbox. A build is
   its own audited operation (`image.build_start`, `image.build`).
 - `abox template gc` removes images that no template and no sandbox uses any more; `abox gc` does

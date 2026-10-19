@@ -14,8 +14,10 @@ import type {
   ExecEvent,
   ExecRequest,
   ExecResult,
+  DiskSpace,
   ForeignResource,
   HostConnection,
+  ImageStatus,
   IsolationLevel,
   NetworkEvent,
   NetworkSpec,
@@ -699,6 +701,46 @@ export class DockerProvider implements SandboxProvider {
       throw e;
     }
     return baseTag;
+  }
+
+  /** Engine `inspect` of the environment image (and, without it, of the base image); nothing is built or pulled. */
+  async imageStatus(template: ResolvedTemplate): Promise<ImageStatus> {
+    return this.guard(async () => {
+      const ref = this.imageTag(template, await this.cacheKey(template));
+      const img = await this.imageInspect(ref);
+      if (img) return { ref, present: true, ...(img.Size > 0 ? { sizeBytes: img.Size } : {}) };
+      const os = template.base.os;
+      if (template.base.dockerfile !== undefined || os === undefined)
+        return { ref, present: false };
+      return {
+        ref,
+        present: false,
+        base: { ref: os, present: (await this.imageInspect(os)) !== undefined },
+      };
+    });
+  }
+
+  /**
+   * Free space of the engine's storage root (`DockerRootDir` of its `info`), measured on this machine. A
+   * remote engine, or a root that this machine cannot see, gives `undefined`. `statfs` needs no access to
+   * the directory itself, so a rootful engine's `/var/lib/docker` can be measured by an ordinary user.
+   */
+  async diskSpace(): Promise<DiskSpace | undefined> {
+    if (this.remote) return undefined;
+    return this.guard(async () => {
+      const root = (await this.engineFacts()).raw['DockerRootDir'];
+      if (typeof root !== 'string' || !path.isAbsolute(root)) return undefined;
+      try {
+        const st = await fs.statfs(root);
+        return {
+          path: root,
+          freeBytes: Number(st.bavail) * Number(st.bsize),
+          totalBytes: Number(st.blocks) * Number(st.bsize),
+        };
+      } catch {
+        return undefined;
+      }
+    });
   }
 
   async gcImages(keep: string[]): Promise<string[]> {

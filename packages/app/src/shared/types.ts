@@ -19,6 +19,7 @@ import type {
   DoctorCheck,
   DoctorReport,
   DoctorSeverity,
+  ScopedDoctorReport,
   ExportSandboxResult,
   FitEstimate,
   HostCapacity,
@@ -67,6 +68,7 @@ export type {
   DoctorCheck,
   DoctorReport,
   DoctorSeverity,
+  ScopedDoctorReport,
   ExportSandboxResult,
   FitEstimate,
   HostCapacity,
@@ -388,6 +390,7 @@ export interface Outputs {
   'policy:revisions': PolicyRevisionSummary[];
   'policy:revision': PolicyRevisionDetail;
   'doctor:run': DoctorReport;
+  'doctor:for': ScopedDoctorReport;
   'caches:list': CacheList;
   'caches:remove': CacheRemoveResult;
   'reconcile:run': ReconcileReport;

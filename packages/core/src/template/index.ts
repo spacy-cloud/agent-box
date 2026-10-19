@@ -78,3 +78,4 @@ export {
   MAX_DOCKERFILE_BYTES,
   MAX_LISTED_FILES,
 } from './context.js';
+export { estimateImageBytes, BUILD_SPACE_FACTOR, type ImageSizeEstimate } from './image-size.js';

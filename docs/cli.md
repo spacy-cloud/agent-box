@@ -123,6 +123,7 @@ epoch):
 | `policy show`       | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}`                                                                                                                                                                                 |
 | `token ls`          | `{tokens: [{id, contextId, label, createdAt, lastUsedAt, revokedAt}]}`                                                                                                                                                                                        |
 | `doctor`            | `{ok, summary, checks: [{id, level, severity, title, detail?, details?, notes?, hint?}], backends, state, policy, audit, reconcile}`; on problems, an error body with `details.report`; see [troubleshooting](troubleshooting.md#abox-doctor)                 |
+| `doctor --for`      | `{scope: {kind: "template", name, host} \| {kind: "host", host}, ok, summary, checks: [...]}` (the checks of `doctor`); on problems, an error body with `details.report`                                                                                      |
 | `gc`, `reconcile`   | the report objects (`dryRun`, `sandboxes`, `workspaces`, `images`, `logs`, ...; `orphans`, `ghosts`, `interrupted`, `expired`, `unreachable`, `applied`)                                                                                                      |
 | `gc --orphans`      | `{dryRun, now, resources: [{kind, ref, name, instance, aboxName, sandboxId, role, state, createdAt, startedAt, engine, host, backend, skip}], instances: [{instance, resources, running, newestAt, active, selected, skipReason}], removed, skipped, errors}` |
 
@@ -795,9 +796,10 @@ Check the hash chain of the audit log for tampering
 
 Check backends, permissions, the audit chain and leftovers (exit 1 when any check fails; notes and warnings do not change the exit code)
 
-| Option          | Meaning                                    |
-| --------------- | ------------------------------------------ |
-| `-v, --verbose` | also print the full details of every check |
+| Option           | Meaning                                                                                                                     |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `-v, --verbose`  | also print the full details of every check                                                                                  |
+| `--for <target>` | check only whether `<template>` can run (on `--host`, default `local`) or a host can run sandboxes (`host:<id>`); see below |
 
 Every check has a severity:
 
@@ -813,6 +815,42 @@ how many package caches exist and how much disk they use (and warns about a proj
 cap). With `--json` each check
 also has `severity`, `details` and `notes`, and the report a `summary` (counts per severity); `level`
 (`ok`/`warn`/`error`) is kept for scripts. See [troubleshooting](troubleshooting.md#abox-doctor).
+
+#### `abox doctor --for <template|host:id>`
+
+`abox doctor` checks everything. `--for` answers "can I run _this_?" for one target, with the same
+checks, marks and severities, and a closing verdict ("ready to run" or "not ready: N problem(s)"):
+
+```sh
+abox doctor --for flutter-dev                 # the template on this machine
+abox --host build-server doctor --for flutter-dev   # the same template on a configured host
+abox doctor --for host:build-server           # the host itself
+```
+
+For a template the checks cover: the template (found, parses, a project template's trust state);
+the backend on the host (installed, running, rootless or rootful as a note); what the template needs
+from it (capabilities, network mode, workspace delivery); the **isolation** against the template and
+the host's zone (a hardened runtime that is configured but missing is named); the **environment
+image** (built, or the first create builds it, and whether its base image is already on the engine;
+only the engine's `inspect` is used, nothing is pulled, built or downloaded); **free disk space**
+against `image.size` of the template or a documented estimate (see [templates](templates.md#image));
+the **network** destinations of the template against your profile and against each agent profile (by
+preset, naming the profile); **package caches** (supported by the backend, switched on by the
+profile); the **policy** result of a create (the same evaluation `create` runs, for you and for each
+agent context: allowed, needs a confirmation or an approval, or refused, with the reasons); and
+whether the host has **room** for a sandbox of that size (the fit estimate of `host capacity`).
+
+For `host:<id>` the checks cover: whether the host can be reached (host key, login and the
+engine, for an ssh host), each backend with its rootless or rootful note, the isolation the host's
+zone requires, free disk space of the engine, the size and load of the machine, the host limits and
+how much of them is reserved, and which agent contexts may use the host.
+
+A warning ("a create asks you to confirm first", "disk space is tight") does not fail the check. The
+exit code is 1 when a check has severity `failed` (a template that does not parse, an engine that is
+not running, too little disk space, a refused create, a host that is full), and the report is
+`details.report` of the error body as for `doctor`. With `--json` the report is `data`:
+`{scope: {kind: "template", name, host} | {kind: "host", host}, ok, summary, checks: [...]}`. The
+command is read-only and human-only (it is not an MCP tool, see [security](security.md)).
 
 ### `abox reconcile`
 

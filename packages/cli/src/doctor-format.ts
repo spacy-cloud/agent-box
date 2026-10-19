@@ -43,6 +43,8 @@ export interface DoctorRenderOptions {
   /** Terminal width to wrap at. */
   width: number;
   style: Style;
+  /** The command that prints the details, for the closing hint (default `abox doctor --verbose`). */
+  rerun?: string;
 }
 
 /**
@@ -71,7 +73,10 @@ export function renderDoctorChecks(checks: readonly DoctorCheck[], o: DoctorRend
       out.push(...paragraph(c.hint, `    ${o.style('dim', 'hint:')} `, '          ', width));
   }
   if (hiddenDetails)
-    out.push('', o.style('dim', 'Run "abox doctor --verbose" for the full details.'));
+    out.push(
+      '',
+      o.style('dim', `Run "${o.rerun ?? 'abox doctor --verbose'}" for the full details.`),
+    );
   return `${out.join('\n')}\n`;
 }
 

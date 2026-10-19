@@ -80,6 +80,7 @@ export type ManagerChannel =
   | 'policy:revisions'
   | 'policy:revision'
   | 'doctor:run'
+  | 'doctor:for'
   | 'caches:list'
   | 'caches:remove'
   | 'reconcile:run'
@@ -307,6 +308,18 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     },
     'policy:revision': (i) => abox.getPolicyRevision(HUMAN, i.rev),
     'doctor:run': () => abox.doctor(HUMAN),
+    'doctor:for': (i) =>
+      abox.doctorFor(
+        HUMAN,
+        i.kind === 'host'
+          ? { host: i.host }
+          : clean({
+              template: i.template,
+              hostId: i.host,
+              projectDir: i.projectDir,
+              workspacePath: i.workspacePath,
+            }),
+      ),
     'caches:list': () => abox.listCaches(HUMAN, { size: true }),
     'caches:remove': (i) =>
       abox.removeCaches(

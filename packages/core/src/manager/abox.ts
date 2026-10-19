@@ -26,6 +26,7 @@ import {
   verifyAudit,
 } from './admin.js';
 import { approve, deny, expireApprovals, getApproval, listApprovals } from './approvals.js';
+import { doctorFor } from './doctor-for.js';
 import {
   execCommand,
   exportSandbox,
@@ -93,6 +94,7 @@ import type {
   CreateOptions,
   CreateSandboxRequest,
   CreateResult,
+  DoctorForInput,
   DoctorReport,
   EstimateFitInput,
   ExecCallOptions,
@@ -123,6 +125,7 @@ import type {
   ReadLogOptions,
   ReconcileOptions,
   ReconcileReport,
+  ScopedDoctorReport,
   SandboxFilterInput,
   SandboxList,
   SandboxLogsOptions,
@@ -562,6 +565,13 @@ export class Abox {
   /** Human only. Never deletes anything. */
   doctor(caller: Caller): Promise<DoctorReport> {
     return doctor(this.I, caller);
+  }
+  /**
+   * Human only. A scoped readiness check (`abox doctor --for`): can this template run on that host, or can
+   * that host run sandboxes at all? Read-only; reports problems as checks, like `doctor`.
+   */
+  doctorFor(caller: Caller, input: DoctorForInput): Promise<ScopedDoctorReport> {
+    return doctorFor(this.I, caller, input);
   }
   /** Human only. Report only unless `apply`. */
   reconcile(caller: Caller, o: ReconcileOptions = {}): Promise<ReconcileReport> {

@@ -58,6 +58,25 @@ class FakeEngine {
     return Promise.resolve([]);
   }
 
+  // The readiness check (`abox doctor --for`) asks these two; they only look. The image is never built
+  // and the disk has room, so the answer does not depend on the machine the test runs on.
+  imageStatus(template) {
+    return Promise.resolve({
+      ref: `fake/${template.name}:${template.hash.slice(0, 12)}`,
+      present: false,
+      base: { ref: 'ubuntu:24.04', present: true },
+    });
+  }
+
+  diskSpace() {
+    const GiB = 1024 ** 3;
+    return Promise.resolve({
+      path: '/var/lib/fake-engine',
+      freeBytes: 200 * GiB,
+      totalBytes: 500 * GiB,
+    });
+  }
+
   get(id) {
     const sb = this.sandboxes.get(id);
     if (!sb) throw new AboxError('not_found', `sandbox '${id}' not found`);

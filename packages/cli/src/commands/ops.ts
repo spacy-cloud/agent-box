@@ -21,7 +21,59 @@ import {
   truncate,
 } from '../format.js';
 import { resolveSandboxId } from '../ids.js';
-import { collect, parseSince, positiveInt } from '../parse.js';
+import { collect, invalid, parseSince, positiveInt } from '../parse.js';
+
+/** `abox doctor --for <template>` / `--for host:<id>`: the scoped readiness check. */
+async function doctorFor(cli: Cli, target: string, verbose: boolean): Promise<void> {
+  const isHost = target.startsWith('host:');
+  const name = isHost ? target.slice('host:'.length) : target;
+  if (name === '')
+    throw invalid(
+      isHost ? '--for host: needs a host id (host:<id>)' : '--for needs a template name',
+      'Examples: abox doctor --for flutter-dev, abox doctor --for host:build-server',
+    );
+  if (isHost && cli.globals.host !== undefined && cli.globals.host !== name)
+    throw invalid(
+      `--host ${safe(cli.globals.host)} and --for host:${safe(name)} name different hosts`,
+      'Use one of them.',
+    );
+  const rt = await cli.rt();
+  const report = await rt.abox.doctorFor(
+    cli.caller(),
+    isHost
+      ? { host: name }
+      : {
+          template: name,
+          hostId: cli.host,
+          projectDir: cli.projectDir(),
+        },
+  );
+  const problems = report.checks.filter((c) => severityOf(c) === 'error').length;
+  if (!cli.json) {
+    cli.out(
+      `${cli.style('bold', isHost ? `Can host ${safe(name)} run sandboxes?` : `Can ${safe(name)} run on ${safe(cli.host)}?`)}\n\n`,
+    );
+    cli.out(
+      renderDoctorChecks(report.checks, {
+        verbose,
+        rerun: `abox doctor --for ${safe(target)} --verbose`,
+        width: cli.io.stdout.columns ?? 100,
+        style: (k, t) => cli.style(k, t),
+      }),
+    );
+    cli.out(
+      `\n${problems === 0 ? (isHost ? 'ready' : 'ready to run') : `not ready: ${problems} problem(s)`} (${summaryText(report.summary)})\n`,
+    );
+  }
+  if (problems > 0) {
+    throw new CliError(
+      'check_failed',
+      `${isHost ? `host ${safe(name)}` : safe(name)} is not ready: ${problems} problem(s)`,
+      { hint: 'See the failed checks above.', details: { report } },
+    );
+  }
+  cli.success(report);
+}
 
 function detailsText(e: AuditEntry): string {
   if (!e.details) return '';
@@ -193,6 +245,10 @@ export function registerOps(program: Command, cli: Cli): void {
       'Check backends, permissions, the audit chain and leftovers (exit 1 when any check fails; notes and warnings do not change the exit code)',
     )
     .option('-v, --verbose', 'also print the full details of every check')
+    .option(
+      '--for <target>',
+      'check only whether <template> can run (on --host, default local) or a host can run sandboxes (host:<id>)',
+    )
     .addHelpText(
       'after',
       `
@@ -203,9 +259,20 @@ Every check has a severity:
   ✗ failed    a check failed (the only severity that makes the exit code 1)
 --verbose also prints the detail lines of checks that are ok or info.
 With --json each check also has "severity", "details" and "notes", and the report a "summary"
-(counts per severity); "level" (ok/warn/error) is kept for scripts.`,
+(counts per severity); "level" (ok/warn/error) is kept for scripts.
+
+--for answers "can I run this?" with the same checks and severities, for one target only:
+  abox doctor --for flutter-dev           template on this machine (or on --host <id>): backend, isolation,
+                                          image, free disk space, network presets and package caches against
+                                          your profile and the agent profiles, policy rules, room on the host
+  abox doctor --for host:build-server     host: reachability, engines (rootless or not), limits, capacity
+It is read-only: nothing is built, pulled or started. Exit 1 when a check fails (warnings do not).`,
     )
-    .action(async (o: { verbose?: boolean }) => {
+    .action(async (o: { verbose?: boolean; for?: string }) => {
+      if (o.for !== undefined) {
+        await doctorFor(cli, o.for, o.verbose === true);
+        return;
+      }
       const rt = await cli.rt();
       const full = await rt.abox.doctor(cli.caller());
       const host = cli.globals.host;
