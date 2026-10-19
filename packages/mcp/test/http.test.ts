@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Abox } from '@abox/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { serveHttp } from '../src/index.js';
+import { TOOL_NAMES, serveHttp } from '../src/index.js';
 import type { HttpServerHandle } from '../src/index.js';
 import { makeEnv, openAbox, wrapClient } from './support/harness.js';
 import type { Connected, TestEnv } from './support/harness.js';
@@ -105,7 +105,7 @@ describe('serveHttp: identity and sessions', () => {
     expect(http.address.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
     const a = await client(tokenA);
     const b = await client(tokenB);
-    expect((await a.client.listTools()).tools.length).toBe(22);
+    expect((await a.client.listTools()).tools.length).toBe(TOOL_NAMES.length);
     const c = await a.call('sandbox_create', {
       template: 'fake-box',
       workspace: { mode: 'empty' },

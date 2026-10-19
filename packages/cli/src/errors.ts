@@ -1,9 +1,25 @@
-import { AboxError, ERROR_CODES, isAboxError, type ErrorCode, type ErrorIssue } from '@abox/core';
+import {
+  AboxError,
+  ERROR_CODES,
+  isAboxError,
+  type ErrorCode,
+  type ErrorCodeInfo,
+  type ErrorIssue,
+} from '@abox/core';
 
 /** Codes of the CLI's own failures on top of the core's `ErrorCode`s. */
 export type CliErrorCode = ErrorCode | 'check_failed';
 
 export const CLI_EXIT_CODES: Record<CliErrorCode, number> = { ...ERROR_CODES, check_failed: 1 };
+
+/** Documentation of the codes only the CLI uses (the others are in `ERROR_CODE_INFO` of the core). */
+export const CLI_ONLY_ERROR_INFO: Record<Exclude<CliErrorCode, ErrorCode>, ErrorCodeInfo> = {
+  check_failed: {
+    meaning:
+      'A check (`abox doctor`, `abox audit verify`) ran and found problems; the report is in `details`. Never returned by MCP tools.',
+    hint: 'Read the report in `details` (or the human output) and fix what it names.',
+  },
+};
 
 /** A failure the CLI itself detected (a check found problems, ...), same shape as `AboxError`. */
 export class CliError extends Error {

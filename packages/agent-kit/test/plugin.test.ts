@@ -16,35 +16,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { TOOL_NAMES } from '@abox/mcp';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = join(root, '..', '..');
 
-/** Tool names the abox MCP server exposes (contract with packages/mcp). */
-const TOOLS = [
-  'template_list',
-  'template_show',
-  'sandbox_create',
-  'sandbox_list',
-  'sandbox_inspect',
-  'sandbox_start',
-  'sandbox_exec',
-  'sandbox_process_start',
-  'sandbox_process_logs',
-  'sandbox_process_stop',
-  'sandbox_read_file',
-  'sandbox_write_file',
-  'sandbox_list_dir',
-  'sandbox_network_log',
-  'sandbox_snapshot',
-  'sandbox_restore',
-  'sandbox_export',
-  'sandbox_stop',
-  'sandbox_delete',
-  'sandbox_port_forward',
-  'access_request',
-  'policy_show',
-];
+/** Tool names the abox MCP server exposes (the single source in packages/mcp). */
+const TOOLS: readonly string[] = TOOL_NAMES;
 
 /** Error codes that share a prefix with tool names and are legitimate to mention. */
 const ERROR_CODES = ['policy_denied', 'template_invalid'];
