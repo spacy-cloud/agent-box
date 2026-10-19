@@ -23,6 +23,7 @@ import {
   detailLinesOf,
   severityOf,
 } from '../components/DoctorChecks';
+import { SnapshotsSection } from '../components/SnapshotsSection';
 import { LOCALES, NOTIFICATION_KINDS } from '../../shared/constants';
 import type { Locale, NotificationKind, NotificationPrefs } from '../../shared/ipc';
 import type {
@@ -134,6 +135,7 @@ export function SettingsView() {
       </div>
       <DiagnosticsSection />
       <CachesSection />
+      <SnapshotsSection />
       <McpStatusSection />
       <McpSection />
       <TokensSection />

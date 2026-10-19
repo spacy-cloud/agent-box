@@ -25,6 +25,7 @@ import type {
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
+  ProviderSnapshot,
   ResolvedTemplate,
   ResourceUsage,
   SandboxFilter,
@@ -47,9 +48,11 @@ import {
   removeCacheVolumes,
 } from './caches.js';
 import { renderDockerfile } from './dockerfile.js';
+import { envName, isSnapshotImageTag, parseSnapshotRef, snapshotLayerSize } from './snapshots.js';
 import {
   EXPIRY_STORAGE_RESOLUTION_MS,
   effectiveExpiresAt,
+  clearExpiryFile,
   hasMovableExpiry,
   toEpochSeconds,
   writeExpiryFile,
@@ -101,6 +104,7 @@ import {
   isValidInstanceId,
   isValidShort,
   proxyName,
+  snapshotBaseRepo,
   snapshotRepo,
 } from './labels.js';
 import {
@@ -377,6 +381,8 @@ export class DockerProvider implements SandboxProvider {
       workspaceDelivery: this.remote ? ['none', 'copy'] : ['none', 'bind', 'copy'],
       mounts: !this.remote,
       snapshots: true,
+      // The python backend is built on this provider but prepares its own images and environment.
+      snapshotClone: this.kind !== 'python',
       tty: true,
       extendExpiry: true,
       updateResources: true,
@@ -953,6 +959,25 @@ export class DockerProvider implements SandboxProvider {
           ...this.foreignBase(labels),
         });
       }
+      // Snapshot images (and the base references of sandboxes created from one) of another installation:
+      // what remains of its snapshots when its data directory is deleted. No other images are listed.
+      const images = await this.docker.listImages({
+        filters: { label: [`${LABEL.role}=snapshot`] },
+      });
+      for (const i of images) {
+        const labels = i.Labels ?? {};
+        if (this.ownsInstance(labels)) continue;
+        for (const tag of i.RepoTags ?? []) {
+          if (!isSnapshotImageTag(tag)) continue;
+          out.push({
+            kind: 'image',
+            ref: tag,
+            name: tag,
+            createdAt: i.Created * 1000,
+            ...this.foreignBase(labels),
+          });
+        }
+      }
       return out;
     });
   }
@@ -964,7 +989,11 @@ export class DockerProvider implements SandboxProvider {
    */
   async removeForeign(resource: ForeignResource): Promise<void> {
     return this.guard(async () => {
-      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(resource.ref))
+      const validRef =
+        resource.kind === 'image'
+          ? isSnapshotImageTag(resource.ref)
+          : /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(resource.ref);
+      if (!validRef)
         throw new AboxError('invalid_input', `Invalid backend reference "${resource.ref}"`);
       const refuse = (): never => {
         throw new AboxError(
@@ -978,6 +1007,12 @@ export class DockerProvider implements SandboxProvider {
           const l = c.Config.Labels ?? {};
           if (l[LABEL.managed] !== '1' || this.ownsInstance(l)) refuse();
           await this.docker.getContainer(c.Id).remove({ force: true, v: true });
+        } else if (resource.kind === 'image') {
+          // only a snapshot image of another installation, removed by its tag (the layers stay while another tag refers to them)
+          const img = await this.docker.getImage(resource.ref).inspect();
+          const l = img.Config.Labels ?? {};
+          if (l[LABEL.role] !== 'snapshot' || this.ownsInstance(l)) refuse();
+          await this.docker.getImage(resource.ref).remove();
         } else if (resource.kind === 'network') {
           const n = this.docker.getNetwork(resource.ref);
           const info = await n.inspect();
@@ -1339,6 +1374,7 @@ export class DockerProvider implements SandboxProvider {
     const remapsUid = run.hostMapped && uid !== templateUid;
     const home = `/home/${spec.user.name}`;
     const ro = this.readonlyRootfs(spec);
+    const clone = spec.fromSnapshot ? await this.cloneSource(spec, ro) : undefined;
     const mounts = this.buildMounts(spec, ro);
     for (const m of await this.readonlySubmounts(spec)) {
       if (mounts.some((x) => x.Target === m.Target))
@@ -1448,21 +1484,44 @@ export class DockerProvider implements SandboxProvider {
       [LABEL.workspacePath]: wsPath,
       [LABEL.workspaceKind]: spec.workspace.kind,
       ...(hasTmpFiles ? { [LABEL.tmpFiles]: '1' } : {}),
+      ...(spec.secretMaterial !== undefined
+        ? { [LABEL.secretMaterial]: spec.secretMaterial ? '1' : '0' }
+        : {}),
       'abox.injections': spec.network.injections.length > 0 ? '1' : '0',
     };
+    // A snapshot is the image: its labels and environment come along with the filesystem. Whatever
+    // this spec does not set itself is blanked (labels) or emptied (environment) so nothing of the
+    // sandbox the snapshot was taken of is inherited (the proxy address, its stash of /tmp files, ...).
+    const env: Record<string, string> = {
+      // No passwd entry for a host-mapped uid: without this HOME would be "/". On a read-only
+      // rootfs the home volume's root can not be re-owned, so /tmp (tmpfs, 1777) is used.
+      ...(remapsUid ? { HOME: ro ? '/tmp' : home } : {}),
+      ...spec.template.env,
+      ...spec.env,
+      ...netEnv,
+    };
+    let imageRef = spec.image.ref;
+    let inheritedEnv: string[] = [];
+    if (clone) {
+      for (const k of Object.keys(clone.img.Config.Labels ?? {})) {
+        if (k.startsWith('abox.') && !(k in labels)) labels[k] = '';
+      }
+      const baseEnv = new Set(
+        ((await this.imageInspect(spec.image.ref))?.Config.Env ?? []).map(envName),
+      );
+      inheritedEnv = (clone.img.Config.Env ?? [])
+        .map(envName)
+        .filter((n) => !baseEnv.has(n) && !(n in env))
+        .map((n) => `${n}=`);
+      imageRef = await this.pinSnapshotImage(clone.ref, short);
+      cleanup.push(() => this.unpinSnapshotImages(short));
+    }
 
     const createOpts: Record<string, unknown> = {
       name,
-      Image: spec.image.ref,
+      Image: imageRef,
       Labels: labels,
-      Env: envArray({
-        // No passwd entry for a host-mapped uid: without this HOME would be "/". On a read-only
-        // rootfs the home volume's root can not be re-owned, so /tmp (tmpfs, 1777) is used.
-        ...(remapsUid ? { HOME: ro ? '/tmp' : home } : {}),
-        ...spec.template.env,
-        ...spec.env,
-        ...netEnv,
-      }),
+      Env: [...inheritedEnv, ...envArray(env)],
       User: `${uid}:${gid}`,
       WorkingDir: wsPath,
       Entrypoint: ttlEntrypoint(spec.expiresAt, EXPIRY_FILE),
@@ -1480,6 +1539,9 @@ export class DockerProvider implements SandboxProvider {
     );
     cleanup.push(() => created.remove({ force: true, v: true }));
     const c = this.docker.getContainer(created.id);
+
+    // The deadline file of the snapshot's sandbox (extended by `abox extend`) must not outlive it.
+    if (clone) await clearExpiryFile(c);
 
     // The image's home belongs to the template uid; a host-mapped user needs it (and what build
     // steps put there) to be writable. Done on the created container, before files are placed.
@@ -2091,6 +2153,7 @@ export class DockerProvider implements SandboxProvider {
       } catch (e) {
         ignore(e);
       }
+      await this.unpinSnapshotImages(short).catch(ignore);
     });
   }
 
@@ -2866,6 +2929,8 @@ export class DockerProvider implements SandboxProvider {
       const deadline = await effectiveExpiresAt(this.docker.getContainer(c.Id), c.Config.Labels);
       const oldName = c.Name.replace(/^\//, '');
       const old = this.docker.getContainer(c.Id);
+      // The container stands on a second reference, so the snapshot itself can be deleted later.
+      const baseRef = await this.pinSnapshotImage(snapshotId, short);
       if (wasRunning)
         await old.stop({ t: this.opts.stopTimeoutSec ?? 5 }).catch((e: unknown) => {
           if (statusOf(e) !== 304) throw e;
@@ -2882,7 +2947,7 @@ export class DockerProvider implements SandboxProvider {
       try {
         created = await this.docker.createContainer({
           name: oldName,
-          Image: snapshotId,
+          Image: baseRef,
           Labels: c.Config.Labels,
           Env: c.Config.Env,
           User: c.Config.User,
@@ -2910,6 +2975,203 @@ export class DockerProvider implements SandboxProvider {
       await old.remove({ force: true, v: true });
       if (wasRunning) await this.start(id);
     });
+  }
+
+  /** Memoised layer sizes by image id: an image never changes. */
+  private readonly snapshotSizes = new Map<string, number | undefined>();
+
+  private async snapshotSize(imageId: string): Promise<number | undefined> {
+    if (this.snapshotSizes.has(imageId)) return this.snapshotSizes.get(imageId);
+    let size: number | undefined;
+    try {
+      size = snapshotLayerSize(
+        (await this.docker.getImage(imageId).history()) as unknown as Parameters<
+          typeof snapshotLayerSize
+        >[0],
+      );
+    } catch (e) {
+      if (statusOf(e) !== 404) throw e;
+    }
+    this.snapshotSizes.set(imageId, size);
+    return size;
+  }
+
+  /**
+   * Every snapshot image of this installation (and backend kind), whether its sandbox still exists
+   * or not: the engine keeps them, the registry only knows the ones of live sandboxes. `sizeBytes`
+   * is the layer the commit added; images that share layers are not double counted by summing it.
+   */
+  async listSnapshots(opts: { sandboxId?: SandboxId } = {}): Promise<ProviderSnapshot[]> {
+    return this.guard(async () => {
+      const imgs = await this.docker.listImages({ filters: { label: [`${LABEL.role}=snapshot`] } });
+      const out: ProviderSnapshot[] = [];
+      for (const i of imgs) {
+        const l = i.Labels ?? {};
+        const sandboxId = l[LABEL.snapshotOf];
+        if (!sandboxId || !this.ownsSandbox(l)) continue;
+        if (opts.sandboxId !== undefined && sandboxId !== opts.sandboxId) continue;
+        const secrets = l[LABEL.secretMaterial];
+        for (const tag of i.RepoTags ?? []) {
+          const ref = parseSnapshotRef(tag);
+          // Only the snapshot's own tag; the base reference of a clone is not a second snapshot.
+          if (!ref || ref.short !== parseSandboxId(sandboxId).short) continue;
+          const sizeBytes = await this.snapshotSize(i.Id);
+          out.push({
+            snapshotId: tag,
+            sandboxId,
+            name: l[LABEL.snapshotName] ?? ref.name,
+            createdAt: i.Created * 1000,
+            ...(sizeBytes !== undefined ? { sizeBytes } : {}),
+            ...(l[LABEL.template] ? { template: l[LABEL.template] as string } : {}),
+            ...(secrets === '1'
+              ? { carriesSecrets: true }
+              : secrets === '0'
+                ? { carriesSecrets: false }
+                : {}),
+          });
+        }
+      }
+      return out.sort(
+        (a, b) => a.createdAt - b.createdAt || (a.snapshotId < b.snapshotId ? -1 : 1),
+      );
+    });
+  }
+
+  /**
+   * Deletes the image of one snapshot (its tag; the layers go with the last reference). A container
+   * that stands on it from before this version (restore used the snapshot tag itself) is given the
+   * base reference first, so the snapshot can go without touching that sandbox.
+   */
+  async deleteSnapshot(sandboxId: SandboxId, snapshotId: string): Promise<void> {
+    return this.guard(async () => {
+      const { short } = this.parseId(sandboxId);
+      const ref = parseSnapshotRef(snapshotId);
+      if (!ref || ref.short !== short) {
+        throw new AboxError('not_found', `Snapshot ${snapshotId} does not belong to ${sandboxId}`);
+      }
+      const img = await this.imageInspect(snapshotId);
+      if (!img) return;
+      if (
+        img.Config.Labels?.[LABEL.role] !== 'snapshot' ||
+        img.Config.Labels[LABEL.snapshotOf] !== sandboxId ||
+        !this.ownsSandbox(img.Config.Labels)
+      ) {
+        throw new AboxError('not_found', `Unknown snapshot ${snapshotId}`);
+      }
+      const remove = (): Promise<unknown> => this.docker.getImage(snapshotId).remove();
+      try {
+        await remove();
+      } catch (e) {
+        const s = statusOf(e);
+        if (s === 404) return;
+        if (s !== 409) throw e;
+        // In use by a container: pin the image for each of its sandboxes, then untag again.
+        const users = await this.docker.listContainers({
+          all: true,
+          filters: { ancestor: [img.Id] },
+        });
+        for (const u of users) {
+          const l = u.Labels ?? {};
+          if (l[LABEL.managed] !== '1' || !this.ownsInstance(l) || !l[LABEL.id]) continue;
+          await this.pinSnapshotImage(img.Id, this.parseId(l[LABEL.id] as string).short);
+        }
+        try {
+          await remove();
+        } catch (e2) {
+          if (statusOf(e2) === 404) return;
+          if (statusOf(e2) === 409) {
+            throw new AboxError(
+              'conflict',
+              `Snapshot ${snapshotId} is still in use by a container`,
+              {
+                cause: e2,
+              },
+            );
+          }
+          throw e2;
+        }
+      }
+      this.snapshotSizes.delete(img.Id);
+    });
+  }
+
+  /** Gives the image a reference of the sandbox's own; returns it. See `snapshotBaseRepo`. */
+  private async pinSnapshotImage(imageRef: string, short: string): Promise<string> {
+    await this.docker.getImage(imageRef).tag({ repo: snapshotBaseRepo(short), tag: 'base' });
+    return `${snapshotBaseRepo(short)}:base`;
+  }
+
+  /** Drops the base reference(s) of a sandbox (its snapshots and the image's layers stay as long as something else refers to them). */
+  private async unpinSnapshotImages(short: string): Promise<void> {
+    const imgs = await this.docker.listImages({
+      filters: { reference: [`${snapshotBaseRepo(short)}:*`] },
+    });
+    for (const i of imgs) {
+      if (i.Labels?.[LABEL.role] !== 'snapshot' || !this.ownsInstance(i.Labels)) continue;
+      for (const t of i.RepoTags ?? []) {
+        if (!t.startsWith(`${snapshotBaseRepo(short)}:`)) continue;
+        await this.docker
+          .getImage(t)
+          .remove()
+          .catch((e: unknown) => {
+            if (statusOf(e) !== 404 && statusOf(e) !== 409) throw e;
+          });
+      }
+    }
+  }
+
+  /**
+   * Checks that `spec.fromSnapshot` is a snapshot of this installation that fits the sandbox about
+   * to be created, and returns its image. The filesystem of a snapshot only works with the user,
+   * the workspace path and the (writable) root of the sandbox it came from, so those are compared
+   * with the labels the snapshot inherited from its container. The manager has already decided
+   * about secrets that are not recorded (older sandboxes); one recorded as present is refused here.
+   */
+  private async cloneSource(
+    spec: SandboxSpec,
+    readonlyRoot: boolean,
+  ): Promise<{ ref: string; img: Docker.ImageInspectInfo }> {
+    const ref = spec.fromSnapshot ?? '';
+    if (!parseSnapshotRef(ref)) {
+      throw new AboxError('invalid_input', `Not a snapshot reference: ${ref}`);
+    }
+    const img = await this.imageInspect(ref);
+    const l = img?.Config.Labels ?? {};
+    if (!img || l[LABEL.role] !== 'snapshot' || !this.ownsSandbox(l)) {
+      throw new AboxError('not_found', `Unknown snapshot ${ref}`);
+    }
+    const wsPath = sandboxPath(spec.workspace.sandboxPath);
+    const mismatch = (what: string, was: string | undefined, now: string): AboxError =>
+      new AboxError(
+        'invalid_input',
+        `The snapshot was taken of a sandbox with ${what} "${was ?? 'unknown'}"; this template has "${now}"`,
+        { hint: 'Create the sandbox from the template the snapshot was taken with.' },
+      );
+    if (l[LABEL.template] !== spec.template.name) {
+      throw mismatch('template', l[LABEL.template], spec.template.name);
+    }
+    if (l[LABEL.user] !== `${spec.user.name}:${spec.user.uid}`) {
+      throw mismatch('user', l[LABEL.user], `${spec.user.name}:${spec.user.uid}`);
+    }
+    if (l[LABEL.workspacePath] !== wsPath) {
+      throw mismatch('workspace path', l[LABEL.workspacePath], wsPath);
+    }
+    if (readonlyRoot || l[LABEL.readonlyRootfs] === 'true') {
+      throw new AboxError(
+        'unsupported',
+        'A read-only root filesystem keeps its home and workspace in volumes that a snapshot does not hold',
+      );
+    }
+    if (l[LABEL.secretMaterial] === '1') {
+      throw new AboxError(
+        'policy_denied',
+        'The snapshot contains secrets of the sandbox it was taken of',
+        {
+          hint: 'Secrets never travel with a snapshot into a new sandbox; the new sandbox gets its own from its template.',
+        },
+      );
+    }
+    return { ref, img };
   }
 
   /**

@@ -25,6 +25,7 @@ import {
   type PrepareOptions,
   type ProviderCapabilities,
   type ProviderFactory,
+  type ProviderSnapshot,
   type ResolvedTemplate,
   type SandboxFilter,
   type SandboxId,
@@ -42,6 +43,7 @@ import {
   mapFsError,
   randomSuffix,
   rmTree,
+  treeBytes,
   writeFileAtomic,
 } from './fsutil.js';
 import { confine, normalizeSandboxPath } from './paths.js';
@@ -760,6 +762,72 @@ export class ProcessProvider implements SandboxProvider {
         throw mapFsError(e, `restore '${snapshotId}'`);
       }
       await rmTree(old).catch(() => undefined);
+    });
+  }
+
+  /** Sizes of the snapshot directories by `<short>/<name>/<created>`: a snapshot never changes. */
+  private readonly snapshotSizes = new Map<string, number | undefined>();
+
+  /**
+   * The snapshots of the sandboxes of this host (the directories below `snapshots/`; their id is the
+   * name), with the bytes of the copy. They go with the sandbox, so none outlives it.
+   */
+  async listSnapshots(opts: { sandboxId?: SandboxId } = {}): Promise<ProviderSnapshot[]> {
+    const shorts =
+      opts.sandboxId === undefined
+        ? await this.layout.listShorts()
+        : [this.layout.shortOf(opts.sandboxId, this.host.host)].filter(
+            (s): s is string => s !== undefined,
+          );
+    const out: ProviderSnapshot[] = [];
+    for (const short of shorts) {
+      const meta = await this.layout.readMeta(short).catch(() => undefined);
+      if (!meta) continue;
+      const dir = this.layout.snapshotsDir(short);
+      for (const name of await readdir(dir).catch(() => [] as string[])) {
+        if (!SNAPSHOT_NAME_RE.test(name)) continue; // `.tmp-…`: a snapshot still being copied
+        const st = await lstat(join(dir, name)).catch(() => undefined);
+        if (!st?.isDirectory()) continue;
+        // the copy keeps the timestamps of the files, so the directory's own mtime is the sandbox's
+        const createdAt = Math.round(st.birthtimeMs > 0 ? st.birthtimeMs : st.mtimeMs);
+        const key = `${short}/${name}/${createdAt}`;
+        if (!this.snapshotSizes.has(key)) {
+          this.snapshotSizes.set(key, await treeBytes(join(dir, name)));
+        }
+        const sizeBytes = this.snapshotSizes.get(key);
+        out.push({
+          snapshotId: name,
+          sandboxId: meta.id,
+          name,
+          createdAt,
+          ...(sizeBytes !== undefined ? { sizeBytes } : {}),
+          template: meta.template,
+        });
+      }
+    }
+    return out.sort((a, b) => a.createdAt - b.createdAt || (a.name < b.name ? -1 : 1));
+  }
+
+  /** Removes `snapshots/<name>/` of the sandbox; a snapshot that is not there is already gone. */
+  async deleteSnapshot(id: SandboxId, snapshotId: string): Promise<void> {
+    const { short } = await this.load(id);
+    if (!SNAPSHOT_NAME_RE.test(snapshotId)) {
+      throw new AboxError('not_found', `snapshot '${snapshotId}' not found for '${id}'`);
+    }
+    await this.mutex.run(short, async () => {
+      const snapDir = join(this.layout.snapshotsDir(short), snapshotId);
+      const st = await lstat(snapDir).catch(() => undefined);
+      if (!st) return;
+      if (!st.isDirectory()) {
+        throw new AboxError('not_found', `snapshot '${snapshotId}' not found for '${id}'`);
+      }
+      this.layout.assertWithinSandboxes(snapDir);
+      try {
+        await rmTree(snapDir);
+      } catch (e) {
+        throw mapFsError(e, `delete snapshot '${snapshotId}'`);
+      }
+      this.snapshotSizes.clear();
     });
   }
 

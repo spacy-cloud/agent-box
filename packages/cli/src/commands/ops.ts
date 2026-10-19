@@ -366,12 +366,12 @@ It is read-only: nothing is built, pulled or started. Exit 1 when a check fails 
   program
     .command('gc')
     .description(
-      'Remove expired sandboxes, stale workspaces, unused images, package caches that are old or above their cap, and old logs; with --orphans, find and remove leftovers of other abox homes',
+      'Remove expired sandboxes, stale workspaces, unused images, package caches that are old or above their cap, snapshots of deleted sandboxes and old logs; with --orphans, find and remove leftovers of other abox homes',
     )
     .option('--dry-run', 'only show what would be removed')
     .option(
       '--orphans',
-      'instead of the normal cleanup: list abox containers, networks and volumes whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted), grouped by instance; they may belong to ANOTHER abox home on this machine, so instances with running containers or anything created or started less than an hour ago are listed but skipped; nothing is removed without --yes or a confirmation',
+      'instead of the normal cleanup: list abox containers, networks, volumes and snapshot images whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted), grouped by instance; they may belong to ANOTHER abox home on this machine, so instances with running containers or anything created or started less than an hour ago are listed but skipped; nothing is removed without --yes or a confirmation',
     )
     .option(
       '--instance <id>',
@@ -406,13 +406,17 @@ It is read-only: nothing is built, pulled or started. Exit 1 when a check fails 
           const verb = r.dryRun ? 'would remove' : 'removed';
           const images = r.images.reduce((n, i) => n + i.refs.length, 0);
           const lines = [
-            `${verb}: ${r.sandboxes.length} sandbox(es), ${r.workspaces.length} workspace dir(s), ${images} image(s), ${r.caches.length} package cache(s), ${r.logs.files} log file(s) (${formatBytes(r.logs.bytes)})`,
+            `${verb}: ${r.sandboxes.length} sandbox(es), ${r.workspaces.length} workspace dir(s), ${images} image(s), ${r.caches.length} package cache(s), ${r.snapshots.length} snapshot(s), ${r.logs.files} log file(s) (${formatBytes(r.logs.bytes)})`,
           ];
           if (r.approvalsExpired) lines.push(`${r.approvalsExpired} overdue approval(s) expired`);
           for (const s of r.sandboxes) lines.push(`  sandbox ${s}`);
           for (const c of r.caches)
             lines.push(
               `  cache ${c.key} (${safe(c.stack)}/${safe(c.name)}, ${safe(c.project)}): ${c.reason === 'age' ? 'unused for too long' : 'above the size cap of the project'}${c.sizeBytes === null ? '' : `, ${formatBytes(c.sizeBytes)}`}`,
+            );
+          for (const x of r.snapshots)
+            lines.push(
+              `  snapshot ${x.snapshotId} (${safe(x.name)}, sandbox ${x.sandboxId} is gone)${x.sizeBytes === undefined ? '' : `, ${formatBytes(x.sizeBytes)}`}`,
             );
           for (const e of r.errors) lines.push(`  error: ${safe(e)}`);
           return lines.join('\n');

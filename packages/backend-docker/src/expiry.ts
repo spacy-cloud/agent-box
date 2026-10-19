@@ -70,3 +70,12 @@ export async function writeExpiryFile(c: Docker.Container, expiresAtMs: number):
     gid: 0,
   });
 }
+
+/**
+ * Neutralise a deadline that came along in a snapshot: the new container gets its own deadline from
+ * the entrypoint argument, and a stale (possibly later) value in the file would extend it. `0` is
+ * never later than anything.
+ */
+export async function clearExpiryFile(c: Docker.Container): Promise<void> {
+  await putFile(c, EXPIRY_FILE, Buffer.from('0\n'), { mode: 0o644, uid: 0, gid: 0 });
+}

@@ -30,6 +30,19 @@ const idsByInstance = (kind: 'container' | 'network', instance: string): string[
   )
     .split('\n')
     .filter(Boolean);
+/** The tags of the snapshot images (and base references of clones) an instance left on the engine. */
+const snapshotTags = (instance: string): string[] =>
+  docker(
+    'images',
+    '--filter',
+    `label=abox.instance=${instance}`,
+    '--filter',
+    'label=abox.role=snapshot',
+    '--format',
+    '{{.Repository}}:{{.Tag}}',
+  )
+    .split('\n')
+    .filter(Boolean);
 
 describe.runIf(DOCKER)('abox gc --orphans against Docker', () => {
   let lost: TestEnv;
@@ -75,6 +88,19 @@ describe.runIf(DOCKER)('abox gc --orphans against Docker', () => {
     );
     expect(proxied.code, proxied.stderr).toBe(0);
     lostInstance = instanceOf(lost);
+    // a snapshot, and a sandbox created from it: both leave an image behind
+    const snap = await runBin(lost, ['snapshot', 'lost-plain', 'keep', '--json']);
+    expect(snap.code, snap.stderr).toBe(0);
+    const clone = await runBin(
+      lost,
+      ['create', '--from-snapshot', 'lost-plain:keep', '--name', 'lost-clone', '--json'],
+      { timeoutMs: 300_000 },
+    );
+    expect(clone.code, clone.stderr).toBe(0);
+    expect(snapshotTags(lostInstance).sort()).toEqual([
+      expect.stringMatching(/^abox-snap-base\/[0-9a-f]{8}:base$/),
+      expect.stringMatching(/^abox-snap\/[0-9a-f]{8}:keep$/),
+    ]);
 
     // the home that stays: one running sandbox
     const keep = await runBin(
@@ -89,7 +115,7 @@ describe.runIf(DOCKER)('abox gc --orphans against Docker', () => {
 
     lostContainers = idsByInstance('container', lostInstance);
     lostNetworks = idsByInstance('network', lostInstance);
-    expect(lostContainers.length).toBeGreaterThanOrEqual(3); // two sandboxes and a proxy
+    expect(lostContainers.length).toBeGreaterThanOrEqual(4); // three sandboxes and a proxy
     expect(lostNetworks.length).toBeGreaterThanOrEqual(1);
 
     // `rm -rf ~/abox-test`: registry, instance id and everything else of the home is gone
@@ -103,6 +129,7 @@ describe.runIf(DOCKER)('abox gc --orphans against Docker', () => {
     // anything the lost home left (only its own instance id is touched)
     for (const id of idsByInstance('container', lostInstance)) docker('rm', '-f', '-v', id);
     for (const id of idsByInstance('network', lostInstance)) docker('network', 'rm', id);
+    for (const tag of snapshotTags(lostInstance)) docker('rmi', tag);
     current?.cleanup();
     lost?.cleanup();
   }, 120_000);
@@ -143,6 +170,13 @@ describe.runIf(DOCKER)('abox gc --orphans against Docker', () => {
     const names = data.resources.filter((r) => r.kind === 'container').map((r) => r.aboxName);
     expect(names).toEqual(expect.arrayContaining(['lost-plain', 'lost-proxied']));
     expect(data.resources.some((r) => r.kind === 'network')).toBe(true);
+    // the snapshot and the base reference of the sandbox made from it are listed too, by tag
+    expect(
+      data.resources
+        .filter((r) => r.kind === 'image')
+        .map((r) => r.ref.replace(/[0-9a-f]{8}/, 'x'))
+        .sort(),
+    ).toEqual(['abox-snap-base/x:base', 'abox-snap/x:keep']);
     expect(data.resources.find((r) => r.aboxName === 'lost-plain')?.state).toBe('running');
     // still there
     expect(idsByInstance('container', lostInstance)).toHaveLength(lostContainers.length);
@@ -220,6 +254,7 @@ describe.runIf(DOCKER)('abox gc --orphans against Docker', () => {
     );
     expect(idsByInstance('container', lostInstance)).toEqual([]);
     expect(idsByInstance('network', lostInstance)).toEqual([]);
+    expect(snapshotTags(lostInstance)).toEqual([]);
 
     // the current home is untouched and still works
     const ls = await runBin(current, ['ls', '--json']);

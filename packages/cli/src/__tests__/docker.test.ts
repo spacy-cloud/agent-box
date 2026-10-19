@@ -271,6 +271,89 @@ describe.runIf(DOCKER)('CLI against Docker (acceptance criteria Phase 1/3)', () 
     ).toBeGreaterThan(9 * 60_000);
   }, 180_000);
 
+  it('snapshots: list with size, create a sandbox from one, delete it again', async () => {
+    const base = await runBin(t, ['create', 'alpine-min', '--name', 'snapbase', '--json']);
+    expect(base.code, base.stderr).toBe(0);
+    const baseId = base.json.data.sandbox.id as string;
+    created.push(baseId);
+    await runBin(t, ['exec', baseId, '--', 'sh', '-c', 'echo dep > /workspace/dep.txt']);
+    const snap = await runBin(t, ['snapshot', baseId, 'installed', '--json']);
+    expect(snap.code, snap.stderr).toBe(0);
+    const snapshotId = snap.json.data.snapshotId as string;
+
+    const one = await runBin(t, ['snapshot', 'ls', 'snapbase', '--json']);
+    expect(one.code, one.stderr).toBe(0);
+    expect(one.json.data.snapshots).toMatchObject([
+      { id: snapshotId, name: 'installed', deletable: true, cloneable: true },
+    ]);
+    expect(typeof one.json.data.snapshots[0].sizeBytes).toBe('number');
+    const all = await runBin(t, ['snapshot', 'ls', '--all', '--json']);
+    const entry = all.json.data.snapshots.find((x: { id: string }) => x.id === snapshotId);
+    expect(entry).toMatchObject({ sandboxId: baseId, orphaned: false, backend: 'docker' });
+    expect(all.json.data.totalBytes).toBeGreaterThanOrEqual(entry.sizeBytes);
+    expect((await runBin(t, ['snapshot', 'ls'])).code).toBe(2);
+    const text = await runBin(t, ['snapshot', 'ls', '--all']);
+    expect(text.stdout).toContain(snapshotId);
+    expect(text.stdout).toContain('in total');
+
+    // a new sandbox from it: the files come along, the network and limits are the new command's
+    const clone = await runBin(
+      t,
+      ['create', '--from-snapshot', 'snapbase:installed', '--name', 'snapclone', '--json'],
+      { timeoutMs: 120_000 },
+    );
+    expect(clone.code, clone.stderr).toBe(0);
+    const cloneId = clone.json.data.sandbox.id as string;
+    created.push(cloneId);
+    expect(clone.json.data.sandbox.template).toBe('alpine-min');
+    expect(clone.json.data.sandbox.network.mode).toBe('none');
+    expect((await runBin(t, ['exec', cloneId, '--', 'cat', '/workspace/dep.txt'])).stdout).toBe(
+      'dep\n',
+    );
+    const copy = await runBin(t, [
+      'create',
+      '--from-snapshot',
+      snapshotId,
+      '--workspace',
+      '.',
+      '--mode',
+      'copy',
+      '--json',
+    ]);
+    expect(copy.code).toBe(2);
+    expect(copy.json.code).toBe('invalid_input');
+
+    // deleting needs a confirmation; the sandboxes are not touched
+    const noYes = await runBin(t, ['snapshot', 'rm', '--sandbox', 'snapbase', 'installed']);
+    expect(noYes.code).toBe(2);
+    const rm = await runBin(t, [
+      'snapshot',
+      'rm',
+      '--sandbox',
+      'snapbase',
+      'installed',
+      '--yes',
+      '--json',
+    ]);
+    expect(rm.code, rm.stderr).toBe(0);
+    expect(rm.json.data.removed).toHaveLength(1);
+    expect((await runBin(t, ['snapshot', 'ls', 'snapbase', '--json'])).json.data.snapshots).toEqual(
+      [],
+    );
+    expect((await runBin(t, ['exec', cloneId, '--', 'cat', '/workspace/dep.txt'])).stdout).toBe(
+      'dep\n',
+    );
+    // the clone outlives the sandbox its snapshot came from
+    expect((await runBin(t, ['rm', '--force', baseId])).code).toBe(0);
+    created.splice(created.indexOf(baseId), 1);
+    expect((await runBin(t, ['exec', cloneId, '--', 'cat', '/workspace/dep.txt'])).stdout).toBe(
+      'dep\n',
+    );
+    const audit = await runBin(t, ['audit', '--limit', '300', '--json']);
+    const actions = (audit.json.data.entries as Array<{ action: string }>).map((e) => e.action);
+    expect(actions).toContain('snapshot.delete');
+  }, 240_000);
+
   it.runIf(spawnSync('sh', ['-c', 'command -v script']).status === 0)(
     'shell: an interactive terminal session',
     async () => {

@@ -46,6 +46,9 @@ import type {
   SandboxStatsResult,
   SandboxView,
   SnapshotView,
+  SnapshotEntry,
+  SnapshotOverview,
+  DeleteSnapshotsResult,
   WorkspaceEstimate,
   TemplateDetails,
   TemplateList,
@@ -100,6 +103,9 @@ export type {
   SandboxStatsResult,
   SandboxView,
   SnapshotView,
+  SnapshotEntry,
+  SnapshotOverview,
+  DeleteSnapshotsResult,
   TemplateDetails,
   TemplateList,
   TemplateSuggestion,
@@ -395,6 +401,9 @@ export interface Outputs {
   'snapshots:list': SnapshotView[];
   'snapshots:create': { snapshotId: string };
   'snapshots:restore': { restored: string };
+  'snapshots:listAll': SnapshotOverview;
+  'snapshots:delete': DeleteSnapshotsResult;
+  'snapshots:clone': CreateResult;
   'ports:list': SandboxPortForward[];
   'ports:add': AccessResult;
   'ports:remove': { removed: boolean; port?: SandboxPortForward };

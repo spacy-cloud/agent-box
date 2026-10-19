@@ -69,6 +69,9 @@ export type ManagerChannel =
   | 'snapshots:list'
   | 'snapshots:create'
   | 'snapshots:restore'
+  | 'snapshots:listAll'
+  | 'snapshots:delete'
+  | 'snapshots:clone'
   | 'ports:list'
   | 'ports:add'
   | 'ports:remove'
@@ -262,6 +265,31 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     'snapshots:list': (i) => abox.listSnapshots(HUMAN, i.id),
     'snapshots:create': (i) => abox.snapshot(HUMAN, i.id, i.name),
     'snapshots:restore': (i) => abox.restore(HUMAN, i.id, i.snapshotId),
+    'snapshots:listAll': () => abox.listAllSnapshots(HUMAN),
+    'snapshots:delete': (i) => abox.deleteSnapshots(HUMAN, i.refs),
+    'snapshots:clone': async (i, ctx) => {
+      const { confirmed, progressKey, projectDir, cache, ...req } = i.request;
+      const request: CreateSandboxRequest = clean({
+        ...req,
+        cache: cache === false ? false : undefined,
+        ...(await projectOption(projectDir)),
+        workspace: req.workspace ? clean(req.workspace) : undefined,
+        overrides: req.overrides
+          ? clean({
+              ...req.overrides,
+              network: req.overrides.network ? clean(req.overrides.network) : undefined,
+            })
+          : undefined,
+      });
+      return cancellable(progressKey, (signal) =>
+        abox.createFromSnapshot(confirmedHuman(confirmed), i.source, request, {
+          ...(signal ? { signal } : {}),
+          onProgress: (line, info) => {
+            if (progressKey) ctx.onProgress?.(progressKey, line, info);
+          },
+        }),
+      );
+    },
     'ports:list': (i) => abox.listPortForwards(HUMAN, i.id),
     'ports:add': (i) =>
       abox.accessRequest(confirmedHuman(i.confirmed), i.id, {

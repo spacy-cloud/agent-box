@@ -15,8 +15,15 @@ function fakeEngine(objects: {
   }>;
   networks?: Array<{ id: string; name: string; labels: Record<string, string> }>;
   volumes?: Array<{ name: string; labels: Record<string, string> }>;
+  /** Images by their tags; only snapshot images carry `abox.role=snapshot`. */
+  images?: Array<{ id: string; tags: string[]; labels: Record<string, string> }>;
 }) {
-  const calls = { removed: [] as string[], filters: [] as unknown[], removeOpts: [] as unknown[] };
+  const calls = {
+    removed: [] as string[],
+    filters: [] as unknown[],
+    imageFilters: [] as unknown[],
+    removeOpts: [] as unknown[],
+  };
   const gone = (): never => {
     throw Object.assign(new Error('no such object'), { statusCode: 404 });
   };
@@ -58,6 +65,24 @@ function fakeEngine(objects: {
           .map((v) => ({ Name: v.name, Labels: v.labels, CreatedAt: '2024-02-03T04:05:06Z' })),
         Warnings: [],
       }),
+    listImages: (o: { filters?: { label?: string[] } }) => {
+      calls.imageFilters.push(o.filters);
+      return Promise.resolve(
+        (objects.images ?? [])
+          .filter((i) => matches(i.labels, o.filters))
+          .map((i) => ({ Id: i.id, RepoTags: i.tags, Labels: i.labels, Created: 1_600_000_000 })),
+      );
+    },
+    getImage: (ref: string) => {
+      const i = (objects.images ?? []).find((x) => x.tags.includes(ref) || x.id === ref);
+      return {
+        inspect: () => (i ? Promise.resolve({ Id: i.id, Config: { Labels: i.labels } }) : gone()),
+        remove: () => {
+          calls.removed.push(`image:${ref}`);
+          return Promise.resolve();
+        },
+      };
+    },
     getContainer: (ref: string) => {
       const c = (objects.containers ?? []).find((x) => x.id === ref);
       return {
@@ -160,6 +185,30 @@ describe('listForeign / removeForeign (engine stand-in)', () => {
       { name: 'vol-other', labels: managed('lost999') },
       { name: 'vol-plain', labels: {} },
     ],
+    images: [
+      {
+        id: 'sha256:mine',
+        tags: ['abox-snap/aaaaaaaa:keep'],
+        labels: managed(mine, { 'abox.role': 'snapshot' }),
+      },
+      {
+        id: 'sha256:other',
+        tags: ['abox-snap/bbbbbbbb:before', 'abox-snap-base/cccccccc:base'],
+        labels: {
+          ...managed('lost999', {
+            'abox.role': 'snapshot',
+            'abox.name': 'work',
+            'abox.id': 'local/bbbbbbbb',
+          }),
+        },
+      },
+      // an environment image of another installation is not a snapshot: never listed
+      {
+        id: 'sha256:env',
+        tags: ['abox/node:abc'],
+        labels: managed('lost999', { 'abox.role': 'image' }),
+      },
+    ],
   };
 
   it('lists abox-labelled objects of other or no instance, nothing else', async () => {
@@ -173,8 +222,11 @@ describe('listForeign / removeForeign (engine stand-in)', () => {
       'container:c-legacy',
       'network:n-other',
       'volume:vol-other',
+      'image:abox-snap/bbbbbbbb:before',
+      'image:abox-snap-base/cccccccc:base',
     ]);
     expect(calls.filters).toEqual([{ label: ['abox.managed=1'] }]);
+    expect(calls.imageFilters).toEqual([{ label: ['abox.role=snapshot'] }]);
     expect(found[0]).toEqual({
       kind: 'container',
       ref: 'c-other',
@@ -186,6 +238,17 @@ describe('listForeign / removeForeign (engine stand-in)', () => {
       state: 'exited',
       createdAt: 1_700_000_000_000,
       startedAt: Date.parse('2024-03-04T05:06:07.123Z'),
+      engine: 'docker',
+    });
+    expect(found.find((f) => f.ref === 'abox-snap/bbbbbbbb:before')).toEqual({
+      kind: 'image',
+      ref: 'abox-snap/bbbbbbbb:before',
+      name: 'abox-snap/bbbbbbbb:before',
+      instance: 'lost999',
+      aboxName: 'work',
+      sandboxId: 'local/bbbbbbbb',
+      role: 'snapshot',
+      createdAt: 1_600_000_000_000,
       engine: 'docker',
     });
     // never started: no start time rather than year 1
@@ -236,6 +299,8 @@ describe('listForeign / removeForeign (engine stand-in)', () => {
       'container:c-legacy',
       'network:n-other',
       'volume:vol-other',
+      'image:abox-snap/bbbbbbbb:before',
+      'image:abox-snap-base/cccccccc:base',
     ]);
     expect(calls.removeOpts[0]).toEqual({ force: true, v: true });
   });
@@ -260,12 +325,24 @@ describe('listForeign / removeForeign (engine stand-in)', () => {
       r({ kind: 'network', ref: 'n-plain' }),
       r({ kind: 'volume', ref: 'vol-mine' }),
       r({ kind: 'volume', ref: 'vol-plain' }),
+      r({ kind: 'image', ref: 'abox-snap/aaaaaaaa:keep' }),
     ])
       await expect(p.removeForeign(bad), `${bad.kind} ${bad.ref}`).rejects.toMatchObject({
         code: 'conflict',
       });
     for (const ref of ['../etc', 'a/b', '-rf', '', 'x y'])
       await expect(p.removeForeign(r({ kind: 'container', ref }))).rejects.toMatchObject({
+        code: 'invalid_input',
+      });
+    // an image is named by a snapshot tag only: not an environment image, not an id, not another tag
+    for (const ref of [
+      'abox/node:abc',
+      'sha256:other',
+      'alpine:3.22',
+      'abox-snap/x',
+      '../abox-snap/a:b',
+    ])
+      await expect(p.removeForeign(r({ kind: 'image', ref }))).rejects.toMatchObject({
         code: 'invalid_input',
       });
     expect(calls.removed).toEqual([]);

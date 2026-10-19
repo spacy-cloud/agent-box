@@ -569,6 +569,50 @@ describe('process backend specifics', () => {
     });
   });
 
+  describe('listing and deleting snapshots', () => {
+    it('lists the snapshots of a sandbox with the bytes of the copy and deletes exactly one', async () => {
+      const s = await running();
+      const other = await running();
+      await provider.exec(s.id, { command: 'head -c 5000 /dev/zero > big; echo x > small' });
+      await provider.snapshot(s.id, 'first');
+      await provider.snapshot(s.id, 'second');
+      await provider.snapshot(other.id, 'theirs');
+      // a snapshot still being copied is not listed
+      await mkdir(
+        join(dataDir, 'process', 'sandboxes', s.id.split('/')[1]!, 'snapshots', '.tmp-x'),
+        {
+          recursive: true,
+        },
+      );
+
+      const mine = await provider.listSnapshots({ sandboxId: s.id });
+      expect(mine.map((x) => x.snapshotId).sort()).toEqual(['first', 'second']);
+      expect(mine[0]).toMatchObject({ sandboxId: s.id, template: s.template.name });
+      expect(mine[0]!.sizeBytes).toBeGreaterThanOrEqual(5002);
+      expect(Math.abs(mine[0]!.createdAt - Date.now())).toBeLessThan(60_000);
+      const all = await provider.listSnapshots();
+      expect(all.map((x) => `${x.sandboxId}:${x.snapshotId}`).sort()).toEqual(
+        [`${s.id}:first`, `${s.id}:second`, `${other.id}:theirs`].sort(),
+      );
+
+      // the other sandbox's name is not ours to delete
+      await provider.deleteSnapshot(s.id, 'theirs');
+      expect((await provider.listSnapshots({ sandboxId: other.id })).map((x) => x.name)).toEqual([
+        'theirs',
+      ]);
+      await provider.deleteSnapshot(s.id, 'first');
+      await provider.deleteSnapshot(s.id, 'first'); // already gone
+      expect((await provider.listSnapshots({ sandboxId: s.id })).map((x) => x.name)).toEqual([
+        'second',
+      ]);
+      expect(await codeOf(provider.deleteSnapshot(s.id, '../root'))).toBe('not_found');
+      expect(await codeOf(provider.deleteSnapshot('local/ghostly', 'second'))).toBe('not_found');
+      // the sandbox and its other snapshot are fine
+      await provider.restore(s.id, 'second');
+      expect((await provider.readFile(s.id, '/workspace/small', 10)).data.toString()).toBe('x\n');
+    });
+  });
+
   describe('unsupported', () => {
     it('attach rejects with unsupported and a hint', async () => {
       const s = await running();
