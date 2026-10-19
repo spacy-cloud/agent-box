@@ -11,6 +11,7 @@
  */
 import { z } from 'zod';
 import {
+  ACTIVITY_KINDS,
   APPROVAL_STATUSES,
   AUDIT_DECISIONS,
   EXPORT_FORMATS,
@@ -330,6 +331,26 @@ export const IPC = {
       id,
       tail: z.number().int().min(1).max(5000).optional(),
       sinceTs: z.number().int().nonnegative().optional(),
+    })
+    .strict(),
+  /** The activity timeline of a sandbox (a view of the audit log): newest first, one page at a time. */
+  'activity:list': z
+    .object({
+      id,
+      kinds: z.array(z.enum(ACTIVITY_KINDS)).min(1).max(ACTIVITY_KINDS.length).optional(),
+      since: z.number().int().nonnegative().optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+      cursor: z
+        .string()
+        .regex(/^\d{1,15}$/)
+        .optional(),
+    })
+    .strict(),
+  /** The newest activity across all sandboxes (for the overview). */
+  'activity:recent': z
+    .object({
+      limit: z.number().int().min(1).max(100).optional(),
+      since: z.number().int().nonnegative().optional(),
     })
     .strict(),
   /** The egress log of an allowlist sandbox, grouped by destination (a view of the audit log). */

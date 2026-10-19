@@ -52,6 +52,10 @@ export interface AuditQuery {
   until?: number;
   /** Only entries with `seq > afterSeq` (for polling UIs). */
   afterSeq?: number;
+  /** Only entries with `seq < beforeSeq` (paging backwards through a newest-first listing). */
+  beforeSeq?: number;
+  /** Only entries of one of these sandboxes (an empty list matches nothing). */
+  sandboxIds?: string[];
   /** Maximum number of entries (default 100). */
   limit?: number;
   /** `desc` (default, newest first) or `asc`. */
@@ -193,6 +197,18 @@ export class AuditLog {
     if (q.afterSeq !== undefined) {
       where.push('seq > ?');
       args.push(q.afterSeq);
+    }
+    if (q.beforeSeq !== undefined) {
+      where.push('seq < ?');
+      args.push(q.beforeSeq);
+    }
+    if (q.sandboxIds !== undefined) {
+      where.push(
+        q.sandboxIds.length === 0
+          ? '0'
+          : `sandbox_id IN (${q.sandboxIds.map(() => '?').join(',')})`,
+      );
+      args.push(...q.sandboxIds);
     }
     return { where: where.length ? 'WHERE ' + where.join(' AND ') : '', args };
   }

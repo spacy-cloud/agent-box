@@ -1386,6 +1386,113 @@ dd > .scroll-text {
   overflow-wrap: anywhere;
 }
 
+/* activity timeline tab */
+.timeline-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+}
+.chip-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.7rem;
+}
+.chip-toggle[aria-pressed='true'],
+.chip-toggle[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+.timeline {
+  list-style: none;
+  margin: 0.5rem 0;
+  padding: 0 0 0 1.2rem;
+  position: relative;
+}
+/* the vertical line behind the dots */
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 0.85rem;
+  top: 0.8rem;
+  bottom: 0.8rem;
+  width: 2px;
+  background: var(--border);
+}
+.timeline-item {
+  position: relative;
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+}
+.timeline-dot {
+  flex: none;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  margin-left: -1.2rem;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.timeline-denied .timeline-dot,
+.timeline-error .timeline-dot {
+  border-color: var(--danger-fg);
+  color: var(--danger-fg);
+}
+.timeline-pending .timeline-dot {
+  border-color: var(--warn-fg);
+  color: var(--warn-fg);
+}
+.timeline-body {
+  min-width: 0;
+  flex: 1;
+}
+.timeline-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.5rem;
+}
+.timeline-summary {
+  margin: 0.15rem 0;
+  overflow-wrap: anywhere;
+}
+.timeline-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.timeline-kv {
+  margin: 0.3rem 0 0;
+  display: grid;
+  gap: 0.15rem;
+  font-size: 0.88rem;
+}
+.timeline-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 14rem) 1fr;
+  gap: 0.75rem;
+}
+.timeline-row dt {
+  font-weight: 600;
+  color: var(--muted);
+}
+.timeline-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.timeline-links {
+  margin: 0.2rem 0 0;
+}
+
 /* ---- hosts: live utilisation of the machine ---------------------------------------------------------------------- */
 .live {
   display: grid;

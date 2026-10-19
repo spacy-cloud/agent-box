@@ -4,6 +4,11 @@
  */
 import type {
   AccessApplied,
+  ActivityEntry,
+  ActivityKind,
+  ActivityOutcome,
+  ActivityView,
+  RecentActivityView,
   AccessResult,
   AgentTokenView,
   ApprovalDecision,
@@ -52,6 +57,11 @@ import type { EventChannel, EventPayloads, IpcChannel, IpcInput, IpcResult, Loca
 
 export type {
   AccessApplied,
+  ActivityEntry,
+  ActivityKind,
+  ActivityOutcome,
+  ActivityView,
+  RecentActivityView,
   AccessResult,
   AgentTokenView,
   ApprovalDecision,
@@ -363,6 +373,8 @@ export interface Outputs {
   'processes:list': ProcessView[];
   'processes:logs': ProcessLogsResult;
   'sandboxes:logs': { content: string };
+  'activity:list': ActivityView;
+  'activity:recent': RecentActivityView;
   'network:log': NetworkLogView;
   'network:allow': AccessResult;
   'network:propose': NetworkPolicyProposal;
