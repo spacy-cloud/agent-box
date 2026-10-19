@@ -57,6 +57,7 @@ import { applyChanges, changesPatch, reviewChanges } from './changes.js';
 import { estimateWorkspace } from './estimate.js';
 import { suggestTemplate } from './suggest.js';
 import { activity, recentActivity } from './activity.js';
+import { draftTemplateFromProject, planTemplateSave, saveTemplate } from './template-save.js';
 import { allowNetwork, networkLog, proposeNetworkPolicy } from './network-log.js';
 import { listPortForwards, removePortForward } from './ports.js';
 import { Internals } from './internals.js';
@@ -159,6 +160,11 @@ import type {
   TemplateValidation,
   WorkspaceEstimate,
   TemplateSuggestion,
+  TemplateDraft,
+  TemplateDraftInput,
+  TemplateSaveInput,
+  TemplateSavePlan,
+  TemplateSaveResult,
   TemplateSuggestionInput,
   WorkspaceEstimateInput,
 } from './types.js';
@@ -268,6 +274,29 @@ export class Abox {
    */
   suggestTemplate(caller: Caller, input: TemplateSuggestionInput): Promise<TemplateSuggestion> {
     return suggestTemplate(this.I, caller, input);
+  }
+  /**
+   * Human only, read-only. What `saveTemplate` would write and what is in that file now (for a diff). The
+   * same path checks as the save.
+   */
+  planTemplateSave(caller: Caller, input: TemplateSaveInput): Promise<TemplateSavePlan> {
+    return planTemplateSave(this.I, caller, input);
+  }
+  /**
+   * Human only, audited. Saves a template to the user template directory or to
+   * `<project>/.sandbox/<name>.yaml` (atomic, no link followed, an existing file only with `overwrite`; a
+   * project file needs `humanConfirmed`). Saving never trusts a project template: agents still need a
+   * human's approval of its content.
+   */
+  saveTemplate(caller: Caller, input: TemplateSaveInput): Promise<TemplateSaveResult> {
+    return saveTemplate(this.I, caller, input);
+  }
+  /**
+   * Human only, read-only. The starting text of a template for a project folder: `suggestTemplate`'s best
+   * built-in or user template becomes the `extends` of a new template named after the folder.
+   */
+  draftTemplateFromProject(caller: Caller, input: TemplateDraftInput): Promise<TemplateDraft> {
+    return draftTemplateFromProject(this.I, caller, input);
   }
   /** Human only. */
   gcImages(caller: Caller, o: { projectDir?: string } = {}): Promise<GcImagesResult> {
