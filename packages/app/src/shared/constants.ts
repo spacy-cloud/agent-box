@@ -64,6 +64,7 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   failed: true,
 };
 export const VIEWS = [
+  'overview',
   'sandboxes',
   'templates',
   'hosts',

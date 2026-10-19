@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { launchGui, makeHome, openAgent, SHELL_REQ } from './helpers';
+import { SHELL_REQ, launchGui, makeHome, nav, openAgent } from './helpers';
 import type { TestHome } from './helpers';
 
 let h: TestHome;
@@ -31,7 +31,7 @@ test('keyboard only: Tab to the queue, Enter on the dialog allows once, Esc deni
     expect(
       (await agent.abox.createSandbox(agent.caller, r1, { waitForApprovalMs: 0 })).status,
     ).toBe('pending_approval');
-    await expect(page.getByRole('button', { name: /Freigaben/ })).toContainText('1');
+    await expect(nav(page).getByRole('button', { name: /Freigaben/ })).toContainText('1');
 
     // 1) reach the Approvals navigation entry with Tab and open it with Enter
     await tabUntil(page, FOCUS_NAV_APPROVALS);

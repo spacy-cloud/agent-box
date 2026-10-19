@@ -188,7 +188,7 @@ test('a second instance exits at once and focuses the running window (single-ins
     expect(exitCode).toBe(0);
     // still exactly one window, still working
     expect(app.windows()).toHaveLength(1);
-    await expect(page.getByRole('heading', { name: 'Sandboxes', level: 1 })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Übersicht', level: 1 })).toBeVisible();
   } finally {
     await app.close();
   }

@@ -2,12 +2,13 @@ import { expect, test } from '@playwright/test';
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  SHELL_REQ,
   axeViolations,
   launchGui,
   makeHome,
+  nav,
   openAgent,
   shot,
-  SHELL_REQ,
   writeProjectTemplate,
 } from './helpers';
 import type { TestHome } from './helpers';
@@ -29,8 +30,10 @@ test('approval workflow end to end: agent request is shown, "Einmal erlauben" le
     expect(first.status).toBe('pending_approval');
 
     // the GUI (another process) notices the request through polling and shows the badge
-    await expect(page.getByRole('button', { name: /Freigaben/ })).toContainText('1');
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await expect(nav(page).getByRole('button', { name: /Freigaben/ })).toContainText('1');
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     const dialog = page.getByRole('dialog', { name: 'Sandbox erstellen' });
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText('agent:sim'.replace('agent:', ''));
@@ -69,7 +72,9 @@ test('deny path: "Ablehnen" makes the agent see approval_denied and the request 
     const req = SHELL_REQ(h.project, 'denied-box');
     const first = await agent.abox.createSandbox(agent.caller, req, { waitForApprovalMs: 0 });
     expect(first.status).toBe('pending_approval');
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     const dialog = page.getByRole('dialog', { name: 'Sandbox erstellen' });
     await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: 'Ablehnen' }).click();
@@ -107,7 +112,9 @@ test.describe('template trust: the approval shows what the project template does
       );
       expect(first.status).toBe('pending_approval');
 
-      await page.getByRole('button', { name: /Freigaben/ }).click();
+      await nav(page)
+        .getByRole('button', { name: /Freigaben/ })
+        .click();
       const dialog = page.getByRole('dialog', { name: 'Template vertrauen' });
       await expect(dialog).toBeVisible();
       const review = dialog.getByTestId('template-review');
@@ -160,7 +167,9 @@ test.describe('template trust: the approval shows what the project template does
       expect(first.status).toBe('pending_approval');
       appendFileSync(file, 'labels:\n  use-for: changed after the request\n');
 
-      await page.getByRole('button', { name: /Freigaben/ }).click();
+      await nav(page)
+        .getByRole('button', { name: /Freigaben/ })
+        .click();
       const dialog = page.getByRole('dialog', { name: 'Template vertrauen' });
       const warning = dialog.getByRole('alert').filter({ hasText: 'nach der Anfrage geändert' });
       await expect(warning).toBeVisible();
@@ -212,7 +221,9 @@ test('the base image comes from the approval itself: shown even when the templat
     // the template file is gone: only the approval knows the base
     rmSync(file);
 
-    await page.getByRole('button', { name: /Freigaben/ }).click();
+    await nav(page)
+      .getByRole('button', { name: /Freigaben/ })
+      .click();
     const dialog = page.getByRole('dialog', { name: 'Template vertrauen' });
     const image = dialog.getByTestId('image-use');
     await expect(image).toContainText('ghcr.io/acme/tools:1');

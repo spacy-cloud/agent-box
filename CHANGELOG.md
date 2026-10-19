@@ -97,6 +97,17 @@ add --scope user abox -- abox mcp serve --agent claude-code`; the plugin and a m
   audited as `setup.apply` / `setup.uninstall`) for the GUI wizard (#22) to call later; agents cannot reach it (no MCP
   tool). New built-in agent contexts `claude-desktop` and `gemini-cli`; `abox init --agent` knows them too. Config
   locations and what is verified on a real install: [Setting up agents](docs/setup.md).
+- Overview start page (closes #19): the GUI now starts on an **Overview** ("Übersicht") with four cards (running
+  sandboxes, open approvals, sandboxes expiring within 15 minutes, problems from the `doctor` diagnosis; each leads to
+  its view), the hosts with cpu, memory and sandbox bars against their limits (the numbers of the Hosts view, one
+  independent read-only call per host, an unreachable host says so and never blocks the page), the open approvals
+  with **Allow** / **Deny** / **Details** and the newest agent activity across all sandboxes. **Allow** is only
+  offered where the one-line title says everything to judge (a lifetime extension, a port forward, a few plain
+  destinations); a create, command, template trust or open network goes through the details. Allow and Deny are
+  the Approvals view's `approvals:approve` / `approvals:deny`. The activity list is built on the
+  `activity:recent` channel (`Abox.recentActivity`, from the activity timeline below): the newest entries that agents
+  caused, without approval requests and allowed proxy requests; the badges (ok, blocked, export, error) are mapped
+  in the app.
 - Per-sandbox activity timeline (closes #21): `Abox.activity` derives a timeline of what happened in a sandbox from
   the audit log: commands (`exec`, background processes, human shell or takeover), file writes, reads and copies,
   the proxy's network decisions and port forwards, approvals and access requests, and lifecycle steps. Newest
