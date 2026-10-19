@@ -41,6 +41,19 @@ describe('IPC contract', () => {
 
   const ok = (c: keyof typeof IPC, v: unknown) => IPC[c].safeParse(v).success;
 
+  it('app:settings takes any subset of the preferences and nothing else', () => {
+    expect(ok('app:settings', { closeToTray: true })).toBe(true);
+    expect(ok('app:settings', { notifications: { approvals: false } })).toBe(true);
+    expect(
+      ok('app:settings', { notifications: { approvals: true, expiring: false, failed: true } }),
+    ).toBe(true);
+    expect(ok('app:settings', {})).toBe(true);
+    expect(ok('app:settings', { notifications: { other: true } })).toBe(false);
+    expect(ok('app:settings', { notifications: { approvals: 'no' } })).toBe(false);
+    expect(ok('app:settings', { notifications: true })).toBe(false);
+    expect(ok('app:settings', { extra: 1 })).toBe(false);
+  });
+
   it('accepts well-formed input', () => {
     expect(ok('sandboxes:inspect', { id: 'local/ab12cd34' })).toBe(true);
     expect(ok('sandboxes:list', undefined)).toBe(true);

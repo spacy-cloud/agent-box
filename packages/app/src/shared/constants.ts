@@ -52,6 +52,16 @@ export const TTY_MAX_COLS = 500;
 export const TTY_MAX_ROWS = 300;
 export const TTY_MAX_INPUT = 65_536;
 export type Locale = (typeof LOCALES)[number];
+/** Kinds of desktop notification the user can switch on and off (Settings). */
+export const NOTIFICATION_KINDS = ['approvals', 'expiring', 'failed'] as const;
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
+export type NotificationPrefs = Record<NotificationKind, boolean>;
+/** All kinds are on until the user turns one off. */
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
+  approvals: true,
+  expiring: true,
+  failed: true,
+};
 export const VIEWS = [
   'sandboxes',
   'templates',
@@ -87,6 +97,8 @@ export interface ProgressEvent {
 export interface NavigateEvent {
   view: ViewName;
   approvalId?: string;
+  /** `detail` view: the sandbox to open. */
+  sandboxId?: string;
 }
 /** Terminal output. Always bytes, always treated as data by the renderer (never as markup or commands). */
 export interface TtyDataEvent {

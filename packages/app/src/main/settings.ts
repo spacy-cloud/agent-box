@@ -1,11 +1,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { LOCALES } from '../shared/ipc';
-import type { Locale } from '../shared/ipc';
+import { DEFAULT_NOTIFICATION_PREFS, LOCALES, NOTIFICATION_KINDS } from '../shared/ipc';
+import type { Locale, NotificationKind, NotificationPrefs } from '../shared/ipc';
 
 interface StoredSettings {
   locale?: Locale;
   closeToTray?: boolean;
+  /** Notification kinds the user switched on or off; a missing kind is on. */
+  notifications?: Partial<NotificationPrefs>;
   /** Project folders used for templates, most recent first. */
   recentProjects?: string[];
 }
@@ -23,12 +25,21 @@ export class GuiSettings {
       const raw = JSON.parse(readFileSync(this.file, 'utf8')) as {
         locale?: unknown;
         closeToTray?: unknown;
+        notifications?: unknown;
         recentProjects?: unknown;
       };
       if (typeof raw.locale === 'string' && (LOCALES as readonly string[]).includes(raw.locale)) {
         this.data.locale = raw.locale as Locale;
       }
       if (typeof raw.closeToTray === 'boolean') this.data.closeToTray = raw.closeToTray;
+      if (typeof raw.notifications === 'object' && raw.notifications !== null) {
+        const stored = raw.notifications as Record<string, unknown>;
+        const prefs: Partial<NotificationPrefs> = {};
+        for (const kind of NOTIFICATION_KINDS) {
+          if (typeof stored[kind] === 'boolean') prefs[kind] = stored[kind];
+        }
+        this.data.notifications = prefs;
+      }
       if (Array.isArray(raw.recentProjects)) {
         this.data.recentProjects = raw.recentProjects
           .filter(
@@ -48,6 +59,11 @@ export class GuiSettings {
   /** Default: closing the window quits the app. */
   get closeToTray(): boolean {
     return this.data.closeToTray === true;
+  }
+
+  /** Which desktop notifications are on (default: all of them). */
+  get notifications(): NotificationPrefs {
+    return { ...DEFAULT_NOTIFICATION_PREFS, ...(this.data.notifications ?? {}) };
   }
 
   /** Project folders used for templates, most recent first. */
@@ -70,6 +86,16 @@ export class GuiSettings {
 
   setCloseToTray(on: boolean): void {
     this.data.closeToTray = on;
+    this.save();
+  }
+
+  setNotifications(change: Partial<Record<NotificationKind, boolean | undefined>>): void {
+    const next: Partial<NotificationPrefs> = { ...(this.data.notifications ?? {}) };
+    for (const kind of NOTIFICATION_KINDS) {
+      const v = change[kind];
+      if (typeof v === 'boolean') next[kind] = v;
+    }
+    this.data.notifications = next;
     this.save();
   }
 

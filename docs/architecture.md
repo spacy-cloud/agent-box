@@ -113,7 +113,7 @@ All backends run against the same contract suite in `packages/contract-tests`.
   remote hosts require it; the core API is cut so that a daemon could later offer it over a Unix
   socket.
 - **Approvals are a queue in SQLite.** An MCP call creates an entry and waits a bounded time for a
-  decision; the GUI, a notification or `abox approvals` answer it. With no decision before the
+  decision; the GUI (a desktop notification only opens its Approvals view) or `abox approvals` answer it. With no decision before the
   timeout the result is **denied**.
 
 | Component         | Process                       | Note                                              |

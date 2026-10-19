@@ -234,8 +234,8 @@ Properties worth knowing:
 - A request nobody decides expires (after 15 minutes by default) and counts as denied.
 - Permanent rules are never a side effect of an approval. To allow something for good, edit the
   policy: `abox policy edit` (validates, shows a diff, asks for confirmation).
-- The GUI shows the same queue, with desktop notifications and a tray indicator, see
-  [GUI](gui.md).
+- The GUI shows the same queue, with desktop notifications (per kind on or off) and a tray icon with the
+  number of pending requests, see [GUI](gui.md#notifications-and-the-tray).
 
 A first look at the policy that is in force:
 

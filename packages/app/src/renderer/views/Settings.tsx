@@ -16,8 +16,8 @@ import {
   Safe,
 } from '../components/ui';
 import { CachesSection } from '../components/CachesSection';
-import { LOCALES } from '../../shared/constants';
-import type { Locale } from '../../shared/ipc';
+import { LOCALES, NOTIFICATION_KINDS } from '../../shared/constants';
+import type { Locale, NotificationKind, NotificationPrefs } from '../../shared/ipc';
 import type {
   BackendReport,
   DoctorCheck,
@@ -36,6 +36,17 @@ export function SettingsView() {
       await call('app:settings', { closeToTray: on });
     } catch (e) {
       setCloseToTray(!on);
+      notify('error', (e as Error).message);
+    }
+  }
+  const [notifications, setNotifications] = useState<NotificationPrefs>(info.notifications);
+  async function changeNotification(kind: NotificationKind, on: boolean) {
+    setNotifications((n) => ({ ...n, [kind]: on }));
+    try {
+      const saved = await call('app:settings', { notifications: { [kind]: on } });
+      setNotifications(saved.notifications);
+    } catch (e) {
+      setNotifications((n) => ({ ...n, [kind]: !on }));
       notify('error', (e as Error).message);
     }
   }
@@ -90,6 +101,30 @@ export function SettingsView() {
           </>
         ) : null}
       </dl>
+      <h2 id="h-notifications">{t('settings.notifications.title')}</h2>
+      <p className="muted" id="notifications-hint">
+        {info.notificationsAvailable
+          ? t('settings.notifications.hint')
+          : t('settings.notifications.unavailable')}
+      </p>
+      <div className="form-grid" role="group" aria-labelledby="h-notifications">
+        {NOTIFICATION_KINDS.map((kind) => (
+          <div key={kind} className="field">
+            <label className="inline">
+              <input
+                type="checkbox"
+                checked={notifications[kind]}
+                aria-describedby={`notify-${kind}-hint`}
+                onChange={(e) => void changeNotification(kind, e.target.checked)}
+              />
+              {t(`settings.notifications.${kind}`)}
+            </label>
+            <small id={`notify-${kind}-hint`} className="muted">
+              {t(`settings.notifications.${kind}.hint`)}
+            </small>
+          </div>
+        ))}
+      </div>
       <DiagnosticsSection />
       <CachesSection />
       <McpStatusSection />

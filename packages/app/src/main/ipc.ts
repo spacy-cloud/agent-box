@@ -9,7 +9,7 @@ import { renderDockerfile } from '@abox/backend-docker';
 import type { AboxRuntime } from '@abox/runtime';
 import type { z } from 'zod';
 import { IPC } from '../shared/ipc';
-import type { IpcChannel, IpcErrorData, IpcResult, Locale } from '../shared/ipc';
+import type { IpcChannel, IpcErrorData, IpcResult, Locale, NotificationKind } from '../shared/ipc';
 import type { AppInfo, Outputs, SaveResult } from '../shared/types';
 import { toIpcError } from './errors';
 import { senderAllowed } from './guard';
@@ -34,6 +34,7 @@ export interface IpcDeps {
   appInfo(): Omit<AppInfo, 'managerError' | 'paths'>;
   setLocale(l: Locale): void;
   setCloseToTray(on: boolean): void;
+  setNotifications(change: Partial<Record<NotificationKind, boolean | undefined>>): void;
   /** Recently used project folders of this user (most recent first) and a way to add one. */
   recentProjects(): string[];
   rememberProject(dir: string): void;
@@ -137,8 +138,10 @@ export function registerIpc(d: IpcDeps): IpcHandle {
     [C in LocalChannel]: (input: Input<C>) => Promise<Outputs[C]> | Outputs[C];
   } = {
     'app:settings': (i) => {
-      d.setCloseToTray(i.closeToTray);
-      return { closeToTray: i.closeToTray };
+      if (i.closeToTray !== undefined) d.setCloseToTray(i.closeToTray);
+      if (i.notifications) d.setNotifications(i.notifications);
+      const now = d.appInfo();
+      return { closeToTray: now.closeToTray, notifications: now.notifications };
     },
     'projects:recent': () => existingFolders(d.recentProjects()),
     'projects:remember': async (i) => {

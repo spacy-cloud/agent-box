@@ -219,7 +219,20 @@ export const IPC = {
   'app:info': none,
   'app:setLocale': z.enum(LOCALES),
   'app:copy': z.string().max(20_000),
-  'app:settings': z.object({ closeToTray: z.boolean() }).strict(),
+  /** Any subset of the GUI preferences; what is left out stays as it is. */
+  'app:settings': z
+    .object({
+      closeToTray: z.boolean().optional(),
+      notifications: z
+        .object({
+          approvals: z.boolean().optional(),
+          expiring: z.boolean().optional(),
+          failed: z.boolean().optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
   'dialog:pickDirectory': none,
   /**
    * The answer to an ssh passphrase / PIN prompt (`evt:askpass`); `null` cancels. The value is handed to ssh and

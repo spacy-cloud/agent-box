@@ -10,6 +10,19 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Desktop notifications and tray count (closes #18): the GUI sends freedesktop notifications (Electron
+  `Notification`) for new approval requests, for running sandboxes that end in under 10 minutes and for
+  creations an agent started that failed, each kind with its own switch in Settings (all on by default, saved in
+  the GUI settings). Bursts are merged ("5 new approval requests", one notification per kind and 10 seconds at
+  most), requests decided before their notification was due are dropped, and nothing is sent while the app is
+  closed. The text names who asks, the kind and the template / sandbox / port (or the error code of a failure),
+  made safe and cut short like the views, and never contains the agent's reason, a command, environment or an
+  error message. A notification does not approve or deny: Electron has notification buttons on macOS only and a
+  button without the exact request would approve blind, so a click opens the Approvals view (or the sandbox),
+  where the decision goes through the same `approve` / `deny` call as always. The tray icon now carries the
+  number of pending approvals (a red disc with the count, `9+` above nine) and a click opens the Approvals view
+  while requests are waiting. The opt-in background service for a closed GUI (`abox notify` with a systemd user
+  unit) is not part of this entry.
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):
