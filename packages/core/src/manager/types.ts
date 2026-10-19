@@ -1058,6 +1058,85 @@ export interface TemplateSuggestion {
   truncated: boolean;
 }
 
+// -- saving a template, template from a project -------------------------------------------------------
+
+/** Where `saveTemplate` writes: the user template directory, or `<project>/.sandbox/<name>.yaml`. */
+export type TemplateSaveTargetKind = 'user' | 'project';
+
+export interface TemplateSaveInput {
+  /** The complete template text (checked against the schema; the name in it names the file). */
+  yaml: string;
+  target: TemplateSaveTargetKind;
+  /** Target `project`: the project folder (absolute path or `~/...`). */
+  projectDir?: string;
+  /** Replace a file of that name. Without it an existing file is a `conflict`. */
+  overwrite?: boolean;
+}
+
+/** What a save would do, for the review before it: the file and what is in it now. */
+export interface TemplateSavePlan {
+  name: string;
+  target: TemplateSaveTargetKind;
+  /** The file that would be written. */
+  path: string;
+  /** Canonical project folder (target `project`). */
+  projectDir?: string;
+  exists: boolean;
+  /** The text of the file now, for the diff; `null` when there is none. */
+  current: string | null;
+  /** A built-in template of the same name is hidden by a user template with this name. */
+  shadows: Array<'builtin'>;
+}
+
+export interface TemplateSaveResult {
+  name: string;
+  target: TemplateSaveTargetKind;
+  path: string;
+  projectDir?: string;
+  created: boolean;
+  bytes: number;
+  shadows: Array<'builtin'>;
+  /**
+   * Whether the saved content is already trusted for agents. A new project template never is: a human
+   * approves it through the usual review (`abox template review`, GUI "Review ..."), saving never trusts.
+   */
+  trusted: boolean;
+}
+
+export interface TemplateDraftInput {
+  /** The project folder. */
+  path: string;
+  /** Name of the new template (default: from the folder name). */
+  name?: string;
+  /** Build on this built-in or user template instead of the detected one. */
+  base?: string;
+}
+
+/** The template a project folder starts with ("template from project"). */
+export interface TemplateDraft {
+  /** Canonical path of the project folder. */
+  path: string;
+  name: string;
+  /** The text to edit; validates as it stands. */
+  yaml: string;
+  /** What it builds on (`extends`); `template` is null for the standalone fallback. */
+  base: {
+    template: string | null;
+    /** `markers` = detected, `chosen` = named by the caller, `fallback` = nothing matched. */
+    basis: 'markers' | 'chosen' | 'fallback';
+    files: string[];
+    /** One line of English text. */
+    reason: string;
+  };
+  /** Other built-in or user templates the markers point to (each could be the base). */
+  alternatives: TemplateSuggestionEntry[];
+  /** Names of the project's own templates (they are not used as a base: a user template cannot extend them). */
+  projectTemplates: string[];
+  /** Marker matches left out (no such template / not allowed). */
+  skipped: TemplateSuggestionSkipped[];
+  truncated: boolean;
+}
+
 // -- network log -----------------------------------------------------------------------------------------
 
 /** Why the proxy decided as it did, in a form surfaces can act on (the proxy's wording is in `reason`). */

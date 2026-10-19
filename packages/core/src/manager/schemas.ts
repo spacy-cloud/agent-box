@@ -75,6 +75,17 @@ export const estimateFitSchema = z.strictObject({
 });
 
 export const templateSuggestSchema = z.strictObject({ path: hostPathStr });
+export const templateSaveSchema = z.strictObject({
+  yaml: z.string().max(1024 * 1024),
+  target: z.enum(['user', 'project']),
+  projectDir: hostPathStr.optional(),
+  overwrite: z.boolean().optional(),
+});
+export const templateDraftSchema = z.strictObject({
+  path: hostPathStr,
+  name: z.string().min(1).max(64).optional(),
+  base: z.string().min(1).max(64).optional(),
+});
 export const doctorForSchema = z.union([
   z.strictObject({
     template: z.string().min(1).max(64),

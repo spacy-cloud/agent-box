@@ -10,7 +10,13 @@ import { ErrorBox, Field } from './ui';
  * The main process checks every folder (absolute, a directory, canonical) before it is applied, and the
  * value handed to `onChange` is the canonical path it returned. An empty value means "no project folder".
  */
-export function ProjectFolderPicker(props: { value: string; onChange(dir: string): void }) {
+export function ProjectFolderPicker(props: {
+  value: string;
+  onChange(dir: string): void;
+  /** Text of the apply button (default: "Show templates"), and the hint under the field. */
+  applyLabel?: string;
+  hint?: string;
+}) {
   const { t } = useApp();
   const recent = useQuery('projects:recent', undefined, { live: false });
   const [draft, setDraft] = useState(props.value);
@@ -51,7 +57,7 @@ export function ProjectFolderPicker(props: { value: string; onChange(dir: string
   const others = (recent.data ?? []).filter((d) => d !== props.value);
   return (
     <div className="project-picker" data-testid="project-picker">
-      <Field label={t('project.label')} hint={t('project.hint')}>
+      <Field label={t('project.label')} hint={props.hint ?? t('project.hint')}>
         {(id) => (
           <div className="with-button wrap">
             <input
@@ -74,7 +80,7 @@ export function ProjectFolderPicker(props: { value: string; onChange(dir: string
               disabled={busy || draft.trim() === props.value}
               onClick={() => void use(draft)}
             >
-              {t('project.apply')}
+              {props.applyLabel ?? t('project.apply')}
             </button>
             <button type="button" onClick={() => void browse()}>
               {t('common.browse')}

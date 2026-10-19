@@ -17,6 +17,9 @@ import { YamlEditor } from '../components/CodeEditor';
 import { TemplateReviewPanel } from '../components/review';
 import { ProjectFolderPicker } from '../components/ProjectFolder';
 import { ReadinessDialog } from '../components/ReadinessCheck';
+import { BuildDialog } from '../components/BuildDialog';
+import { FromProjectDialog, draftBaseText } from '../components/TemplateFromProject';
+import { TemplateSaveDialog } from '../components/TemplateSaveDialog';
 import { ListInput, SyncedInput, SyncedTextarea } from '../components/inputs';
 import { osFamilyOf, FAMILY_PACKAGE_MANAGER } from '../../shared/base-images';
 import {
@@ -38,10 +41,12 @@ import type {
   TemplateForm,
 } from '../../shared/template-form';
 import { TEMPLATE_BACKENDS, ISOLATION_LEVELS, NETWORK_MODES } from '../../shared/constants';
-import { formatDuration, safeInline, safeText } from '../../shared/format';
+import { safeInline, safeText } from '../../shared/format';
 import type { TemplateListEntry } from '@abox/core';
 import type {
   TemplateCatalogInfo,
+  TemplateDraft,
+  TemplateSaved,
   TemplateTestOutcome,
   TemplateValidation,
 } from '../../shared/types';
@@ -71,8 +76,10 @@ export function TemplatesView() {
   const [validation, setValidation] = useState<TemplateValidation | null>(null);
   const [validating, setValidating] = useState(false);
   const [loadError, setLoadError] = useState<unknown>();
-  const [saveError, setSaveError] = useState<unknown>();
-  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
+  /** The draft came from a project folder: what it builds on, shown above the editor until something else opens. */
+  const [fromProject, setFromProject] = useState<{ dir: string; text: string } | null>(null);
   const [discard, setDiscard] = useState<Pending>(null);
   const [building, setBuilding] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -138,8 +145,8 @@ export function TemplatesView() {
     setOrigin(from);
     setOpened(true);
     setValidation(null);
-    setSaveError(undefined);
     setLoadError(undefined);
+    setFromProject(null);
   }
 
   async function open(name: string) {
@@ -180,25 +187,31 @@ export function TemplatesView() {
     notify('info', t('tpl.duplicated', { name }));
   }
 
-  async function save(overwrite: boolean) {
-    setSaveError(undefined);
-    setConfirmOverwrite(false);
-    try {
-      const r = await call('templates:save', { yaml, ...(overwrite ? { overwrite: true } : {}) });
-      setSaved(yaml);
-      setOrigin({ name: r.name, kind: 'user', readOnly: false });
-      notify('ok', t('tpl.savedAs', { name: r.name }));
-      if (r.shadows.length > 0) notify('info', t('tpl.shadows', { name: r.name }));
-      await list.reload();
-    } catch (e) {
-      if ((e as { code?: string }).code === 'conflict' && origin?.name !== form.name) {
-        setConfirmOverwrite(true);
-      } else if ((e as { code?: string }).code === 'conflict') {
-        void save(true);
-      } else {
-        setSaveError(e);
-      }
-    }
+  /** The review dialog saved the file: the editor now shows that file. */
+  function onSaved(r: TemplateSaved) {
+    setSaving(false);
+    setSaved(yaml);
+    setOrigin({ name: r.name, kind: r.target, readOnly: r.target === 'project' });
+    notify(
+      'ok',
+      r.target === 'project'
+        ? t('tpl.savedProject', { name: r.name, path: r.path })
+        : t('tpl.savedAs', { name: r.name }),
+    );
+    if (r.shadows.length > 0) notify('info', t('tpl.shadows', { name: r.name }));
+    // the list has to show the project's templates for the new file to be found there
+    if (r.projectDir && r.projectDir !== projectDir) setProjectDir(r.projectDir);
+    void list.reload();
+  }
+
+  function createdFromProject(d: TemplateDraft) {
+    setCreating(false);
+    guard(() => {
+      startDraft(d.yaml, null);
+      setProjectDir(d.path);
+      setFromProject({ dir: d.path, text: draftBaseText(t, d) });
+      notify('info', t('tpl.from.created', { name: d.name }));
+    });
   }
 
   async function exportYaml(format: 'yaml' | 'dockerfile' = 'yaml') {
@@ -215,6 +228,8 @@ export function TemplatesView() {
   }
 
   const isProject = origin?.kind === 'project';
+  const projectTrusted =
+    entries.find((e) => e.name === origin?.name && e.source.kind === 'project')?.trusted ?? false;
   const runnable =
     origin !== null && !isProject && !dirty && entries.some((e) => e.name === origin.name);
   const runTitle = isProject
@@ -235,6 +250,9 @@ export function TemplatesView() {
           <p className="muted">{t('tpl.intro')}</p>
         </div>
         <div className="actions">
+          <button type="button" onClick={() => setCreating(true)}>
+            {t('tpl.fromProject')}
+          </button>
           <button type="button" className="primary" onClick={() => guard(newTemplate)}>
             {t('tpl.new')}
           </button>
@@ -314,7 +332,7 @@ export function TemplatesView() {
                     type="button"
                     className="primary"
                     disabled={readOnly || !form.valid || form.name === '' || !dirty}
-                    onClick={() => void save(false)}
+                    onClick={() => setSaving(true)}
                   >
                     {t('tpl.save')}
                   </button>
@@ -363,8 +381,23 @@ export function TemplatesView() {
                   </button>
                 </div>
               </div>
-              {readOnly ? <Banner tone="info">{t('tpl.readOnlyHint')}</Banner> : null}
-              {saveError ? <ErrorBox error={saveError} /> : null}
+              {fromProject ? (
+                <Banner tone="info">
+                  <span className="plain">
+                    {t('tpl.from.note', {
+                      dir: safeInline(fromProject.dir, 120),
+                      text: fromProject.text,
+                    })}
+                  </span>
+                </Banner>
+              ) : null}
+              {isProject ? (
+                <Banner tone={projectTrusted ? 'ok' : 'warn'}>
+                  {projectTrusted ? t('tpl.project.trusted') : t('tpl.project.untrusted')}
+                </Banner>
+              ) : readOnly ? (
+                <Banner tone="info">{t('tpl.readOnlyHint')}</Banner>
+              ) : null}
               <ValidationSummary validation={validation} validating={validating} />
               <div className="tpl-columns">
                 <TemplateFormPane
@@ -406,15 +439,25 @@ export function TemplatesView() {
           <p>{t('tpl.discard.text')}</p>
         </ConfirmDialog>
       ) : null}
-      {confirmOverwrite ? (
-        <ConfirmDialog
-          title={t('tpl.overwrite.title')}
-          confirmLabel={t('tpl.overwrite.confirm')}
-          onClose={() => setConfirmOverwrite(false)}
-          onConfirm={() => void save(true)}
-        >
-          <p>{t('tpl.overwrite.text', { name: form.name })}</p>
-        </ConfirmDialog>
+      {saving ? (
+        <TemplateSaveDialog
+          yaml={yaml}
+          name={form.name}
+          projectDir={projectDir}
+          userDir={catalog.data?.userDir}
+          inPlace={origin?.kind === 'user' && origin.name === form.name}
+          initialTarget={origin?.kind === 'project' ? 'project' : 'user'}
+          onClose={() => setSaving(false)}
+          onSaved={onSaved}
+        />
+      ) : null}
+      {creating ? (
+        <FromProjectDialog
+          initialDir={projectDir}
+          bases={entries.filter((e) => e.source.kind !== 'project').map((e) => e.name)}
+          onClose={() => setCreating(false)}
+          onCreate={createdFromProject}
+        />
       ) : null}
       {building && origin ? (
         <BuildDialog name={origin.name} onClose={() => setBuilding(false)} />
@@ -1315,94 +1358,6 @@ export function ReviewDialog(props: { name: string; projectDir?: string; onClose
           <TemplateReviewPanel review={q.data} />
         </>
       ) : null}
-    </Dialog>
-  );
-}
-
-function BuildDialog(props: { name: string; onClose(): void }) {
-  const { t, notify } = useApp();
-  const key = useRef(`build-${Math.random().toString(36).slice(2)}`);
-  const progress = useProgress(key.current);
-  const [phase, setPhase] = useState<'ask' | 'running' | 'done' | 'error'>('ask');
-  const [update, setUpdate] = useState(false);
-  const [result, setResult] = useState<{ image: string; cached: boolean; durationMs: number }>();
-  const [error, setError] = useState<unknown>();
-
-  async function run() {
-    setPhase('running');
-    progress.reset();
-    setError(undefined);
-    try {
-      const r = await call('templates:build', {
-        name: props.name,
-        progressKey: key.current,
-        ...(update ? { update: true } : {}),
-      });
-      setResult({ image: r.image.ref, cached: r.cached, durationMs: r.durationMs });
-      setPhase('done');
-      notify('ok', t('tpl.build.done', { name: props.name }));
-    } catch (e) {
-      setError(e);
-      setPhase('error');
-    }
-  }
-
-  return (
-    <Dialog
-      title={t('tpl.build.title', { name: props.name })}
-      onClose={() => phase !== 'running' && props.onClose()}
-      wide
-      footer={
-        <>
-          <button
-            type="button"
-            onClick={props.onClose}
-            disabled={phase === 'running'}
-            autoFocus={phase !== 'ask'}
-          >
-            {phase === 'done' ? t('common.close') : t('common.cancel')}
-          </button>
-          {phase === 'ask' || phase === 'error' ? (
-            <button
-              type="button"
-              className="primary"
-              onClick={() => void run()}
-              autoFocus={phase === 'ask'}
-            >
-              {t('tpl.build.start')}
-            </button>
-          ) : null}
-        </>
-      }
-    >
-      {phase === 'ask' ? (
-        <>
-          <Banner tone="warn">{t('tpl.build.networkWarning')}</Banner>
-          <label className="inline">
-            <input type="checkbox" checked={update} onChange={(e) => setUpdate(e.target.checked)} />
-            {t('tpl.build.update')}
-          </label>
-        </>
-      ) : null}
-      {phase !== 'ask' ? (
-        <pre
-          className="log plain"
-          ref={progress.ref}
-          tabIndex={0}
-          aria-live="polite"
-          aria-label={t('tpl.build.log')}
-        >
-          {progress.lines.join('\n')}
-        </pre>
-      ) : null}
-      {phase === 'running' ? <p role="status">{t('tpl.build.running')}</p> : null}
-      {phase === 'done' && result ? (
-        <Banner tone="ok">
-          {result.cached ? t('tpl.build.cached') : t('tpl.build.built')} ·{' '}
-          <code className="plain">{result.image}</code> · {formatDuration(result.durationMs)}
-        </Banner>
-      ) : null}
-      {phase === 'error' ? <ErrorBox error={error} /> : null}
     </Dialog>
   );
 }

@@ -10,6 +10,23 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Template editor: review before saving, from-project drafts and a build log (closes #23): **Save …** in the
+  Templates view opens a review dialog before anything is written: the target (the user template directory or
+  `<project>/.sandbox/<name>.yaml` of the picked project folder), the line diff between the file and the editor
+  text, whether the file is replaced, and a note when sandboxes were created from a template of that name (they
+  keep their old resolved template). **From project …** (and `abox template new --from-project <dir> [--name]
+[--base] [--save user|project] [--overwrite] [--yes]`) runs the template auto-detection and creates a draft
+  named after the folder that `extends` the detected built-in template, with the reason shown (a standalone
+  draft when no marker matches; the project's own templates are not used as a base). New human-only manager
+  operations `Abox.saveTemplate` / `planTemplateSave` / `draftTemplateFromProject` (audit entry `template.save`):
+  exactly `<project>/.sandbox/<name>.yaml` (name validated, no `..`, no symbolic link followed, atomic write, an
+  existing file only replaced on request, a project write needs `humanConfirmed`); the GUI's user-directory save
+  uses it too. Saving never trusts a project template: it stays untrusted for agents until a human approves its
+  content, and the UI says so. The **Build** dialog shows a live, scrollable, bounded log (last 2000 lines) with
+  status and duration (also for a failed build) and keeps the last log of each template while the window is open;
+  `Abox.buildTemplate` now masks credentials in the build output, the error and its log (`redactLogLine`), for the
+  CLI as well. de/en, axe-clean in both colour schemes, e2e for diff-before-save, from-project and the build log
+  (the fake engine can now pretend a build).
 - Generated MCP tool and error catalogs (closes #35): `docs/mcp-catalog.md` lists every MCP tool (purpose, input
   schema as a parameter table, result fields, who may call it, approval behaviour, annotations) and
   `docs/errors.md` every error code (exit code, meaning, typical hint) with the error envelope, plus

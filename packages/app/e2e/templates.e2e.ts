@@ -43,9 +43,7 @@ test('template editor: list + search, builtin is read-only, duplicate, form and 
     // builtin: read-only, no way to save in place
     await openItem(page, 'alpine-min');
     await expect(page.locator('.tpl-toolbar')).toContainText('schreibgeschützt');
-    await expect(
-      page.getByRole('button', { name: 'Als Benutzer-Template speichern' }),
-    ).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Speichern …' })).toBeDisabled();
     await expect(page.locator('#f-memory')).toBeDisabled();
     await expect.poll(() => yamlText(page)).toContain('name: alpine-min');
     await expect(page.getByText('Das Template ist gültig.')).toBeVisible();
@@ -84,8 +82,11 @@ test('template editor: list + search, builtin is read-only, duplicate, form and 
     await expect(page.locator('.cm-lint-marker-error').first()).toBeVisible();
     expect(await axeViolations(page)).toEqual([]);
     // the broken value cannot be saved: the manager refuses
-    await page.getByRole('button', { name: 'Als Benutzer-Template speichern' }).click();
-    await expect(page.getByRole('alert').filter({ hasText: 'Template' }).first()).toBeVisible();
+    await page.getByRole('button', { name: 'Speichern …' }).click();
+    const refused = page.getByRole('dialog', { name: /Template speichern/ });
+    await expect(refused.getByRole('alert').filter({ hasText: 'Template' }).first()).toBeVisible();
+    await expect(refused.getByRole('button', { name: 'Speichern', exact: true })).toBeDisabled();
+    await refused.getByRole('button', { name: 'Abbrechen' }).click();
     expect(existsSync(join(h.home, 'config', 'templates', 'alpine-min-copy.yaml'))).toBe(false);
 
     // tools without a preset for the chosen OS are flagged (playwright exists for Debian only)
@@ -106,7 +107,10 @@ test('template editor: list + search, builtin is read-only, duplicate, form and 
 
     // save as user template, export YAML
     await expect(page.getByText('Das Template ist gültig.')).toBeVisible();
-    await page.getByRole('button', { name: 'Als Benutzer-Template speichern' }).click();
+    await page.getByRole('button', { name: 'Speichern …' }).click();
+    const review = page.getByRole('dialog', { name: /Template speichern/ });
+    await expect(review.getByTestId('save-review')).toContainText('neue Datei');
+    await review.getByRole('button', { name: 'Speichern', exact: true }).click();
     await expect(page.getByText(/Template „alpine-min-copy“ gespeichert/)).toBeVisible();
     const saved = join(h.home, 'config', 'templates', 'alpine-min-copy.yaml');
     expect(readFileSync(saved, 'utf8')).toContain('memory: 256m');
@@ -168,7 +172,11 @@ test.describe('build, test and Dockerfile export (docker)', () => {
       await expect(page.getByText('Das Template ist gültig.')).toBeVisible();
       // building needs a saved template
       await expect(page.getByRole('button', { name: 'Bauen …' })).toBeDisabled();
-      await page.getByRole('button', { name: 'Als Benutzer-Template speichern' }).click();
+      await page.getByRole('button', { name: 'Speichern …' }).click();
+      await page
+        .getByRole('dialog', { name: /Template speichern/ })
+        .getByRole('button', { name: 'Speichern', exact: true })
+        .click();
       await expect(page.getByText(/Template „e2e-git“ gespeichert/)).toBeVisible();
 
       await page.getByRole('button', { name: 'Bauen …' }).click();

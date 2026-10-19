@@ -315,6 +315,21 @@ export const IPC = {
       projectDir: projectDir.optional(),
     })
     .strict(),
+  /**
+   * The starting text of a template for a project folder ("create template from project"): the detected
+   * built-in template becomes its `extends`. Read-only; the folder is checked like any project folder.
+   */
+  'templates:draft': z
+    .object({ path: projectDir, name: shortText.optional(), base: shortText.optional() })
+    .strict(),
+  /** What saving would write and what is in that file now (the diff before saving); writes nothing. */
+  'templates:savePlan': z
+    .object({
+      yaml: yamlText,
+      target: z.enum(['user', 'project']),
+      projectDir: projectDir.optional(),
+    })
+    .strict(),
   /** Recently used project folders (per user of the app, kept in the app's settings, not in any repository). */
   'projects:recent': none,
   /** Checks a folder like a human `--project` (absolute, exists, a directory) and remembers it as recent. */
@@ -488,7 +503,19 @@ export const IPC = {
   'templates:catalog': none,
   'templates:source': z.object({ name: shortText, projectDir: projectDir.optional() }).strict(),
   'templates:validate': z.object({ yaml: yamlText }).strict(),
-  'templates:save': z.object({ yaml: yamlText, overwrite: z.boolean().optional() }).strict(),
+  /**
+   * Saves to the user template directory (default) or to `<projectDir>/.sandbox/<name>.yaml`. `confirmed`: the
+   * human confirmed the review dialog (needed for a project; saving never makes a project template trusted).
+   */
+  'templates:save': z
+    .object({
+      yaml: yamlText,
+      target: z.enum(['user', 'project']).optional(),
+      projectDir: projectDir.optional(),
+      overwrite: z.boolean().optional(),
+      confirmed: z.boolean().optional(),
+    })
+    .strict(),
   'templates:build': z
     .object({ name: shortText, update: z.boolean().optional(), progressKey })
     .strict(),

@@ -41,6 +41,8 @@ import type {
   WorkspaceEstimate,
   TemplateDetails,
   TemplateList,
+  TemplateDraft,
+  TemplateSavePlan,
   TemplateSuggestion,
   TemplateReview,
   TemplateValidation,
@@ -89,6 +91,8 @@ export type {
   SnapshotView,
   TemplateDetails,
   TemplateList,
+  TemplateDraft,
+  TemplateSavePlan,
   TemplateSuggestion,
   TemplateReview,
   TemplateValidation,
@@ -241,6 +245,17 @@ export interface TemplateSaved {
   path: string;
   /** A template with the same name from a lower-precedence source is now hidden by this one. */
   shadows: Array<'builtin'>;
+  target: 'user' | 'project';
+  /** The file did not exist before. */
+  created: boolean;
+  /** A project template is trusted only after a human approved its content; saving never does that. */
+  trusted: boolean;
+  /** Canonical project folder (target `project`). */
+  projectDir?: string;
+}
+/** `templates:savePlan`: the plan of the manager plus the sandboxes that were created from a template of that name. */
+export interface TemplateSavePlanView extends TemplateSavePlan {
+  usedBy: { count: number; names: string[] };
 }
 export interface ToolCheckResult {
   name: string;
@@ -361,6 +376,8 @@ export interface Outputs {
   'templates:suggest': TemplateSuggestion;
   'templates:show': TemplateDetails;
   'templates:review': TemplateReview;
+  'templates:draft': TemplateDraft;
+  'templates:savePlan': TemplateSavePlanView;
   'projects:recent': string[];
   'projects:remember': ProjectFolder;
   'files:list': DirEntry[];

@@ -54,6 +54,8 @@ export type ManagerChannel =
   | 'templates:suggest'
   | 'templates:show'
   | 'templates:review'
+  | 'templates:draft'
+  | 'templates:savePlan'
   | 'files:list'
   | 'export:run'
   | 'processes:list'
@@ -213,6 +215,28 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         i.name,
         clean({ workspacePath: i.workspacePath, ...(await projectOption(i.projectDir)) }),
       ),
+    // read-only: the detection of `templates:suggest` plus a draft that extends the detected built-in template
+    'templates:draft': async (i) =>
+      abox.draftTemplateFromProject(
+        HUMAN,
+        clean({ path: await resolveProjectDir(i.path), name: i.name, base: i.base }),
+      ),
+    // read-only: the file a save would write and its current text; `usedBy` = sandboxes created from that name
+    'templates:savePlan': async (i) => {
+      const plan = await abox.planTemplateSave(
+        HUMAN,
+        clean({
+          yaml: i.yaml,
+          target: i.target,
+          projectDir:
+            i.projectDir === undefined ? undefined : await resolveProjectDir(i.projectDir),
+        }),
+      );
+      const names = (await abox.listSandboxes(HUMAN)).sandboxes
+        .filter((s) => s.template === plan.name && s.state !== 'removed')
+        .map((s) => s.name);
+      return { ...plan, usedBy: { count: names.length, names: names.slice(0, 10) } };
+    },
     'files:list': (i) => abox.listDir(HUMAN, i.id, i.path),
     'export:run': (i) =>
       abox.exportSandbox(

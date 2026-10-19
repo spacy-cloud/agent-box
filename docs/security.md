@@ -498,6 +498,17 @@ the build, mounts, network, secrets, isolation). `abox create`, `abox template b
 `abox template review <name>` and `abox approvals show <id>` show it. An approval is bound to the
 content hash; if the file changes after the request, `approvals show` warns.
 
+Writing a template into a project (`abox template new --save project`, the GUI's save dialog) is a
+human-only operation of the manager, audited as `template.save` (agents get `policy_denied` and
+`template.save_denied`; there is no MCP tool). It writes exactly `<project>/.sandbox/<name>.yaml`: the
+name must match the template name grammar (no `..`, no `/`), the project folder passes the workspace
+path check, a `.sandbox` directory or a template file that is a symbolic link is refused, an existing file
+is only replaced on explicit request, the write is atomic, and it needs `humanConfirmed`. It never records
+trust: the new file is untrusted for agents until a human approves its content hash like any other project
+template. The check-then-write window of the directory is closed as far as the file system API allows (the
+directory identity is compared again before the file is put in place), but a process with write access to
+the project can still race it; such a process could write the template file itself anyway.
+
 The content hash covers more than the YAML file: for a template with `base.dockerfile` it includes
 the Dockerfile and every file in its directory (the build context the engine receives, which the
 Dockerfile can `COPY`), and for a template that `extends` another project template the parent's
