@@ -67,7 +67,11 @@ test('hosts: add (no secret field), validation error, favourite, edit, remove; h
     await expect(row).toContainText('Geteilt'); // safe default zone
     await expect(row).toContainText('Freigabe');
     await expect(row).toContainText('privat');
-    await expect(row).toContainText('nicht geprüft');
+    // A new host reads "nicht geprüft" for only a few dozen ms: the open Hosts view reads the capacity of
+    // every host straight away, which resolves it, and a host that cannot be resolved (this profile names no
+    // backend) is recorded as such. Assert the settled state, not the transient one.
+    await expect(row).toContainText('nicht erreichbar');
+    await expect(row).toContainText('has no backends configured');
     expect(await axeViolations(page)).toEqual([]);
 
     // favourite toggles and survives a reload

@@ -524,6 +524,12 @@ into the sandbox …` lines through `onProgress` (stderr of `abox create`; the G
 
 ### Fixed
 
+- File tree keyboard focus (flaky tests): when a key pressed right after a folder listing had been drawn moved the
+  selection, the focus request (a ref flag) was taken by the still-pending effect of the listing's render, which
+  focused the previously selected row, so the new row was selected but not focused. The request is now state and is
+  carried out by the render that made it. The GUI e2e test of the Hosts view no longer asserts the few dozen
+  milliseconds in which a new host reads "not checked" before the capacity read marks it, and asserts the settled
+  state instead.
 - The `rust` tool preset links the rustup proxies of `rustfmt`, `cargo-fmt`, `cargo-clippy` and
   `clippy-driver` into `/usr/local/bin`, so `cargo clippy` and `cargo fmt` work after
   `rustup component add clippy rustfmt` in a `setup:` step (they failed with "no such command").
