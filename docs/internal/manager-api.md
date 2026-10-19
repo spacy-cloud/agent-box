@@ -147,6 +147,27 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
   stores the pinned base per template hash in `template_pins` and passes it as `pinnedBase` next time
   (`update` ignores it). Audited as `image.build_start` / `image.build` with `networkAccess: true` (the build runs
   with network, independent of sandbox policy). Untrusted project templates are refused for agents.
+- `draftTemplateFromProject(caller, {path, name?, base?}) -> TemplateDraft` (human only, read-only): runs
+  `suggestTemplate` and returns the text of a new template that `extends` the best built-in or user template the
+  markers point to (`base.basis` `markers` | `chosen` | `fallback`; the project's own templates are never a base),
+  named after the folder (`freeTemplateName`), plus `alternatives`, `projectTemplates`, `skipped`. Validates as it
+  stands; writes nothing.
+- `planTemplateSave(caller, {yaml, target: 'user'|'project', projectDir?}) -> TemplateSavePlan` (human only,
+  read-only): the file a save would write (`projectTemplatePath` / `userTemplatePath`), whether it exists and its
+  current text (for a diff), and `shadows`. Same checks as the save, so a `.sandbox` or a file that is a symbolic
+  link is refused here too.
+- `saveTemplate(caller, {yaml, target, projectDir?, overwrite?}) -> TemplateSaveResult` (human only; audited as
+  `template.save`, allow and deny): checks the text against the schema (`template_invalid`), then writes exactly
+  `<templates dir>/<name>.yaml` (0600) or `<project>/.sandbox/<name>.yaml` (0644; the project folder passes the
+  workspace path check, `.sandbox` is created if missing). The writer (`writeTemplateFile`) refuses a symbolic link
+  at the directory or the file, a second file of the other spelling (`<name>.yml`), stages the text in a temporary
+  file next to the target, creates the target with `link` (never replaces a file that appeared meanwhile) or, with
+  `overwrite`, renames over a regular file, and checks that the directory is still the one it looked at. A
+  project target needs `caller.humanConfirmed` (`approval_required`). `trusted` in the result is whether the
+  saved content is already trusted; the call never records trust.
+- `buildTemplate` masks credentials in the build output (`redactLogLine`: `NAME=value` for credential-like
+  names, `Authorization`/bearer tokens, URL user info) before `onProgress` and in the error and its
+  `details.log`.
 - `gcImages(caller)` (human): `provider.gcImages(keep)` where keep = hashes of all catalog templates and of
   existing sandboxes; unused pins are dropped.
 

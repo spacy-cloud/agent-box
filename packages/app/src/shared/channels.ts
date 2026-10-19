@@ -22,6 +22,8 @@ export const IPC_CHANNEL_NAMES = [
   'templates:suggest',
   'templates:show',
   'templates:review',
+  'templates:draft',
+  'templates:savePlan',
   'projects:recent',
   'projects:remember',
   'files:list',

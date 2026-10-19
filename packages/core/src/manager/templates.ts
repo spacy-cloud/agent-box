@@ -21,6 +21,7 @@ import type {
   ResolvedTemplate,
   TemplateSourceKind,
 } from '../types.js';
+import { redactLogLine } from '../state/redact.js';
 import type { Internals } from './internals.js';
 import type {
   BuildResult,
@@ -688,6 +689,10 @@ export async function buildTemplate(
 
   const pin = o.update ? undefined : I.state.templatePins.get(template.hash);
   const started = Date.now();
+  // The build output is the template author's text (it echoes `ENV` lines and whatever the steps print):
+  // credentials in it are masked before any caller (CLI, GUI) sees a line, and in the error as well.
+  const mask = (text: string): string => redactLogLine(text);
+  const onProgress = o.onProgress;
   I.audit(ctx.owner, 'image.build_start', {
     decision: 'info',
     details: {
@@ -703,7 +708,7 @@ export async function buildTemplate(
     const image = await provider.prepare(template, {
       ...(o.update ? { update: true } : {}),
       ...(pin?.pinnedBase ? { pinnedBase: pin.pinnedBase } : {}),
-      ...(o.onProgress ? { onProgress: o.onProgress } : {}),
+      ...(onProgress ? { onProgress: (line: string) => onProgress(mask(line)) } : {}),
       ...(o.signal ? { signal: o.signal } : {}),
     });
     if (image.pinnedBase || !pin) {
@@ -740,10 +745,28 @@ export async function buildTemplate(
   } catch (e) {
     I.audit(ctx.owner, 'image.build', {
       decision: 'error',
-      details: { template: template.name, templateHash: template.hash, message: errMessage(e) },
+      details: {
+        template: template.name,
+        templateHash: template.hash,
+        message: mask(errMessage(e)),
+      },
     });
-    throw e;
+    throw maskBuildError(e, mask);
   }
+}
+
+/** The same error with credentials removed from its message and from the tail of the build log it carries. */
+function maskBuildError(e: unknown, mask: (text: string) => string): unknown {
+  if (!isAboxError(e)) return e;
+  const log = e.details?.['log'];
+  if (mask(e.message) === e.message && (typeof log !== 'string' || mask(log) === log)) return e;
+  return new AboxError(e.code, mask(e.message), {
+    ...(e.hint ? { hint: e.hint } : {}),
+    ...(e.issues.length > 0 ? { issues: e.issues } : {}),
+    ...(e.details
+      ? { details: { ...e.details, ...(typeof log === 'string' ? { log: mask(log) } : {}) } }
+      : {}),
+  });
 }
 
 export async function gcImages(

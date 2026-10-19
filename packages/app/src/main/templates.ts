@@ -1,24 +1,15 @@
 /**
  * Template editor back end. Everything that decides something (schema, security rules, backend capabilities,
  * policy dry run, build, create) is the manager's; this file only moves YAML text between the editor, a private
- * scratch directory and the user's template directory.
+ * scratch directory and the manager (which writes the files).
  */
 import { randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import {
-  AboxError,
-  MAX_TEMPLATE_BYTES,
-  NETWORK_PRESETS,
-  TEMPLATE_NAME_RE,
-  builtinTemplatesDir,
-  listToolPresets,
-  safeParseTemplateYaml,
-} from '@abox/core';
+import { AboxError, MAX_TEMPLATE_BYTES, NETWORK_PRESETS, listToolPresets } from '@abox/core';
 import type { Abox, AboxPaths, Caller } from '@abox/core';
 import { BASE_IMAGES } from '../shared/base-images';
-import { projectOption } from './projects';
+import { projectOption, resolveProjectDir } from './projects';
 import type {
   Outputs,
   OsFamily,
@@ -35,6 +26,7 @@ export interface TemplateRuntime {
 }
 
 const HUMAN: Caller = { contextId: 'human' };
+const CONFIRMED: Caller = { contextId: 'human', humanConfirmed: true };
 const OUTPUT_LIMIT = 2000;
 
 export type TemplateChannel =
@@ -52,7 +44,13 @@ type TemplateHandlers = {
     projectDir?: string | undefined;
   }) => Promise<Outputs['templates:source']>;
   'templates:validate': (i: { yaml: string }) => Promise<Outputs['templates:validate']>;
-  'templates:save': (i: { yaml: string; overwrite?: boolean }) => Promise<TemplateSaved>;
+  'templates:save': (i: {
+    yaml: string;
+    target?: 'user' | 'project' | undefined;
+    projectDir?: string | undefined;
+    overwrite?: boolean | undefined;
+    confirmed?: boolean | undefined;
+  }) => Promise<TemplateSaved>;
   'templates:build': (
     i: { name: string; update?: boolean; progressKey: string },
     ctx: { onProgress?: (key: string, line: string) => void },
@@ -125,30 +123,25 @@ export function createTemplateHandlers(rt: TemplateRuntime): TemplateHandlers & 
     'templates:validate': (i) => withDraft(i.yaml, (file) => abox.validateTemplate(HUMAN, file)),
 
     async 'templates:save'(i) {
-      const parsed = safeParseTemplateYaml(i.yaml);
-      if (!parsed.ok) {
-        throw new AboxError('template_invalid', 'The template has errors and was not saved', {
-          issues: parsed.issues,
-        });
-      }
-      const name = parsed.spec.name;
-      if (!TEMPLATE_NAME_RE.test(name)) {
-        throw new AboxError('invalid_input', `invalid template name "${name}"`);
-      }
-      const file = join(paths.templatesDir, `${name}.yaml`);
-      if (existsSync(file) && i.overwrite !== true) {
-        throw new AboxError('conflict', `a user template named "${name}" already exists`, {
-          hint: 'Confirm to overwrite it, or choose another name.',
-        });
-      }
-      await mkdir(paths.templatesDir, { recursive: true, mode: 0o700 });
-      const tmp = `${file}.${randomBytes(4).toString('hex')}.tmp`;
-      await writeFile(tmp, i.yaml.endsWith('\n') ? i.yaml : `${i.yaml}\n`, { mode: 0o600 });
-      await rename(tmp, file);
-      const shadows: Array<'builtin'> = existsSync(join(builtinTemplatesDir, `${name}.yaml`))
-        ? ['builtin']
-        : [];
-      return { name, path: file, shadows };
+      const target = i.target ?? 'user';
+      // the manager checks the text, the path and the confirmation, writes atomically and audits it
+      const r = await abox.saveTemplate(i.confirmed ? CONFIRMED : HUMAN, {
+        yaml: i.yaml,
+        target,
+        ...(i.projectDir !== undefined
+          ? { projectDir: await resolveProjectDir(i.projectDir) }
+          : {}),
+        ...(i.overwrite ? { overwrite: true } : {}),
+      });
+      return {
+        name: r.name,
+        path: r.path,
+        shadows: r.shadows,
+        target: r.target,
+        created: r.created,
+        trusted: r.trusted,
+        ...(r.projectDir ? { projectDir: r.projectDir } : {}),
+      };
     },
 
     'templates:build': (i, ctx) =>

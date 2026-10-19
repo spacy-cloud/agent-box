@@ -72,3 +72,28 @@ export function redactValues<T = unknown>(value: T, knownSecretValues: Iterable<
   const secrets = [...knownSecretValues];
   return walk(value, (s) => redactString(s, secrets), false, new WeakSet(), 0) as T;
 }
+
+/** Names that mark an assignment as secret in free text (`API_TOKEN=...`, `Authorization: ...`). */
+const LOG_SECRET_NAME =
+  '[A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|passphrase|authorization|cookie|private[_-]?key|credential|api[_-]?key)[A-Za-z0-9_.-]*';
+const LOG_ASSIGNMENT = new RegExp(
+  `(\\b${LOG_SECRET_NAME}["']?\\s*[=:]\\s*)(?:(?:bearer|basic|token)\\s+)?("[^"]*"|'[^']*'|[^\\s"',;&]+)`,
+  'gi',
+);
+const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi;
+const BEARER = /\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
+
+/**
+ * Masks secrets in one line of free text such as the output of an image build, which the template author
+ * controls: exact known values (`knownSecretValues`, for example the values of sensitive `env` entries),
+ * `NAME=value` / `NAME: value` where the name looks like a credential (`API_TOKEN`, `--build-arg PASSWORD=x`,
+ * `Authorization: Bearer x`), the user info of a URL (`https://user:pass@host`) and bare `Bearer` tokens.
+ * Best effort, like {@link redact}: it errs on the side of masking too much.
+ */
+export function redactLogLine(line: string, knownSecretValues: Iterable<string> = []): string {
+  let out = redactString(line, knownSecretValues);
+  out = out.replace(URL_USERINFO, `$1${REDACTED}@`);
+  out = out.replace(LOG_ASSIGNMENT, `$1${REDACTED}`);
+  out = out.replace(BEARER, `$1 ${REDACTED}`);
+  return out;
+}

@@ -96,6 +96,118 @@ export function registerTemplate(program: Command, cli: Cli): void {
       );
     });
 
+  t.command('new')
+    .description(
+      'Start a new template from a project folder: the detected built-in template becomes its "extends" (like "suggest"), the new template is named after the folder. Prints the YAML, or saves it with --save',
+    )
+    .requiredOption('--from-project <dir>', 'the project folder')
+    .option('--name <name>', 'name of the new template (default: from the folder name)')
+    .option(
+      '--base <template>',
+      'build on this built-in or user template instead of the detected one',
+    )
+    .option(
+      '--save <where>',
+      '"user" (the user template directory) or "project" (<dir>/.sandbox/<name>.yaml); without it nothing is written',
+    )
+    .option('--overwrite', 'with --save: replace a template file of that name')
+    .option('-y, --yes', 'with --save project: write into the project without asking')
+    .action(
+      async (opts: {
+        fromProject: string;
+        name?: string;
+        base?: string;
+        save?: string;
+        overwrite?: boolean;
+        yes?: boolean;
+      }) => {
+        if (opts.save !== undefined && opts.save !== 'user' && opts.save !== 'project') {
+          throw new CliError(
+            'invalid_input',
+            `--save takes "user" or "project", not "${opts.save}"`,
+          );
+        }
+        if (opts.save === undefined && (opts.overwrite || opts.yes)) {
+          throw new CliError('invalid_input', '--overwrite and --yes only make sense with --save');
+        }
+        const rt = await cli.rt();
+        const dir = cli.resolvePath(opts.fromProject);
+        const draft = await rt.abox.draftTemplateFromProject(cli.caller(), {
+          path: dir,
+          ...(opts.name ? { name: opts.name } : {}),
+          ...(opts.base ? { base: opts.base } : {}),
+        });
+        const basis =
+          draft.base.template === null
+            ? `no base template (${draft.base.reason}); a standalone starting point`
+            : `extends ${draft.base.template} (${draft.base.reason})`;
+        cli.info(`template "${safe(draft.name)}" for ${safe(draft.path)}: ${basis}`);
+        for (const a of draft.alternatives)
+          cli.info(`also possible as a base: ${safe(a.template)}  (${safe(a.reason)}); use --base`);
+        if (draft.projectTemplates.length > 0)
+          cli.info(
+            `the project already has its own template(s): ${draft.projectTemplates.map(safe).join(', ')} (not used as a base)`,
+          );
+        if (opts.save === undefined) {
+          cli.success(
+            { draft },
+            () => draft.yaml,
+            () => draft.yaml,
+          );
+          return;
+        }
+        const target = opts.save;
+        const plan = await rt.abox.planTemplateSave(cli.caller(), {
+          yaml: draft.yaml,
+          target,
+          ...(target === 'project' ? { projectDir: draft.path } : {}),
+        });
+        if (plan.exists && !opts.overwrite) {
+          throw new CliError('conflict', `${safe(plan.path)} already exists`, {
+            hint: 'Choose another --name, or repeat with --overwrite to replace it.',
+          });
+        }
+        let confirmed = false;
+        if (target === 'project') {
+          confirmed = opts.yes === true;
+          if (!confirmed && cli.interactive) {
+            cli.err(`This writes ${safe(plan.path)} into the project.\n`);
+            confirmed = await cli.confirm('Write it?');
+          }
+          if (!confirmed) {
+            throw new CliError(
+              'approval_required',
+              'writing into a project needs your confirmation',
+              {
+                hint: cli.interactive
+                  ? 'Declined.'
+                  : 'Repeat with --yes to write it (non-interactive).',
+              },
+            );
+          }
+        }
+        const r = await rt.abox.saveTemplate(cli.caller(confirmed), {
+          yaml: draft.yaml,
+          target,
+          ...(target === 'project' ? { projectDir: draft.path } : {}),
+          ...(opts.overwrite ? { overwrite: true } : {}),
+        });
+        cli.success(
+          { draft, saved: r },
+          () =>
+            [
+              `${r.created ? 'saved' : 'replaced'} ${safe(r.path)}`,
+              r.target === 'project'
+                ? r.trusted
+                  ? 'This exact content is trusted already.'
+                  : `Not trusted yet: agents cannot use it until you approve it (see what it does: abox template review ${r.name} --project ${safe(r.projectDir ?? '')}).`
+                : `Edit it, then check it: abox template validate ${r.name}`,
+            ].join('\n'),
+          () => r.path,
+        );
+      },
+    );
+
   t.command('show')
     .description('Show a resolved template')
     .argument('<name>', 'template name')

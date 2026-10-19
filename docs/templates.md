@@ -751,6 +751,26 @@ the suggestion; it is reported as `skipped` / `left out`. The suggestion is avai
 surfaces (CLI, GUI); it is deliberately **not** an MCP tool: an agent sees `template_list` and the
 policy, and which host folder it works on is decided by the human.
 
+### Creating a template from a project
+
+`abox template new --from-project <dir>` and the GUI's **From project …** start from the same detection:
+the best built-in or user template that the markers point to becomes `extends` of a new template that is
+named after the folder (a taken name gets `-sandbox`, `-sandbox-2`, ...). The draft carries `apiVersion`,
+`name`, `description` (with the reason), the `backend` of the base and `extends`; everything else is
+inherited, so the file shows only what the project adds. The project's own `.sandbox/*.yaml` templates are
+not used as a base, because a user template cannot extend a project template (see
+[inheritance](#inheritance-with-extends)). A folder without a known marker gives a small standalone template
+(Ubuntu base, git, no network).
+
+The draft is saved to the **user template directory** or to **`<project>/.sandbox/<name>.yaml`**
+(`--save user|project`, or the target in the GUI's save dialog). Both writes are human-only operations of the
+manager (`Abox.saveTemplate`, audit entry `template.save`) and write exactly that path: the name must match
+the template name rules (no `..`, no `/`), no symbolic link is followed (a `.sandbox` directory or a template
+file that is a link is refused), the file is written atomically, and an existing file is only replaced on
+explicit request. Writing into a project needs your confirmation. **Saving never trusts a project template**:
+it is untrusted for agents until a human approves its content, exactly as for any other file in the
+repository (see [project templates](#project-templates-and-trust)).
+
 ## Built-in templates
 
 `abox template ls` lists them; each is a plain YAML file in `packages/core/templates/` that you

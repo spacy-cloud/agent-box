@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { REDACTED, redact, redactString, redactValues } from './redact.js';
+import { REDACTED, redact, redactLogLine, redactString, redactValues } from './redact.js';
 import { canonicalJson, hashJson } from './canonical.js';
 
 describe('redact', () => {
@@ -61,5 +61,33 @@ describe('canonicalJson', () => {
     expect(canonicalJson({ b: 1, a: { d: 2, c: undefined } })).toBe('{"a":{"d":2},"b":1}');
     expect(hashJson({ a: 1, b: 2 })).toBe(hashJson({ b: 2, a: 1 }));
     expect(hashJson({ a: 1 })).not.toBe(hashJson({ a: 2 }));
+  });
+});
+
+describe('redactLogLine', () => {
+  it('masks assignments whose name looks like a credential', () => {
+    expect(redactLogLine('Step 4/9 : ENV API_TOKEN=abc123xyz')).toBe(
+      `Step 4/9 : ENV API_TOKEN=${REDACTED}`,
+    );
+    expect(redactLogLine('--build-arg NPM_PASSWORD="p w d" --build-arg X=1')).toBe(
+      `--build-arg NPM_PASSWORD=${REDACTED} --build-arg X=1`,
+    );
+    expect(redactLogLine('Authorization: Bearer abcdefgh12345')).toBe(`Authorization: ${REDACTED}`);
+    expect(redactLogLine('{"password": "hunter22"}')).toBe(`{"password": ${REDACTED}}`);
+  });
+
+  it('masks the user info of URLs and bare bearer tokens', () => {
+    expect(redactLogLine('git clone https://bob:s3cret@example.org/r.git')).toBe(
+      `git clone https://${REDACTED}@example.org/r.git`,
+    );
+    expect(redactLogLine('curl -H "x: Bearer abcdefghijkl"')).toContain(REDACTED);
+    expect(redactLogLine('curl -H "x: Bearer abcdefghijkl"')).not.toContain('abcdefghijkl');
+  });
+
+  it('masks known values anywhere and leaves ordinary lines alone', () => {
+    expect(redactLogLine('using value-9999 here', ['value-9999'])).toBe(`using ${REDACTED} here`);
+    const plain = 'Step 2/9 : RUN apt-get install -y curl git (1.2 MB)';
+    expect(redactLogLine(plain)).toBe(plain);
+    expect(redactLogLine('The author: Alice')).toBe('The author: Alice');
   });
 });

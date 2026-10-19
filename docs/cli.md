@@ -119,6 +119,7 @@ epoch):
 | `audit`             | `{entries: [{seq, ts, actor, action, sandboxId, decision, details, prevHash, hash}]}` (with `--jsonl`: one entry per line instead)                                                                                                                            |
 | `template ls`       | `{templates: [...], problems: [...]}`                                                                                                                                                                                                                         |
 | `template suggest`  | `{path, primary, alternatives, skipped, truncated}`; `primary` and each alternative are `{template, basis, files, reason}` (see `abox template suggest`)                                                                                                      |
+| `template new`      | `{draft, saved?}`; `draft` is `{path, name, yaml, base: {template, basis, files, reason}, alternatives, projectTemplates, skipped, truncated}`, `saved` (with `--save`) `{name, target, path, projectDir?, created, bytes, shadows, trusted}`                 |
 | `template review`   | `{template, source, contentHash, trusted, against: {kind, label, template?}, diff, risks, buildContext?, changedSinceRequest?}`                                                                                                                               |
 | `template validate` | `{ok, issues, warnings, name, source, policy: {decision, reasons}}`                                                                                                                                                                                           |
 | `policy show`       | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}`                                                                                                                                                                                 |
@@ -263,6 +264,35 @@ project's own `.sandbox/*.yaml` templates always come first; after them the mark
 nothing is read or run. A template that does not exist or that the policy does not allow is not suggested
 but listed as `left out:`. Nothing matching is not an error here (`primary` is `null`); `--quiet` prints just
 the template name.
+
+#### `abox template new`
+
+`abox template new [options]`
+
+Start a new template from a project folder: the detected built-in template becomes its "extends" (like "suggest"), the new template is named after the folder. Prints the YAML, or saves it with --save
+
+| Option                 | Meaning                                                                                                         |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `--from-project <dir>` | the project folder (required)                                                                                   |
+| `--name <name>`        | name of the new template (default: from the folder name; a taken name gets `-sandbox`, `-sandbox-2`, ...)       |
+| `--base <template>`    | build on this built-in or user template instead of the detected one                                             |
+| `--save <where>`       | `user` (the user template directory) or `project` (`<dir>/.sandbox/<name>.yaml`); without it nothing is written |
+| `--overwrite`          | with `--save`: replace a template file of that name                                                             |
+| `-y, --yes`            | with `--save project`: write into the project without asking                                                    |
+
+The detection is the one of `abox template suggest`. The draft contains `apiVersion`, `name`, `description`,
+the `backend` of the base and `extends: <base>`, so it shows only what the project adds and inherits later
+changes of the built-in; the reason ("found package.json (a Node.js project)") is printed on stderr and in the
+description. The project's own `.sandbox` templates are not used as a base (a user template cannot extend one).
+When no marker matches, the draft is a small standalone template. Without `--save` the YAML goes to stdout and
+nothing is written (`--json` has the draft with `base`, `alternatives` and `projectTemplates`).
+
+`--save user` writes `<templates dir>/<name>.yaml`. `--save project` writes exactly
+`<dir>/.sandbox/<name>.yaml` and needs your confirmation (`--yes`, or "y" on a terminal): the name is checked
+against the template name rules, no symbolic link is followed (a `.sandbox` or a template file that is a link is
+refused), the file is written atomically, and an existing file is only replaced with `--overwrite`. Both are
+human-only and audited (`template.save`). **A project template is not trusted by this**: agents can use it only
+after you approved its content, see `abox template review <name>`.
 
 #### `abox template review`
 

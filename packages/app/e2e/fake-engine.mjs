@@ -6,6 +6,7 @@
 // side is 127.0.0.1. Nothing listens on the forwarded host ports: opening a preview is checked with a stubbed
 // `shell.openExternal`. The server "in the sandbox" answers on port 5173 only (target `up`), everything
 // else is `down`, so both states show up in the panel.
+import { setTimeout as sleep } from 'node:timers/promises';
 import { AboxError } from '@abox/core';
 import { registerProvider } from '@abox/runtime';
 
@@ -45,13 +46,32 @@ class FakeEngine {
     return Promise.resolve({ ok: true, version: 'fake', details: ['in memory'], warnings: [] });
   }
 
-  prepare(template) {
-    return Promise.resolve({
-      ref: `fake/${template.name}:${template.hash.slice(0, 12)}`,
-      templateHash: template.hash,
-      cached: true,
-      pinnedBase: `ubuntu@sha256:${template.hash.slice(0, 16)}`,
-    });
+  // Templates called `build-*` or `fail-*` run a pretend image build: output lines (with credentials, to see
+  // that they are masked before the window gets them) arrive one by one, `fail-*` ends in an error. Every
+  // other template is "already built", as before.
+  async prepare(template, opts = {}) {
+    const ref = `fake/${template.name}:${template.hash.slice(0, 12)}`;
+    const pinnedBase = `ubuntu@sha256:${template.hash.slice(0, 16)}`;
+    if (!/^(build|fail)-/.test(template.name)) {
+      return { ref, templateHash: template.hash, cached: true, pinnedBase };
+    }
+    const say = (line) => opts.onProgress?.(line);
+    const steps = 120;
+    const pause = () => sleep(12);
+    for (let i = 1; i <= steps; i++) {
+      say(`Step ${i}/${steps} : RUN install-part-${i}`);
+      if (i === 3) say('Step 3/120 : ENV API_TOKEN=tok-e2e-1234567890');
+      if (i === 4) say('fetching https://bob:hunter2pw@registry.example.org/pkg.tgz');
+      if (opts.signal?.aborted) break;
+      await pause();
+      if (template.name.startsWith('fail-') && i === 60) {
+        say('ERROR: the step failed (fake engine)');
+        throw new AboxError('backend_error', 'Image build failed: the step failed (fake engine)', {
+          details: { log: 'ERROR: the step failed (fake engine)' },
+        });
+      }
+    }
+    return { ref, templateHash: template.hash, cached: false, pinnedBase };
   }
 
   gcImages() {

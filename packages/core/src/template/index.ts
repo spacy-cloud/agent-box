@@ -86,3 +86,21 @@ export {
   type MarkerCandidate,
 } from './detect.js';
 export { estimateImageBytes, BUILD_SPACE_FACTOR, type ImageSizeEstimate } from './image-size.js';
+export {
+  PROJECT_TEMPLATE_DIR,
+  assertTemplateFileName,
+  checkTemplateDir,
+  projectTemplatePath,
+  userTemplatePath,
+  readTemplateFile,
+  writeTemplateFile,
+  otherSpellingExists,
+  type TemplateSaveTarget,
+  type WriteTemplateOptions,
+} from './save.js';
+export {
+  freeTemplateName,
+  projectTemplateDraft,
+  templateNameFromFolder,
+  type ProjectDraftInput,
+} from './scaffold.js';
