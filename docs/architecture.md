@@ -71,7 +71,9 @@ the types it uses in [`packages/core/src/types.ts`](../packages/core/src/types.t
   `container`, `hardened`, `vm`) and the `host` it talks to.
 - **Introspection:** `capabilities()` and `status()` (used by `abox doctor`; must not throw).
 - **Environment images:** `prepare(template)` builds or fetches a cached environment image keyed
-  by the template hash; `gcImages(keep)` removes unused ones.
+  by the template hash; `gcImages(keep)` removes unused ones. Two optional, read-only methods serve
+  `abox doctor --for`: `imageStatus(template)` (is the image built? only an engine `inspect`, never a
+  build or a pull) and `diskSpace()` (free space where images and sandboxes live).
 - **Lifecycle:** `create` (atomic, nothing left behind on failure), `start`, `stop`, `remove`
   (idempotent).
 - **Execution:** `exec` (structured result with timeout and output cap), `spawn` (streaming

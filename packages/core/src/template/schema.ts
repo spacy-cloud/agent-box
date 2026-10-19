@@ -393,6 +393,11 @@ export const templateSchema = z.strictObject({
       diskSize: sizeString('vm.diskSize').optional(),
     })
     .optional(),
+  image: z
+    .strictObject({
+      size: sizeString('image.size').optional(),
+    })
+    .optional(),
   caches: z
     .array(
       z.strictObject({

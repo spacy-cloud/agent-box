@@ -46,6 +46,23 @@ release. Nothing has been released yet.
   number of pending approvals (a red disc with the count, `9+` above nine) and a click opens the Approvals view
   while requests are waiting. The opt-in background service for a closed GUI (`abox notify` with a systemd user
   unit) is not part of this entry.
+- Scoped readiness checks (closes #36): `abox doctor --for <template>` answers "can I run this?" for one
+  template (on `--host`, default `local`), `abox doctor --for host:<id>` for one host, with the checks, marks and
+  severities of `abox doctor` and the same exit code (1 only for a failed check; `--json` gives
+  `{scope, ok, summary, checks}`). A template check covers the template (found, valid, trust state), the backend and
+  its rootless/rootful note, what the template needs from it (capabilities, network mode, workspace delivery), the
+  isolation against the template and the host zone, whether the environment image is built (engine `inspect` only:
+  nothing is built, pulled or downloaded), free disk space against the new optional template field `image.size`
+  (or a documented, conservative estimate: base image, tool presets, packages and setup commands, twice that while
+  building), the network presets against your profile and each agent profile (named), package caches, the result of
+  the create policy for you and for each agent context, and the room on the host (the fit estimate). A host check
+  covers reachability, each engine, free disk space, the size and load of the machine, the host limits against
+  their reservations and which agents may use the host. New optional provider methods `imageStatus` and
+  `diskSpace` (implemented for Docker and Podman), `Abox.doctorFor`, and a **Check** ("Prüfen") button in the
+  GUI's Templates and Hosts views that shows the result in a dialog. Human only: it is not an MCP tool (agents
+  have `template_list`), and a refused attempt is audited as `doctor.for_denied`; the check of a remote host is
+  audited as `doctor.for`. The builtin templates `flutter-dev`, `tauri-dev`, `php-dev` and `shell-dev` declare
+  their image size.
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):

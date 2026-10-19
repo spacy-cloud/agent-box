@@ -66,6 +66,7 @@ pnpm install
 pnpm build
 mkdir -p ~/.local/bin && ln -sf "$PWD/packages/cli/dist/bin.js" ~/.local/bin/abox
 abox doctor
+abox doctor --for flutter-dev   # kann ich diese Vorlage (oder host:<id>) ausführen?
 abox create alpine-min --name scratch && abox exec scratch -- sh -c 'echo hallo' && abox rm -f scratch
 claude mcp add abox -- abox mcp serve --agent claude-code
 pnpm test           # Unit-, Vertrags- und Sicherheitstests

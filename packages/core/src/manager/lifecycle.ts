@@ -115,7 +115,7 @@ export function proxyInjectionHosts(I: Internals, secrets: ResolvedTemplate['sec
   return [...hosts].sort();
 }
 
-function deliveryKindFor(mode: WorkspaceMode): WorkspaceDelivery['kind'] {
+export function deliveryKindFor(mode: WorkspaceMode): WorkspaceDelivery['kind'] {
   switch (mode) {
     case 'empty':
       return 'none';

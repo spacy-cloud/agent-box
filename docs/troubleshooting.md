@@ -86,6 +86,38 @@ What the checks cover:
 Exit codes: 0 when no check failed (warnings and info, including optional engines such as Podman
 that are not running, do not count), 1 when a check failed.
 
+### `abox doctor --for`: can I run this?
+
+`abox doctor` checks everything. When you only want to know whether one template or one host will
+work, ask for it:
+
+```console
+$ abox doctor --for flutter-dev
+Can flutter-dev run on local?
+
+✓ template flutter-dev: found and valid
+✓ backend docker on local: ok (29.9.1, rootful)
+✓ isolation: container (required: container)
+i environment image is not built yet: the first create builds it
+    hint: `abox template build flutter-dev` builds it ahead of time.
+✓ disk space: 24.7 GiB free of 254 GiB in /var/lib/docker; the first build needs 6.0 GiB (image
+    about 3.0 GiB, twice that while building)
+✓ network: allowlist of 6 destination(s), presets github, pub
+✓ package caches: pub-cache kept per project
+✓ policy: you (profile "default") may create from flutter-dev on local
+i policy for agents: 2 may create without asking
+✓ host local has room for 7 sandboxes of 4 cpus, 8.0 GiB memory
+
+ready to run (7 ok, 2 info)
+```
+
+`abox doctor --for host:<id>` does the same for a host: reachable, engines and whether they are
+rootless, free disk space, the size and load of the machine, the host limits and agent access. The
+severities are the ones above; a warning (for example "a create asks you to confirm first") does not
+fail the check, a failed one does (exit 1). It never builds, pulls or starts anything. See
+[the CLI reference](cli.md#abox-doctor) for what each check covers, and
+[templates](templates.md#image) for how the disk estimate is made.
+
 ### `abox doctor --json`
 
 With `--json` the report is `data` of the result (on a failed check it is `details.report` of the

@@ -75,6 +75,15 @@ export const estimateFitSchema = z.strictObject({
 });
 
 export const templateSuggestSchema = z.strictObject({ path: hostPathStr });
+export const doctorForSchema = z.union([
+  z.strictObject({
+    template: z.string().min(1).max(64),
+    hostId: hostIdStr.optional(),
+    projectDir: hostPathStr.optional(),
+    workspacePath: hostPathStr.optional(),
+  }),
+  z.strictObject({ host: hostIdStr }),
+]);
 
 export const workspaceEstimateSchema = z.strictObject({
   path: hostPathStr,

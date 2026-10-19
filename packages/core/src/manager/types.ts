@@ -802,6 +802,34 @@ export interface DoctorReport {
   caches?: { count: number; totalBytes: number | null };
 }
 
+/**
+ * What to check with `abox doctor --for`: whether a template can be used (on `hostId`, default `local`),
+ * or whether a host can run sandboxes at all.
+ */
+export type DoctorForInput =
+  | {
+      template: string;
+      /** The host the template would run on (default `local`). */
+      hostId?: string;
+      /** Project folder / workspace a project template may live in (as for a create). */
+      projectDir?: string;
+      workspacePath?: string;
+    }
+  | { host: string };
+
+/**
+ * Result of a scoped readiness check. The checks have the shape and the severities of `abox doctor`; the
+ * report is `ok` when none of them is an `error`, so a warning ("a create needs your confirmation") does not
+ * make it fail.
+ */
+export interface ScopedDoctorReport {
+  scope: { kind: 'template'; name: string; host: string } | { kind: 'host'; host: string };
+  ok: boolean;
+  /** Number of checks per severity. */
+  summary: Record<DoctorSeverity, number>;
+  checks: DoctorCheck[];
+}
+
 /** One package cache volume (`abox cache ls`). */
 export interface CacheView {
   host: string;

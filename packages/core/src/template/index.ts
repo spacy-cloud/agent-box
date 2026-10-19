@@ -85,3 +85,4 @@ export {
   type FoundMarkers,
   type MarkerCandidate,
 } from './detect.js';
+export { estimateImageBytes, BUILD_SPACE_FACTOR, type ImageSizeEstimate } from './image-size.js';

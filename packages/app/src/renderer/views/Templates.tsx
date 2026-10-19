@@ -16,6 +16,7 @@ import {
 import { YamlEditor } from '../components/CodeEditor';
 import { TemplateReviewPanel } from '../components/review';
 import { ProjectFolderPicker } from '../components/ProjectFolder';
+import { ReadinessDialog } from '../components/ReadinessCheck';
 import { ListInput, SyncedInput, SyncedTextarea } from '../components/inputs';
 import { osFamilyOf, FAMILY_PACKAGE_MANAGER } from '../../shared/base-images';
 import {
@@ -76,6 +77,7 @@ export function TemplatesView() {
   const [building, setBuilding] = useState(false);
   const [testing, setTesting] = useState(false);
   const [reviewing, setReviewing] = useState(false);
+  const [checking, setChecking] = useState(false);
 
   const entries = list.data?.templates ?? [];
   const dirty = opened && yaml !== saved;
@@ -332,6 +334,14 @@ export function TemplatesView() {
                   >
                     {t('tpl.test')}
                   </button>
+                  <button
+                    type="button"
+                    disabled={origin === null || dirty}
+                    title={origin === null || dirty ? t('tpl.needsSave') : t('tpl.check.hint')}
+                    onClick={() => setChecking(true)}
+                  >
+                    {t('tpl.check')}
+                  </button>
                   <button type="button" disabled={!form.valid} onClick={duplicate}>
                     {t('tpl.duplicate')}
                   </button>
@@ -411,6 +421,16 @@ export function TemplatesView() {
       ) : null}
       {testing && origin ? (
         <TestDialog name={origin.name} onClose={() => setTesting(false)} />
+      ) : null}
+      {checking && origin ? (
+        <ReadinessDialog
+          target={{
+            kind: 'template',
+            template: origin.name,
+            ...(projectDir ? { projectDir } : {}),
+          }}
+          onClose={() => setChecking(false)}
+        />
       ) : null}
       {reviewing && origin ? (
         <ReviewDialog

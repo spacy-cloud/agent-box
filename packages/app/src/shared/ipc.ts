@@ -425,6 +425,22 @@ export const IPC = {
   'policy:revision': z.object({ rev: z.number().int().nonnegative() }).strict(),
 
   'doctor:run': none,
+  /**
+   * The scoped readiness check (`abox doctor --for`): can `template` run (on `host`, default this computer),
+   * or can the host run sandboxes at all? Read-only; the answer is a list of checks like `doctor:run`.
+   */
+  'doctor:for': z.discriminatedUnion('kind', [
+    z
+      .object({
+        kind: z.literal('template'),
+        template: shortText,
+        host: hostId.optional(),
+        projectDir: projectDir.optional(),
+        workspacePath: absPath.optional(),
+      })
+      .strict(),
+    z.object({ kind: z.literal('host'), host: hostId }).strict(),
+  ]),
   /** Package caches of all hosts with their sizes (human only; the sizes can take a moment). */
   'caches:list': none,
   /**

@@ -22,6 +22,10 @@ tools:
 setup:
   - run: update-alternatives --set lua-interpreter /usr/bin/lua5.4 && update-alternatives --set lua-compiler /usr/bin/luac5.4
 
+# About how big the built image is: `abox doctor --for <template>` checks the free disk space against it.
+image:
+  size: 300m
+
 workspace:
   mode: copy
   path: /workspace

@@ -209,6 +209,8 @@ export function mergeTemplateSpecs(parent: TemplateSpec, child: TemplateSpec): T
   if (parent.python || child.python)
     out.python = { ...defined(parent.python), ...defined(child.python) };
   if (parent.vm || child.vm) out.vm = { ...defined(parent.vm), ...defined(child.vm) };
+  if (parent.image || child.image)
+    out.image = { ...defined(parent.image), ...defined(child.image) };
 
   if (parent.network || child.network) {
     const childMode = child.network?.mode;
@@ -605,6 +607,9 @@ export async function resolveTemplate(
       };
     }
   }
+  const imageSize = merged.image?.size;
+  const image: ResolvedTemplate['image'] =
+    imageSize !== undefined ? { sizeBytes: parseSize(imageSize) } : undefined;
   problems.throwIfAny();
 
   // --- env: preset-provided values underneath the template's own ----------
@@ -680,6 +685,7 @@ export async function resolveTemplate(
     caches,
     ...(python ? { python } : {}),
     ...(vm ? { vm } : {}),
+    ...(image ? { image } : {}),
     source: { kind: opts.source.kind, ...(opts.source.path ? { path: opts.source.path } : {}) },
     ...(buildContext ? { buildContext } : {}),
     hash,

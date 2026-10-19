@@ -95,3 +95,20 @@ describe('abox doctor text output', () => {
     for (const l of lines) expect(l.length + 4).toBeLessThanOrEqual(50);
   });
 });
+
+describe('renderDoctorChecks: the command named in the closing hint', () => {
+  it('names abox doctor --verbose by default and the scoped command when one is given', () => {
+    const hidden: DoctorCheck[] = [
+      { id: 'a', level: 'ok', severity: 'info', title: 't', details: ['more'] },
+    ];
+    expect(render(hidden)).toContain('Run "abox doctor --verbose" for the full details.');
+    const scoped = renderDoctorChecks(hidden, {
+      verbose: false,
+      width: 80,
+      style: plain,
+      rerun: 'abox doctor --for flutter-dev --verbose',
+    });
+    expect(scoped).toContain('Run "abox doctor --for flutter-dev --verbose" for the full details.');
+    expect(scoped).not.toContain('Run "abox doctor --verbose"');
+  });
+});

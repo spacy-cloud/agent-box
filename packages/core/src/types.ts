@@ -112,6 +112,11 @@ export interface TemplateSpec {
   /** VM backend specifics (phase 5). */
   vm?: { image?: string; cloudInit?: string; diskSize?: string };
   /**
+   * What the built environment image takes on disk (`3g`). Only a hint for `abox doctor --for <template>`
+   * (free disk space before the first build); it is not part of the build hash and nothing enforces it.
+   */
+  image?: { size?: string };
+  /**
    * Package caches abox keeps per project (see `docs/templates.md`). Each entry is one directory of
    * the sandbox that outlives the sandbox, merged by `name` on `extends`.
    */
@@ -185,6 +190,8 @@ export interface ResolvedTemplate {
   labels: Record<string, string>;
   python?: { version: string; project?: string };
   vm?: { image: string; cloudInit?: string; diskSize?: string };
+  /** Size hint of the built image (`image.size`); not part of `hash`. */
+  image?: { sizeBytes: number };
   /** Package caches the template declares (they are only mounted when a project is shared). */
   caches: TemplateCache[];
   source: { kind: TemplateSourceKind; path?: string };
@@ -246,6 +253,32 @@ export interface PreparedImage {
   cached: boolean;
   /** Pinned base reference (e.g. digest) if the backend supports pinning. */
   pinnedBase?: string;
+}
+
+/**
+ * A read-only look at the environment image of a template (`SandboxProvider.imageStatus`): nothing is
+ * built or pulled, the engine is only asked whether the images exist.
+ */
+export interface ImageStatus {
+  /** The reference the build would produce (`abox/node-dev:0a1b2c...`). */
+  ref: string;
+  /** The environment image is there: a create starts without a build. */
+  present: boolean;
+  /** Size on disk of the existing image. */
+  sizeBytes?: number;
+  /**
+   * Without the environment image: the base image the build starts from (image reference), and whether
+   * the engine already has it (no pull). Absent for a template with its own Dockerfile.
+   */
+  base?: { ref: string; present: boolean };
+}
+
+/** Free space of the file system that holds the images and sandboxes of a backend (`SandboxProvider.diskSpace`). */
+export interface DiskSpace {
+  /** The directory that was measured (the engine's storage root). */
+  path: string;
+  freeBytes: number;
+  totalBytes: number;
 }
 
 export interface PrepareOptions {

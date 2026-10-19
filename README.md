@@ -103,6 +103,7 @@ pnpm install
 pnpm build
 mkdir -p ~/.local/bin && ln -sf "$PWD/packages/cli/dist/bin.js" ~/.local/bin/abox
 abox doctor                                    # what works on this machine
+abox doctor --for flutter-dev                  # can I run this template (or host:<id>)?
 abox create alpine-min --name scratch          # an empty sandbox
 abox exec scratch -- sh -c 'echo hello'
 abox rm -f scratch

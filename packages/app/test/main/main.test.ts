@@ -98,6 +98,7 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       removeCaches: rec('removeCaches', { removed: [], skipped: [], errors: [] }),
       hostCapacity: rec('hostCapacity', { host: 'srv' }),
       estimateFit: rec('estimateFit', { host: 'srv', fits: 3 }),
+      doctorFor: rec('doctorFor', { ok: true, checks: [] }),
       approve: rec('approve'),
       deny: rec('deny'),
       queryAudit: rec('queryAudit', []),
@@ -306,6 +307,28 @@ describe('manager handlers are thin: always the human caller, confirmation only 
         ],
       },
       { fn: 'estimateFit', args: [{ contextId: 'human' }, { template: 'node-dev' }] },
+    ]);
+  });
+
+  it('the readiness check is asked as the human, for a template (with the host it runs on) or for a host', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await h['doctor:for']({ kind: 'host', host: 'srv' }, {});
+    await h['doctor:for'](
+      { kind: 'template', template: 'flutter-dev', host: 'srv', projectDir: undefined } as never,
+      {},
+    );
+    await h['doctor:for']({ kind: 'template', template: 'node-dev', projectDir: '/work/app' }, {});
+    expect(calls).toEqual([
+      { fn: 'doctorFor', args: [{ contextId: 'human' }, { host: 'srv' }] },
+      {
+        fn: 'doctorFor',
+        args: [{ contextId: 'human' }, { template: 'flutter-dev', hostId: 'srv' }],
+      },
+      {
+        fn: 'doctorFor',
+        args: [{ contextId: 'human' }, { template: 'node-dev', projectDir: '/work/app' }],
+      },
     ]);
   });
 
