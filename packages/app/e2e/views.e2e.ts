@@ -376,6 +376,13 @@ for (const scheme of ['light', 'dark'] as const) {
       await nav(page).getByRole('button', { name: 'Sandboxes', exact: true }).click();
       await expect(page.locator('tr', { hasText: 'a11y-box' })).toBeVisible();
       await check('sandboxes');
+      await page
+        .locator('tr', { hasText: 'a11y-box' })
+        .getByRole('button', { name: /^Weitere Aktionen/ })
+        .click();
+      await expect(page.getByRole('menu')).toBeVisible();
+      await check('sandboxes, row menu open');
+      await page.keyboard.press('Escape');
       await page.getByRole('button', { name: 'Neue Sandbox' }).click();
       await expect(page.locator('label.template-card').first()).toBeVisible();
       await check('new sandbox dialog');
@@ -430,6 +437,27 @@ for (const scheme of ['light', 'dark'] as const) {
       await expect(page.getByRole('table', { name: 'Hostprofile' })).toBeVisible();
       await expect(page.getByTestId('util-local')).toContainText('Sandbox');
       await check('hosts');
+      // the "⋯" menu of a host row is drawn in a layer of its own: check it open, too
+      await page
+        .locator('tr', { hasText: 'local' })
+        .first()
+        .getByRole('button', { name: /^Weitere Aktionen/ })
+        .click();
+      await expect(page.getByRole('menu')).toBeVisible();
+      await check('hosts, row menu open');
+      await page.keyboard.press('Escape');
+      // the template editor (list, toolbar menu) and the shortcut help
+      await nav(page).getByRole('button', { name: 'Templates', exact: true }).click();
+      await page.getByRole('button', { name: /^host-shell/ }).click();
+      await expect(page.getByRole('heading', { name: 'host-shell', level: 2 })).toBeVisible();
+      await check('templates');
+      await page.getByRole('button', { name: 'Weitere Aktionen', exact: true }).click();
+      await expect(page.getByRole('menu')).toBeVisible();
+      await check('templates, toolbar menu open');
+      await page.keyboard.press('Escape');
+      await page.locator('main').press('?');
+      await expect(page.getByRole('dialog', { name: 'Tastenkürzel' })).toBeVisible();
+      await check('shortcut help');
     } finally {
       await agent.close();
       await app.close();

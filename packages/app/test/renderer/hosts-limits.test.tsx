@@ -6,6 +6,7 @@ import type { HostRow } from '../../src/shared/types';
 import { HostsView } from '../../src/renderer/views/Hosts';
 import { SshTabsProvider } from '../../src/renderer/views/ssh-tabs';
 import { installBridge, renderApp } from './harness';
+import { rowAction } from './row-action';
 
 afterEach(cleanup);
 
@@ -92,7 +93,7 @@ describe('Host dialog: Limits', () => {
   it('edit: shows the current limits, empty fields for the ones that are not set', async () => {
     mount([LOCAL, profile({ id: 'home-server', limits: { sandboxes: 3, memory: '16g' } })]);
     const line = (await screen.findByRole('rowheader', { name: /home-server/ })).closest('tr')!;
-    fireEvent.click(within(line).getByRole('button', { name: /Bearbeiten/ }));
+    fireEvent.click(rowAction(line, /Bearbeiten/));
     const dialog = await screen.findByRole('dialog', { name: /Host bearbeiten/ });
     const group = within(dialog).getByRole('group', { name: 'Limits' });
     expect(group).toBeTruthy();
@@ -106,7 +107,7 @@ describe('Host dialog: Limits', () => {
   it('edit: saves the limits through the existing update path; empty clears them', async () => {
     const calls = mount([LOCAL, profile({ id: 'home-server' })]);
     const line = (await screen.findByRole('rowheader', { name: /home-server/ })).closest('tr')!;
-    fireEvent.click(within(line).getByRole('button', { name: /Bearbeiten/ }));
+    fireEvent.click(rowAction(line, /Bearbeiten/));
     await screen.findByRole('dialog', { name: /Host bearbeiten/ });
     const f = limitFields();
     fireEvent.change(f.sandboxes, { target: { value: '3' } });
@@ -126,7 +127,7 @@ describe('Host dialog: Limits', () => {
       profile({ id: 'home-server', limits: { sandboxes: 3, cpus: 4, memory: '8g' } }),
     ]);
     const line = (await screen.findByRole('rowheader', { name: /home-server/ })).closest('tr')!;
-    fireEvent.click(within(line).getByRole('button', { name: /Bearbeiten/ }));
+    fireEvent.click(rowAction(line, /Bearbeiten/));
     await screen.findByRole('dialog', { name: /Host bearbeiten/ });
     const f = limitFields();
     for (const el of [f.sandboxes, f.cpus, f.memory])
@@ -139,7 +140,7 @@ describe('Host dialog: Limits', () => {
   it('0 sandboxes is allowed, like on the command line', async () => {
     const calls = mount([LOCAL, profile({ id: 'home-server' })]);
     const line = (await screen.findByRole('rowheader', { name: /home-server/ })).closest('tr')!;
-    fireEvent.click(within(line).getByRole('button', { name: /Bearbeiten/ }));
+    fireEvent.click(rowAction(line, /Bearbeiten/));
     await screen.findByRole('dialog', { name: /Host bearbeiten/ });
     fireEvent.change(limitFields().sandboxes, { target: { value: '0' } });
     expect(saveButton().disabled).toBe(false);
@@ -151,7 +152,7 @@ describe('Host dialog: Limits', () => {
   it('validates like the CLI: an error under the field, Save is disabled, nothing is sent', async () => {
     const calls = mount([LOCAL, profile({ id: 'home-server' })]);
     const line = (await screen.findByRole('rowheader', { name: /home-server/ })).closest('tr')!;
-    fireEvent.click(within(line).getByRole('button', { name: /Bearbeiten/ }));
+    fireEvent.click(rowAction(line, /Bearbeiten/));
     await screen.findByRole('dialog', { name: /Host bearbeiten/ });
     const f = limitFields();
     fireEvent.change(f.sandboxes, { target: { value: '3.5' } });
@@ -203,7 +204,7 @@ describe('Host dialog: Limits', () => {
   it('this computer: only the limits can be edited, and only they are sent', async () => {
     const calls = mount([{ ...LOCAL, limits: { cpus: 8 } }]);
     const line = (await screen.findByRole('rowheader', { name: /local/ })).closest('tr')!;
-    fireEvent.click(within(line).getByRole('button', { name: /Limits/ }));
+    fireEvent.click(rowAction(line, /Limits/));
     const dialog = await screen.findByRole('dialog', { name: 'Limits für diesen Rechner' });
     // no ssh fields in this dialog
     expect(within(dialog).queryByLabelText('Hostname oder IP')).toBeNull();

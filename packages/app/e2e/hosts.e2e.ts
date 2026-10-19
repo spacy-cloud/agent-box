@@ -3,7 +3,7 @@ import { connect, createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { DOCKER, axeViolations, launchGui, makeHome } from './helpers';
+import { axeViolations, DOCKER, launchGui, makeHome, rowAction } from './helpers';
 import type { TestHome } from './helpers';
 import { startSshd } from './sshd';
 import type { ThrowawaySshd } from './sshd';
@@ -78,7 +78,7 @@ test('hosts: add (no secret field), validation error, favourite, edit, remove; h
     );
 
     // edit
-    await row.getByRole('button', { name: /^Bearbeiten/ }).click();
+    await (await rowAction(page, row, /^Bearbeiten/)).click();
     const edit = page.getByRole('dialog', { name: /Host bearbeiten/ });
     await expect(edit.getByLabel('ID', { exact: true })).toBeDisabled();
     await edit.getByLabel('Zone').selectOption('lab');
@@ -100,7 +100,7 @@ test('hosts: add (no secret field), validation error, favourite, edit, remove; h
     await expect(page.getByRole('heading', { name: 'Hosts und SSH', level: 1 })).toBeVisible();
 
     // remove needs a confirmation
-    await row.getByRole('button', { name: /^Entfernen/ }).click();
+    await (await rowAction(page, row, /^Entfernen/)).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Entfernen' }).click();
     await expect(page.locator('tr', { hasText: 'srv' })).toHaveCount(0);
   } finally {
@@ -179,7 +179,7 @@ test.describe('against a throwaway sshd container (docker)', () => {
       const row = page.locator('tr', { hasText: 'sandbox-srv' });
 
       // 1) unknown key: the dialog shows the real fingerprint, trusting needs the explicit confirmation
-      await row.getByRole('button', { name: /^Testen/ }).click();
+      await (await rowAction(page, row, /^Testen/)).click();
       const key = page.getByRole('dialog', { name: /Host-Key: sandbox-srv/ });
       await expect(key).toContainText('Unbekannter Host-Key');
       await expect(key).toContainText(sshd.fingerprint());
@@ -200,7 +200,7 @@ test.describe('against a throwaway sshd container (docker)', () => {
       await expect(row).toContainText(/\d+ ms/);
 
       // 2) SSH terminal tab: label + colour per host, input/output, resize, exit, reconnect
-      await row.getByRole('button', { name: /^Terminal/ }).click();
+      await (await rowAction(page, row, /^Terminal/)).click();
       const tab = page.getByRole('tab', { name: /SSH sandbox-srv/ });
       await expect(tab).toHaveAttribute('aria-selected', 'true');
       const term = page.locator('.term[data-kind="ssh"]');
@@ -256,7 +256,7 @@ test.describe('against a throwaway sshd container (docker)', () => {
           s.close(() => resolve(p));
         });
       });
-      await row.getByRole('button', { name: /^Weiterleitungen/ }).click();
+      await (await rowAction(page, row, /^Weiterleitungen/)).click();
       const fw = page.getByRole('dialog', { name: /Portweiterleitungen/ });
       await fw.getByLabel('Name', { exact: true }).fill('ssh-banner');
       await fw.getByLabel('Lauschen auf').fill(String(free));
@@ -293,7 +293,7 @@ test.describe('against a throwaway sshd container (docker)', () => {
       // 4) the server key changes: everything is blocked, forgetting needs a second confirmation
       sshd.rotateHostKeys();
       const newFp = sshd.fingerprint();
-      await row.getByRole('button', { name: /^Terminal/ }).click();
+      await (await rowAction(page, row, /^Terminal/)).click();
       const changed = page.getByRole('dialog', { name: /Host-Key: sandbox-srv/ });
       await expect(changed).toContainText('Der Host-Key hat sich geändert');
       await expect(changed.getByRole('alert').first()).toBeVisible();

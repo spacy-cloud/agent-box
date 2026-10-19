@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { axeViolations, launchGui, makeHome, shot } from './helpers';
+import { axeViolations, launchGui, makeHome, rowAction, shot } from './helpers';
 import type { TestHome } from './helpers';
 
 let h: TestHome;
@@ -50,7 +50,7 @@ test('hosts: the limits of a host are edited in the dialog and land in hosts.yam
     await expect(row).toContainText('CPU: 0 von 8 reserviert');
 
     // edit: the dialog shows what is saved; a bad value is refused in the dialog and nothing is written
-    await row.getByRole('button', { name: /^Bearbeiten/ }).click();
+    await (await rowAction(page, row, /^Bearbeiten/)).click();
     const edit = page.getByRole('dialog', { name: /Host bearbeiten/ });
     await expect(edit.getByLabel('Max. Sandboxes')).toHaveValue('3');
     await expect(edit.getByLabel('Arbeitsspeicher gesamt')).toHaveValue('16g');
@@ -66,7 +66,7 @@ test('hosts: the limits of a host are edited in the dialog and land in hosts.yam
     expect(hostsYaml()).not.toContain('memory:');
 
     // clearing every field removes the limits
-    await row.getByRole('button', { name: /^Bearbeiten/ }).click();
+    await (await rowAction(page, row, /^Bearbeiten/)).click();
     const again = page.getByRole('dialog', { name: /Host bearbeiten/ });
     await again.getByLabel('Max. Sandboxes').fill('');
     await again.getByLabel('CPUs gesamt').fill('');
@@ -83,7 +83,7 @@ test('hosts: this computer can be limited too (stored as the host "local"), and 
   try {
     await openHosts(page);
     const local = page.locator('tr', { hasText: 'dieser Rechner' });
-    await local.getByRole('button', { name: /^Limits/ }).click();
+    await (await rowAction(page, local, /^Limits/)).click();
     const dlg = page.getByRole('dialog', { name: 'Limits für diesen Rechner' });
     await expect(dlg.getByLabel('Hostname oder IP')).toHaveCount(0);
     await dlg.getByLabel('Max. Sandboxes').fill('3');
@@ -124,7 +124,7 @@ test('hosts: this computer can be limited too (stored as the host "local"), and 
     await wizard.getByRole('button', { name: 'Abbrechen' }).click();
 
     // a limit that would be exceeded: red, and "Weiter" is disabled
-    await local.getByRole('button', { name: /^Limits/ }).click();
+    await (await rowAction(page, local, /^Limits/)).click();
     const limit = page.getByRole('dialog', { name: 'Limits für diesen Rechner' });
     await limit.getByLabel('Max. Sandboxes').fill('0');
     await limit.getByRole('button', { name: 'Speichern' }).click();

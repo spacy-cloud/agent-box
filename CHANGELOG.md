@@ -10,6 +10,20 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Design pass over the GUI: overflow menus, keyboard shortcuts, dark-mode check (closes #24): a table row shows
+  its one or two most used actions and keeps the rest in an accessible **⋯** menu (one reusable component, the
+  WAI-ARIA menu-button pattern: arrow keys, Home/End, Esc returns the focus, a click outside or Tab closes it,
+  destructive entries in the danger colour and still behind their confirmation dialog): sandboxes (Shell and
+  Stop/Start visible; Open, Extend, Export diff, new **Snapshots** shortcut and Delete in the menu), hosts (New
+  sandbox and Check visible; Test, Terminal, Host key, Forwards, Edit, Remove and Limits in the menu), snapshots
+  (Delete) and the template toolbar (Duplicate, Export). Three single-key shortcuts: **`n`** opens New sandbox
+  from any view, **`/`** focuses the search field of the current view, **`?`** (or the new **Keyboard shortcuts**
+  button in the navigation) lists all shortcuts, the existing ones of the lists, approvals and terminal included;
+  they stay quiet while you type, in dialogs, menus and terminals and with Ctrl/Alt/Meta held. The consistency
+  pass moves the last hard-coded colours, shadows and radii (terminal, dialog backdrop, toast) into tokens, gives
+  a view one primary button, makes a dialog return the focus to the button that opened it, and extends the axe
+  checks in the light and the dark theme to the menus, the Templates view and the shortcut help. No behaviour of
+  an action changed. See [the GUI](docs/gui.md#row-actions-keyboard-shortcuts-and-themes).
 - Side-by-side diff with selective apply (closes #20): the sandbox detail view has a **Changes** ("Änderungen")
   tab that lists the changed files (status, `+added −removed`, hunks, badges for dependency manifests, executables,
   binaries, symlinks, large and flagged files, a note on what `.gitignore` kept out) and shows each file

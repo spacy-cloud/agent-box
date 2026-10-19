@@ -7,6 +7,7 @@ import { buildCreateInput } from '../../src/renderer/views/NewSandbox';
 import { toAuditFilter } from '../../src/renderer/views/Audit';
 import { IsolationBadge, Tabs } from '../../src/renderer/components/ui';
 import { installBridge, renderApp } from './harness';
+import { rowAction } from './row-action';
 
 afterEach(cleanup);
 
@@ -112,8 +113,10 @@ describe('SandboxesView', () => {
     renderApp(<SandboxesView />);
     await screen.findByText('alpha');
     expect(screen.getByRole('button', { name: 'Stoppen: alpha' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Verlängern: alpha' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Löschen: alpha' }));
+    expect(screen.getByRole('button', { name: 'Shell öffnen: alpha' })).toBeTruthy();
+    // the less used actions are in the "⋯" menu of the row
+    expect(screen.queryByRole('button', { name: /Verlängern/ })).toBeNull();
+    fireEvent.click(rowAction(screen.getByText('alpha').closest('tr')!, 'Löschen'));
     expect(await screen.findByText('Sandbox löschen?')).toBeTruthy();
     expect(calls.some((c) => c.channel === 'sandboxes:remove')).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Endgültig löschen' }));

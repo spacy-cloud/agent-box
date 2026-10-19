@@ -173,12 +173,20 @@ export function Dialog(props: {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    // Where the focus was when the dialog opened (a button, the "⋯" button of a row): it gets it back on close.
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (!el.open) {
       if (typeof el.showModal === 'function') el.showModal();
       else el.setAttribute('open', '');
     }
     return () => {
       if (el.open && typeof el.close === 'function') el.close();
+      // The dialog element may already be detached, so the platform does not restore the focus: do it, but only
+      // when the focus is lost (not when the app has moved it on purpose).
+      const now = document.activeElement;
+      if (opener?.isConnected && (now === null || now === document.body || el.contains(now))) {
+        opener.focus({ preventScroll: true });
+      }
     };
   }, []);
   return (

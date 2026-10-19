@@ -8,6 +8,7 @@ import { SshTabsProvider } from '../../src/renderer/views/ssh-tabs';
 import { IPC } from '../../src/shared/ipc';
 import { RLO } from './fixtures';
 import { installBridge, renderApp } from './harness';
+import { rowAction } from './row-action';
 
 afterEach(cleanup);
 
@@ -97,7 +98,7 @@ describe('Hosts view: engine and runtimes', () => {
       </SshTabsProvider>,
     );
     const r = (await screen.findByRole('rowheader', { name: /lab1/ })).closest('tr')!;
-    fireEvent.click(within(r).getByRole('button', { name: /^Bearbeiten/ }));
+    fireEvent.click(rowAction(r, /^Bearbeiten/));
     const dlg = await screen.findByRole('dialog', { name: /Host bearbeiten/ });
     expect(
       (within(dlg).getByLabelText('Gehärtete Laufzeit für Docker') as HTMLInputElement).value,

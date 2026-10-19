@@ -3,10 +3,11 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { openAbox } from '@abox/runtime';
 import {
-  DOCKER,
   axeViolations,
+  DOCKER,
   launchGui,
   makeHome,
+  rowAction,
   shot,
   useFakeEngine,
   writeFakeEngineTemplates,
@@ -100,7 +101,10 @@ test.describe('with the in-memory engine', () => {
       await expect(
         row.getByRole('button', { name: 'Snapshot installed in eine neue Sandbox klonen' }),
       ).toBeEnabled();
-      await expect(row.getByRole('button', { name: 'Snapshot installed löschen' })).toBeEnabled();
+      // delete is in the "⋯" menu of the row
+      await row.getByRole('button', { name: 'Weitere Aktionen: installed' }).click();
+      await expect(page.getByRole('menuitem', { name: 'Löschen' })).toBeEnabled();
+      await page.keyboard.press('Escape');
       await shot(page, 'snapshots-tab');
       await checkAxe(page, 'snapshots tab');
 
@@ -144,17 +148,13 @@ test.describe('with the in-memory engine', () => {
       // delete: asks first, says what stays
       await openDetail(page, 'base-box');
       await openSnapshotsTab(page);
-      await snapshotRow(page, 'installed')
-        .getByRole('button', { name: 'Snapshot installed löschen' })
-        .click();
+      await (await rowAction(page, snapshotRow(page, 'installed'), 'Löschen')).click();
       const confirm = page.getByRole('dialog', { name: 'Löschen' });
       await expect(confirm).toContainText('„installed“ (3.0 MiB) wird gelöscht');
       await expect(confirm).toContainText('behalten ihre Dateien');
       await confirm.getByRole('button', { name: 'Abbrechen' }).click();
       await expect(snapshotRow(page, 'installed')).toBeVisible();
-      await snapshotRow(page, 'installed')
-        .getByRole('button', { name: 'Snapshot installed löschen' })
-        .click();
+      await (await rowAction(page, snapshotRow(page, 'installed'), 'Löschen')).click();
       await page
         .getByRole('dialog', { name: 'Löschen' })
         .getByRole('button', { name: 'Löschen' })
@@ -348,9 +348,7 @@ test.describe('with a real engine', () => {
       // deleting the snapshot and then its sandbox leaves the clone running with its files
       await openDetail(page, 'real-base');
       await openSnapshotsTab(page);
-      await snapshotRow(page, 'installed')
-        .getByRole('button', { name: /löschen/ })
-        .click();
+      await (await rowAction(page, snapshotRow(page, 'installed'), 'Löschen')).click();
       await page
         .getByRole('dialog', { name: 'Löschen' })
         .getByRole('button', { name: 'Löschen' })
