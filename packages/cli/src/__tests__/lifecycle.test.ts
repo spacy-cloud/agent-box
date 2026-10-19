@@ -391,6 +391,53 @@ describe('background processes, logs, snapshots, ttl', () => {
     expect(ghost.json.ok).toBe(false);
   });
 
+  it('lists, sizes and deletes snapshots; a backend that cannot clone says so', async () => {
+    await run(t, ['exec', id, '--', 'sh', '-c', 'echo listed-content > listed.txt']);
+    const snap = await run(t, ['snapshot', id, 'listed', '--json']);
+    expect(snap.code, snap.stderr).toBe(0);
+    const snapshotId = snap.json.data.snapshotId as string;
+    const one = await run(t, ['snapshot', 'ls', id, '--json']);
+    expect(one.code, one.stderr).toBe(0);
+    expect(one.json.data.snapshots).toContainEqual(
+      expect.objectContaining({
+        id: snapshotId,
+        name: 'listed',
+        deletable: true,
+        cloneable: false,
+        cloneBlocked: 'backend',
+      }),
+    );
+    const mine = one.json.data.snapshots.find((s: { id: string }) => s.id === snapshotId);
+    expect(mine.sizeBytes).toBeGreaterThanOrEqual('listed-content\n'.length);
+    const all = await run(t, ['snapshot', 'ls', '--all', '--json']);
+    expect(all.json.data.snapshots).toContainEqual(
+      expect.objectContaining({ id: snapshotId, sandboxId: id, orphaned: false }),
+    );
+    expect(all.json.data.totalBytes).toBeGreaterThanOrEqual(mine.sizeBytes);
+    expect((await run(t, ['snapshot', 'ls', '--all'])).stdout).toContain('in total');
+    expect((await run(t, ['snapshot', 'ls', '--json'])).code).toBe(2);
+
+    // a new sandbox from a snapshot needs a backend that can; this one cannot
+    const clone = await run(t, ['create', '--from-snapshot', `${id}:listed`, '--yes', '--json']);
+    expect(clone.code).toBe(2);
+    expect(clone.json.code).toBe('unsupported');
+    expect((await run(t, ['create', '--from-snapshot', `${id}:nope`, '--json'])).json.code).toBe(
+      'not_found',
+    );
+
+    // delete: needs --yes without a terminal; the sandbox stays
+    expect((await run(t, ['snapshot', 'rm', '--sandbox', id, 'listed', '--json'])).code).toBe(2);
+    expect((await run(t, ['snapshot', 'rm', '--yes', '--json'])).code).toBe(2);
+    expect((await run(t, ['snapshot', 'rm', 'nothing', '--yes', '--json'])).code).toBe(2);
+    const rm = await run(t, ['snapshot', 'rm', '--sandbox', id, 'listed', '--yes', '--json']);
+    expect(rm.code, rm.stderr).toBe(0);
+    expect(rm.json.data.removed).toHaveLength(1);
+    expect((await run(t, ['snapshot', 'ls', id, '--json'])).json.data.snapshots).not.toContainEqual(
+      expect.objectContaining({ id: snapshotId }),
+    );
+    expect((await run(t, ['inspect', id, '--json'])).json.data.state).toBe('running');
+  });
+
   it('reads sandbox logs where the backend provides them', async () => {
     const logs = await run(t, ['logs', id, '--json']);
     if (logs.code === 0) expect(logs.json.data).toHaveProperty('logs');

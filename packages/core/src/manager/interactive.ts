@@ -16,7 +16,6 @@ import type {
   PolicyRevisionDetail,
   PolicyRevisionSummary,
   SandboxLogsOptions,
-  SnapshotView,
 } from './types.js';
 import { commandDisplay, errMessage, redactCommandText, sleep, truncateUtf8 } from './util.js';
 
@@ -440,19 +439,6 @@ export async function sandboxLogs(
 // ---------------------------------------------------------------------------
 // snapshots, policy history
 // ---------------------------------------------------------------------------
-
-/** Snapshots taken through the manager, oldest first. Owner (or human). */
-export async function listSnapshots(
-  I: Internals,
-  caller: Caller,
-  id: string,
-): Promise<SnapshotView[]> {
-  const ctx = await I.context(caller);
-  const rec = I.lookup(ctx, id);
-  return I.state.snapshots
-    .list(rec.id)
-    .map((s) => ({ id: s.snapshotId, name: s.name, createdAt: s.createdAt }));
-}
 
 /** Revisions of policy.yaml, newest first. Human only. */
 export async function listPolicyRevisions(

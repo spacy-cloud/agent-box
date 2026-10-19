@@ -90,6 +90,8 @@ export interface StoredEffective {
   workspaceWarnings?: string[];
   /** Who/what created it, for `inspect`. */
   imageRef?: string;
+  /** The snapshot the sandbox was created from (`abox clone`), if any. */
+  clonedFrom?: { sandboxId: string; snapshotId: string };
   /** Package caches: why they are (not) mounted, and which ones. */
   caches?: { status: string; mounts: Array<{ key: string; name: string; path: string }> };
 }

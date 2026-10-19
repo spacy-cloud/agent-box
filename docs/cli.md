@@ -123,7 +123,7 @@ epoch):
 | `policy show`       | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}`                                                                                                                                                                                 |
 | `token ls`          | `{tokens: [{id, contextId, label, createdAt, lastUsedAt, revokedAt}]}`                                                                                                                                                                                        |
 | `doctor`            | `{ok, summary, checks: [{id, level, severity, title, detail?, details?, notes?, hint?}], backends, state, policy, audit, reconcile}`; on problems, an error body with `details.report`; see [troubleshooting](troubleshooting.md#abox-doctor)                 |
-| `gc`, `reconcile`   | the report objects (`dryRun`, `sandboxes`, `workspaces`, `images`, `logs`, ...; `orphans`, `ghosts`, `interrupted`, `expired`, `unreachable`, `applied`)                                                                                                      |
+| `gc`, `reconcile`   | the report objects (`dryRun`, `sandboxes`, `workspaces`, `images`, `caches`, `snapshots`, `logs`, ...; `orphans`, `ghosts`, `interrupted`, `expired`, `unreachable`, `applied`)                                                                               |
 | `gc --orphans`      | `{dryRun, now, resources: [{kind, ref, name, instance, aboxName, sandboxId, role, state, createdAt, startedAt, engine, host, backend, skip}], instances: [{instance, resources, running, newestAt, active, selected, skipReason}], removed, skipped, errors}` |
 
 The sandbox object has `id`, `name`, `host`, `owner`, `template`, `templateHash`, `backend`,
@@ -296,23 +296,24 @@ Create a sandbox from a template
 | ---------- | --------------------------------------------------------------------------------- |
 | `template` | template name (see "abox template ls"); default: defaults.template of config.yaml |
 
-| Option                   | Meaning                                                                                                                                                          |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--name <name>`          | sandbox name                                                                                                                                                     |
-| `-w, --workspace <path>` | host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared                         |
-| `--mode <mode>`          | how the workspace is delivered (default: the template's mode with --workspace, "empty" without) (choices: "mount", "clone", "worktree", "copy", "empty", "sync") |
-| `--ref <ref>`            | git ref for clone/worktree workspaces (needs --workspace)                                                                                                        |
-| `--exclude <patterns>`   | leave these out of a copy/sync workspace (on top of .gitignore), comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)                  |
-| `--gitignore`            | copy/sync workspace: leave out what .gitignore files ignore (node_modules, build output, .env...); the default                                                   |
-| `--no-gitignore`         | copy/sync workspace: copy everything, ignored files included (needs --workspace)                                                                                 |
-| `--no-cache`             | do not mount the template's package caches (pnpm store, Cargo registry, ...): a clean install; see "abox cache"                                                  |
-| `--net <mode>`           | network mode (choices: "none", "allowlist", "open")                                                                                                              |
-| `--allow <domains>`      | extra allowed destinations, comma separated (with --net allowlist)                                                                                               |
-| `--ttl <duration>`       | lifetime, e.g. 2h                                                                                                                                                |
-| `--cpus <n>`             | CPU limit                                                                                                                                                        |
-| `--memory <size>`        | memory limit, e.g. 4g                                                                                                                                            |
-| `--request-id <id>`      | idempotency key: repeating the call returns the same sandbox                                                                                                     |
-| `-y, --yes`              | confirm risky settings without asking (required when not interactive)                                                                                            |
+| Option                       | Meaning                                                                                                                                                                                                                      |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--name <name>`              | sandbox name                                                                                                                                                                                                                 |
+| `--from-snapshot <snapshot>` | start from the files of a snapshot (an id from "abox snapshot ls --all", or <sandbox>:<name>): its template is the default, the workspace stays as the snapshot has it; network, limits and policy are those of this command |
+| `-w, --workspace <path>`     | host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared                                                                                     |
+| `--mode <mode>`              | how the workspace is delivered (default: the template's mode with --workspace, "empty" without) (choices: "mount", "clone", "worktree", "copy", "empty", "sync")                                                             |
+| `--ref <ref>`                | git ref for clone/worktree workspaces (needs --workspace)                                                                                                                                                                    |
+| `--exclude <patterns>`       | leave these out of a copy/sync workspace (on top of .gitignore), comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)                                                                              |
+| `--gitignore`                | copy/sync workspace: leave out what .gitignore files ignore (node_modules, build output, .env...); the default                                                                                                               |
+| `--no-gitignore`             | copy/sync workspace: copy everything, ignored files included (needs --workspace)                                                                                                                                             |
+| `--no-cache`                 | do not mount the template's package caches (pnpm store, Cargo registry, ...): a clean install; see "abox cache"                                                                                                              |
+| `--net <mode>`               | network mode (choices: "none", "allowlist", "open")                                                                                                                                                                          |
+| `--allow <domains>`          | extra allowed destinations, comma separated (with --net allowlist)                                                                                                                                                           |
+| `--ttl <duration>`           | lifetime, e.g. 2h                                                                                                                                                                                                            |
+| `--cpus <n>`                 | CPU limit                                                                                                                                                                                                                    |
+| `--memory <size>`            | memory limit, e.g. 4g                                                                                                                                                                                                        |
+| `--request-id <id>`          | idempotency key: repeating the call returns the same sandbox                                                                                                                                                                 |
+| `-y, --yes`                  | confirm risky settings without asking (required when not interactive)                                                                                                                                                        |
 
 A `copy`/`sync` workspace is measured first (read-only, no file content is read); `abox create`
 prints `workspace: N files, X` and, while copying, `copying workspace ... X of Y` on stderr (not with
@@ -547,14 +548,64 @@ Stop a background process (and its children)
 
 ### `abox snapshot`
 
-`abox snapshot [options] <id> <name>`
+`abox snapshot [options] [command] <id> <name>`
 
-Take a named snapshot of a sandbox (backends that support it)
+Take a named snapshot of a sandbox (backends that support it); "snapshot ls" and "snapshot rm" list and delete them
 
 | Argument | Meaning            |
 | -------- | ------------------ |
 | `id`     | sandbox id or name |
 | `name`   | snapshot name      |
+
+A snapshot is a copy of the whole sandbox: its files, including the workspace if that lives in the
+sandbox (copy/empty modes), but not mounts, volumes or running processes. Anything the sandbox can
+read is in it, secrets that were placed inside it (inject: env / file) included. Restore it with
+"abox restore", start a new sandbox from it with "abox create --from-snapshot", free the space
+with "abox snapshot rm". A sandbox name that is "ls" or "rm" needs its id here.
+
+#### `abox snapshot ls`
+
+`abox snapshot ls|list [options] [id]`
+
+List the snapshots of a sandbox, or all of them with --all
+
+| Argument | Meaning            |
+| -------- | ------------------ |
+| `id`     | sandbox id or name |
+
+| Option      | Meaning                                                                               |
+| ----------- | ------------------------------------------------------------------------------------- |
+| `-a, --all` | every snapshot of every sandbox, also those of deleted sandboxes, with the total size |
+
+Columns: `ID` (what `restore`, `rm` and `create --from-snapshot` take), `SANDBOX` (with `--all`;
+`(deleted)` when the sandbox no longer exists), `NAME`, `SIZE` (what the snapshot adds on disk; `?`
+where the backend cannot tell), `AGE` and `CLONE` (`yes`, or why a new sandbox cannot be created from
+it: `no` for a backend that cannot, `no (holds secrets)`). `--json` prints `{snapshots: [...]}` for
+one sandbox and `{snapshots: [...], totalBytes, unreachable}` with `--all`; each snapshot has `id`,
+`name`, `createdAt`, `sizeBytes?`, `deletable`, `cloneable`, `cloneBlocked?` and, with `--all`, `host`,
+`backend`, `sandboxId`, `sandboxName?`, `template?` and `orphaned`. `--quiet` prints the ids.
+
+#### `abox snapshot rm`
+
+`abox snapshot rm|remove [options] [snapshot...]`
+
+Delete snapshots by id, or by name of one sandbox, or those of deleted sandboxes
+
+| Argument   | Meaning                                                                   |
+| ---------- | ------------------------------------------------------------------------- |
+| `snapshot` | snapshot ids from "abox snapshot ls --all" (with --sandbox: names or ids) |
+
+| Option           | Meaning                                               |
+| ---------------- | ----------------------------------------------------- |
+| `--sandbox <id>` | the sandbox whose snapshots are named (id or name)    |
+| `--orphans`      | every snapshot whose sandbox no longer exists         |
+| `-y, --yes`      | delete without asking (needed when not on a terminal) |
+
+Names what is deleted (number and size) and asks, or needs `--yes` without a terminal (exit 2).
+Only the chosen snapshots go: sandboxes stay, and a sandbox that was created from a deleted
+snapshot keeps its files. A snapshot that cannot be deleted (the backend has no way to delete one,
+the engine refuses) is reported and the exit code is 1; the others are still deleted. Human only
+(an agent has no tool for it). Every deletion is audited as `snapshot.delete`.
 
 ### `abox restore`
 
@@ -829,15 +880,15 @@ Compare the registry with the backends; with --apply, clean up leftovers
 
 `abox gc [options]`
 
-Remove expired sandboxes, stale workspaces, unused images, package caches that are old or above their cap, and old logs; with --orphans, find and remove leftovers of other abox homes
+Remove expired sandboxes, stale workspaces, unused images, package caches that are old or above their cap, snapshots of deleted sandboxes and old logs; with --orphans, find and remove leftovers of other abox homes
 
-| Option             | Meaning                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--dry-run`        | only show what would be removed                                                                                                                                                                                                                                                                                                                                                                         |
-| `--orphans`        | instead of the normal cleanup: list abox containers, networks and volumes whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted), grouped by instance; they may belong to ANOTHER abox home on this machine, so instances with running containers or anything created or started less than an hour ago are listed but skipped; nothing is removed without --yes or a confirmation |
-| `--instance <id>`  | with --orphans: only resources of this abox.instance; naming an instance also selects it when it looks active                                                                                                                                                                                                                                                                                           |
-| `--include-active` | with --orphans: also remove instances that have running containers or resources created or started less than an hour ago (probably another abox home in use); on a terminal you must type "yes"                                                                                                                                                                                                         |
-| `-y, --yes`        | with --orphans: remove the stale instances listed without asking (needed when not on a terminal)                                                                                                                                                                                                                                                                                                        |
+| Option             | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--dry-run`        | only show what would be removed                                                                                                                                                                                                                                                                                                                                                                                          |
+| `--orphans`        | instead of the normal cleanup: list abox containers, networks, volumes and snapshot images whose abox.instance is not this home (e.g. left after ABOX_HOME was deleted), grouped by instance; they may belong to ANOTHER abox home on this machine, so instances with running containers or anything created or started less than an hour ago are listed but skipped; nothing is removed without --yes or a confirmation |
+| `--instance <id>`  | with --orphans: only resources of this abox.instance; naming an instance also selects it when it looks active                                                                                                                                                                                                                                                                                                            |
+| `--include-active` | with --orphans: also remove instances that have running containers or resources created or started less than an hour ago (probably another abox home in use); on a terminal you must type "yes"                                                                                                                                                                                                                          |
+| `-y, --yes`        | with --orphans: remove the stale instances listed without asking (needed when not on a terminal)                                                                                                                                                                                                                                                                                                                         |
 
 Package caches are removed in two cases: a cache that no sandbox uses and that was last used longer
 ago than `caches.max_age` (config.yaml, default `30d`), and, for a project (per owner and host)
@@ -1166,7 +1217,13 @@ log <id> --denied", allow with "abox network allow <id> <domain>"`); with `--jso
 - **`abox shell`** needs an interactive terminal and fails with exit code 2 otherwise.
 - **`abox export`** never applies anything; see [quickstart](quickstart.md#workspace-modes).
 - **`abox snapshot` / `restore`** depend on the backend. `restore` accepts the snapshot name or its id
-  (as printed by `snapshot`); it discards everything changed since the snapshot.
+  (as printed by `snapshot`); it discards everything changed since the snapshot. **`abox snapshot ls|rm`**
+  and **`abox create --from-snapshot`** are for humans: the list with sizes and ages, the cleanup
+  (also of the snapshots of deleted sandboxes) and a new sandbox that starts with the files of a
+  snapshot. The new sandbox goes through every create check (policy, quotas, confirmations, secrets,
+  network and limits of the template and the flags); a snapshot that holds `env` / `file` secrets or was
+  taken with another template is refused, and `copy` / `sync` / `clone` workspaces are refused
+  because they would be unpacked over the snapshot's own. See [backends](backends.md#snapshots).
 - **`abox port`** is for previews: a Vite, Flutter web or `php -S` server that runs in a sandbox
   answers in your browser at `http://127.0.0.1:<port>/`. See [port forwards](security.md#port-forwards-previews)
   for what this exposes and [backends](backends.md#port-forwards) for what each backend supports.
@@ -1198,8 +1255,8 @@ log <id> --denied", allow with "abox network allow <id> <domain>"`); with `--jso
   exits 1 if it is broken. See the limits in [security](security.md#audit-log).
 - **`abox reconcile`** only reports unless you pass `--apply`; backend objects that belong to no
   sandbox in the registry are only removed with `--apply --remove-orphans`.
-- **`abox gc`** removes expired sandboxes, stale workspace directories, unused images and old logs;
-  try `--dry-run` first.
+- **`abox gc`** removes expired sandboxes, stale workspace directories, unused images, snapshots whose
+  sandbox no longer exists and old logs; try `--dry-run` first.
 - **`abox gc --orphans`** is for the case where an abox home was deleted and its containers are still
   on the engine (see [troubleshooting](troubleshooting.md#i-deleted-abox_home-and-containers-are-left)).
   Every home stamps its own instance id (`<data dir>/instance-id`) as label `abox.instance` on what it

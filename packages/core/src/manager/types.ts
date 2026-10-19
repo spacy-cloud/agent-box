@@ -283,6 +283,11 @@ export interface CreateOptions {
    * numbers behind a workspace line (bytes done / total) for surfaces that draw a bar.
    */
   onProgress?: (line: string, info?: ProgressInfo) => void;
+  /**
+   * Create the sandbox from a snapshot (human only; see `Abox.createFromSnapshot`, which is the way
+   * to set this).
+   */
+  fromSnapshot?: SnapshotSource;
 }
 
 export interface PendingApproval {
@@ -527,6 +532,57 @@ export interface SnapshotView {
   id: string;
   name: string;
   createdAt: number;
+  /** Bytes the snapshot occupies on top of the image of its sandbox; absent when the backend cannot tell. */
+  sizeBytes?: number;
+  /** The backend can delete it (`deleteSnapshots`). */
+  deletable: boolean;
+  /** `createFromSnapshot` works for it; otherwise `cloneBlocked` says why. */
+  cloneable: boolean;
+  /**
+   * Why it cannot be cloned: `backend` (this backend creates sandboxes from templates only) or
+   * `secrets` (the sandbox had secrets inside it, which a snapshot keeps, or that is not known).
+   */
+  cloneBlocked?: 'backend' | 'secrets';
+}
+
+/** One snapshot in the installation-wide list (`listAllSnapshots`). */
+export interface SnapshotEntry extends SnapshotView {
+  host: string;
+  backend: BackendKind;
+  /** The sandbox it was taken of. */
+  sandboxId: SandboxId;
+  /** Name of that sandbox while it exists. */
+  sandboxName?: string;
+  /** Template of that sandbox, when known. */
+  template?: string;
+  /** The sandbox no longer exists: nothing but this list refers to the snapshot. */
+  orphaned: boolean;
+}
+
+export interface SnapshotOverview {
+  snapshots: SnapshotEntry[];
+  /** Sum of the known sizes. */
+  totalBytes: number;
+  /** Backends that could not be asked; their snapshots are missing from the list. */
+  unreachable: Array<{ host: string; backend: BackendKind; error: string }>;
+}
+
+/** Names one snapshot for `deleteSnapshots`: the entry's `backend`, `sandboxId` and `id`. */
+export interface SnapshotRef {
+  backend: BackendKind;
+  sandboxId: SandboxId;
+  snapshotId: string;
+}
+
+export interface DeleteSnapshotsResult {
+  removed: SnapshotRef[];
+  errors: Array<{ ref: SnapshotRef; message: string; code?: string }>;
+}
+
+/** The snapshot a sandbox is created from (`createFromSnapshot`). */
+export interface SnapshotSource {
+  sandboxId: SandboxId;
+  snapshotId: string;
 }
 
 export interface PolicyRevisionSummary {
@@ -867,6 +923,15 @@ export interface GcCacheEntry {
   reason: 'age' | 'cap';
 }
 
+export interface GcSnapshotEntry {
+  host: string;
+  backend: BackendKind;
+  sandboxId: SandboxId;
+  snapshotId: string;
+  name: string;
+  sizeBytes?: number;
+}
+
 export interface GcReport {
   dryRun: boolean;
   sandboxes: SandboxId[];
@@ -874,6 +939,8 @@ export interface GcReport {
   images: GcImagesResult['removed'];
   /** Package caches removed for age or size. */
   caches: GcCacheEntry[];
+  /** Snapshots whose sandbox no longer exists. */
+  snapshots: GcSnapshotEntry[];
   logs: { files: number; bytes: number };
   approvalsExpired: number;
   errors: string[];

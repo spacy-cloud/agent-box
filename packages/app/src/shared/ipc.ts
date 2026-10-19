@@ -23,6 +23,7 @@ import {
   PORT_FORWARD_MAX_PORT,
   PORT_FORWARD_MIN_HOST_PORT,
   SANDBOX_STATES,
+  TEMPLATE_BACKENDS,
   TTY_MAX_COLS,
   TTY_MAX_INPUT,
   TTY_MAX_ROWS,
@@ -361,6 +362,35 @@ export const IPC = {
     .object({ id, name: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, 'letters, digits . _ -') })
     .strict(),
   'snapshots:restore': z.object({ id, snapshotId: z.string().min(1).max(200) }).strict(),
+  /** Every snapshot of every backend (with size and age, those of deleted sandboxes included) and their total size. */
+  'snapshots:listAll': none,
+  /** Deletes the chosen snapshots (a `backend`, `sandboxId` and `snapshotId` as listed); the sandboxes stay. */
+  'snapshots:delete': z
+    .object({
+      refs: z
+        .array(
+          z
+            .object({
+              backend: z.enum(TEMPLATE_BACKENDS),
+              sandboxId: id,
+              snapshotId: z.string().min(1).max(200),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(500),
+    })
+    .strict(),
+  /**
+   * Creates a new sandbox from a snapshot. `request` is a normal create request (template, name, overrides,
+   * `confirmed`, `progressKey`): the manager runs every create check on it; the snapshot only supplies the files.
+   */
+  'snapshots:clone': z
+    .object({
+      source: z.object({ sandboxId: id, snapshotId: z.string().min(1).max(200) }).strict(),
+      request: createRequestSchema,
+    })
+    .strict(),
 
   // -- port forwards (preview of a dev server). The preview URL is never passed by the renderer: the main
   // process looks the forward up and builds it itself, see `main/preview.ts`. ----------------------------------

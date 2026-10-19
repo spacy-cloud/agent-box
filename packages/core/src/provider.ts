@@ -16,6 +16,7 @@ import type {
   PreparedImage,
   PrepareOptions,
   ProviderCapabilities,
+  ProviderSnapshot,
   ResourceUsage,
   ResolvedTemplate,
   SandboxFilter,
@@ -110,6 +111,18 @@ export interface SandboxProvider {
 
   snapshot?(id: SandboxId, name: string): Promise<string>;
   restore?(id: SandboxId, snapshotId: string): Promise<void>;
+  /**
+   * Every snapshot this provider's installation holds, also those of sandboxes that no longer
+   * exist (the backend keeps the data, not the registry). With `sandboxId` only those of that
+   * sandbox. Newest last. Optional; absent = the manager can only list what it recorded itself.
+   */
+  listSnapshots?(opts?: { sandboxId?: SandboxId }): Promise<ProviderSnapshot[]>;
+  /**
+   * Delete one snapshot of `sandboxId`. Must refuse an id that belongs to another sandbox or
+   * installation (`not_found`); a snapshot that is already gone is not an error. Other snapshots
+   * and the sandbox itself are not touched. Optional; absent = `unsupported`.
+   */
+  deleteSnapshot?(sandboxId: SandboxId, snapshotId: string): Promise<void>;
 
   inspect(id: SandboxId): Promise<SandboxInfo>;
   list(filter?: SandboxFilter): Promise<SandboxInfo[]>;

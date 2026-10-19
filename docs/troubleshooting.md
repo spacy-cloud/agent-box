@@ -418,14 +418,15 @@ instance 9be41d7c0a2f6e58: 4 resource(s), 3 running, newest 46s ago
 Remove 3 resource(s) of 1 stale instance? (1 active instance skipped) [y/N]
 ```
 
-It lists the abox-labelled containers, networks and volumes whose `abox.instance` is not the current
+It lists the abox-labelled containers, networks, volumes and snapshot images (and the base reference of a
+sandbox that was created from a snapshot) whose `abox.instance` is not the current
 home's (or empty) and removes nothing by default. **Read the list before you remove anything:** the
 resources may belong to another abox home on this machine that is still alive (another `ABOX_HOME`, another
 user in the docker group, a CI job); abox cannot tell a lost home from a live one for certain. It guesses
 from activity: an instance with a running container, or with anything created or started less than an hour
 ago, is _active_ and is **skipped** unless you ask for it. Only _stale_ instances (nothing running, nothing
 newer than an hour) are offered for removal, and the question names exactly what goes. Objects without abox
-labels are never listed, and environment images and the shared `abox-open` / `abox-egress` networks are
+labels are never listed, and template (environment) images and the shared `abox-open` / `abox-egress` networks are
 left alone.
 
 Note what this means for the case "I deleted the home but its sandboxes are still running": that instance

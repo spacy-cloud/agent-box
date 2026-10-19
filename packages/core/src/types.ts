@@ -360,6 +360,18 @@ export interface SandboxSpec {
    * A provider without `capabilities().caches` rejects a non-empty list with `unsupported`.
    */
   caches?: CacheMount[];
+  /**
+   * Secrets are placed inside the sandbox (`inject: env` or `inject: file`, not `proxy`). A snapshot
+   * of such a sandbox contains them; the backend records that on the snapshot so a clone can be
+   * refused (see `ProviderSnapshot.carriesSecrets`).
+   */
+  secretMaterial?: boolean;
+  /**
+   * Create this sandbox from a snapshot (`SandboxProvider.listSnapshots` id) instead of from the
+   * template image: the filesystem of the snapshot, everything else (user, limits, network, labels,
+   * env, TTL, workspace mounts) from this spec. Needs `capabilities().snapshotClone`.
+   */
+  fromSnapshot?: string;
 }
 
 /** Live sandbox information, as reported by the backend (source of truth for existence). */
@@ -388,7 +400,30 @@ export interface SandboxFilter {
   template?: string;
 }
 
-export const FOREIGN_RESOURCE_KINDS = ['container', 'network', 'volume'] as const;
+/** One snapshot as the backend knows it (`SandboxProvider.listSnapshots`). */
+export interface ProviderSnapshot {
+  /** What `restore` and `deleteSnapshot` take. */
+  snapshotId: string;
+  /** The sandbox the snapshot was taken of (which may no longer exist). */
+  sandboxId: SandboxId;
+  name: string;
+  /** Epoch ms. */
+  createdAt: number;
+  /**
+   * Bytes this snapshot adds on top of the image of its sandbox (what it costs on disk); absent when
+   * the backend cannot tell.
+   */
+  sizeBytes?: number;
+  /** Name of the template of the sandbox it was taken of, when the backend recorded it. */
+  template?: string;
+  /**
+   * The sandbox had secrets (`inject: env` or `file`) inside it, so the snapshot holds them too.
+   * `undefined`: unknown (the sandbox was created before the backend recorded this).
+   */
+  carriesSecrets?: boolean;
+}
+
+export const FOREIGN_RESOURCE_KINDS = ['container', 'network', 'volume', 'image'] as const;
 export type ForeignResourceKind = (typeof FOREIGN_RESOURCE_KINDS)[number];
 
 /**
@@ -399,7 +434,11 @@ export type ForeignResourceKind = (typeof FOREIGN_RESOURCE_KINDS)[number];
  */
 export interface ForeignResource {
   kind: ForeignResourceKind;
-  /** Backend reference (engine id), passed back to `removeForeign`. */
+  /**
+   * Backend reference (engine id), passed back to `removeForeign`. Kind `image`: only snapshot images
+   * (a snapshot of a sandbox of the other installation, or the base reference of a sandbox created
+   * from one), by tag.
+   */
   ref: string;
   /** Name of the object on the engine. */
   name: string;
@@ -558,6 +597,11 @@ export interface ProviderCapabilities {
   mounts: boolean;
   snapshots: boolean;
   tty: boolean;
+  /**
+   * `SandboxSpec.fromSnapshot` creates a new sandbox from a snapshot (`abox clone`). Absent / false:
+   * a snapshot can only be restored into its own sandbox.
+   */
+  snapshotClone?: boolean;
   /**
    * `extendExpiry` can move the deadline of a live sandbox (`abox extend`, `access_request`
    * kind=ttl). Absent / false: the deadline is fixed at creation and extending is `unsupported`.

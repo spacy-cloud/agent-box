@@ -133,6 +133,32 @@ export function makeExcludeFilter(
 }
 
 /**
+ * Bytes of the files below `dir` (symlinks count as their own size, nothing is followed), or `undefined`
+ * when the tree has more than `maxEntries` entries: a size that is only a guess is not reported.
+ */
+export async function treeBytes(dir: string, maxEntries = 200_000): Promise<number | undefined> {
+  let bytes = 0;
+  let seen = 0;
+  const pending = [dir];
+  while (pending.length > 0) {
+    const d = pending.pop() as string;
+    let names;
+    try {
+      names = await readdir(d, { withFileTypes: true });
+    } catch {
+      continue; // unreadable (the sandbox made it so): what we can read is counted
+    }
+    for (const e of names) {
+      if (++seen > maxEntries) return undefined;
+      const p = join(d, e.name);
+      if (e.isDirectory()) pending.push(p);
+      else bytes += (await lstat(p).catch(() => undefined))?.size ?? 0;
+    }
+  }
+  return bytes;
+}
+
+/**
  * Recursive copy that never follows symlinks (they are copied verbatim as symlinks),
  * merges into existing directories and preserves modes and timestamps.
  */

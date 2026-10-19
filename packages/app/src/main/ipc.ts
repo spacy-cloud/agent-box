@@ -76,6 +76,8 @@ const WRITE_CHANNELS = new Set<IpcChannel>([
   'network:allow',
   'snapshots:create',
   'snapshots:restore',
+  'snapshots:delete',
+  'snapshots:clone',
   'ports:add',
   'ports:remove',
   'approvals:approve',

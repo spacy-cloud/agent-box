@@ -33,6 +33,11 @@ export const LABEL = {
   workspaceKind: 'abox.workspace-kind',
   snapshotOf: 'abox.snapshot-of',
   snapshotName: 'abox.snapshot-name',
+  /**
+   * `1` when secrets (`inject: env` / `file`) were placed inside the sandbox, `0` when not; absent on
+   * sandboxes created before this was recorded. Snapshots inherit it from their container.
+   */
+  secretMaterial: 'abox.secret-material',
   /** `1` when spec files for the /tmp tmpfs are stashed and copied there on every start. */
   tmpFiles: 'abox.tmp-files',
   /** Key of a package cache volume (`abox.role=cache`); see `caches.ts` for the other cache labels. */
@@ -94,6 +99,13 @@ export const forwardName = (short: string, sandboxPort: number): string =>
   `abox-fwd-${short}-${sandboxPort}`;
 export const internalNetName = (short: string): string => `abox-int-${short}`;
 export const snapshotRepo = (short: string): string => `abox-snap/${short}`;
+/**
+ * A second reference to the image a sandbox's container was created from when that is a snapshot
+ * (restore, clone). The engine refuses to remove the last tag of an image a container uses, so
+ * without it a snapshot could not be deleted while a sandbox stands on it, and removing the sandbox
+ * a snapshot was taken of would leave the image behind as soon as a clone exists.
+ */
+export const snapshotBaseRepo = (short: string): string => `abox-snap-base/${short}`;
 
 /** Make an arbitrary template name usable as an image repository component. */
 export function imageRepoName(name: string): string {

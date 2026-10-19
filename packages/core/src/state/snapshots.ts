@@ -53,6 +53,25 @@ export class Snapshots {
       .map(toSnapshot);
   }
 
+  /** Every recorded snapshot of every sandbox, oldest first. */
+  listAll(): SnapshotRecord[] {
+    return this.ctx.db
+      .prepare('SELECT * FROM snapshots ORDER BY created_at, rowid')
+      .all()
+      .map(toSnapshot);
+  }
+
+  /** Forget one snapshot (it was deleted). */
+  delete(sandboxId: string, snapshotId: string): boolean {
+    return (
+      num(
+        this.ctx.db
+          .prepare('DELETE FROM snapshots WHERE sandbox_id = ? AND snapshot_id = ?')
+          .run(sandboxId, snapshotId).changes,
+      ) > 0
+    );
+  }
+
   /** Forget all snapshots of a sandbox (it was removed). */
   deleteAll(sandboxId: string): number {
     return num(

@@ -10,6 +10,24 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Snapshots in the GUI and a new sandbox from a snapshot (closes #28): the **Snapshots** tab of a sandbox lists
+  its snapshots with size and age and offers **Restore** (confirmed), **Clone** and **Delete** (confirmed);
+  **Settings, Snapshots** lists every snapshot of every backend with the total size, marks those of deleted
+  sandboxes and deletes a selection. `abox snapshot ls [<sandbox>|--all]`, `abox snapshot rm <id>…|--sandbox <s>
+<name>…|--orphans` (human only, audited as `snapshot.delete`) and `abox create --from-snapshot <id|sandbox:name>`
+  do the same on the command line; `Abox.listAllSnapshots`, `deleteSnapshots` and `createFromSnapshot` are the
+  manager calls (optional provider methods `listSnapshots` / `deleteSnapshot`, capability `snapshotClone`; Docker
+  and Podman implement all three, the Python and process backends list and delete, the VM backend keeps the
+  recorded list and cannot delete). A new sandbox from a snapshot is an ordinary create: template, policy, quotas, confirmations,
+  network, limits, secrets and TTL come from the request and the template, never from the snapshot, which only
+  supplies the files. It is refused for a snapshot taken with another template, for one that holds `inject: env` /
+  `file` secrets (the backend now records that on every sandbox and snapshot; unknown counts as holding them)
+  and for a `copy`/`sync`/`clone` workspace; the environment, labels and deadline the snapshot carried from its
+  sandbox are reset. The Docker backend gives a restored or cloned sandbox a base reference of its own
+  (`abox-snap-base/…`), so a snapshot (or the sandbox it came from) can be deleted without breaking a sandbox
+  that stands on it. `abox gc` removes the snapshots of sandboxes that no longer exist (`snapshots` in the
+  report), and `abox gc --orphans` now also finds the snapshot images of an abox home whose data directory was
+  deleted. The Snapshots tab's name field no longer logs an invalid-pattern error.
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):

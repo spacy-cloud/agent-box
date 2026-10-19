@@ -46,10 +46,10 @@ import {
   copyOut,
   getPolicyRevision,
   listPolicyRevisions,
-  listSnapshots,
   sandboxLogs,
 } from './interactive.js';
 import { listCaches, removeCaches } from './caches.js';
+import { deleteSnapshots, listAllSnapshots, listSnapshots } from './snapshots.js';
 import { estimateFit, hostCapacity } from './capacity.js';
 import { estimateWorkspace } from './estimate.js';
 import { allowNetwork, networkLog, proposeNetworkPolicy } from './network-log.js';
@@ -129,7 +129,11 @@ import type {
   SandboxStatsResult,
   SandboxView,
   SetPolicyResult,
+  SnapshotRef,
+  SnapshotSource,
+  SnapshotOverview,
   SnapshotView,
+  DeleteSnapshotsResult,
   StartProcessResult,
   TemplateDetails,
   TemplateList,
@@ -431,9 +435,45 @@ export class Abox {
   restore(caller: Caller, id: string, snapshotId: string): Promise<{ restored: string }> {
     return restoreSandbox(this.I, caller, id, snapshotId);
   }
-  /** Snapshots taken through `snapshot`, oldest first (owner or human). */
+  /**
+   * Snapshots of one sandbox, oldest first, with size and what can be done with each (owner or
+   * human). The size comes from the backend when it can tell.
+   */
   listSnapshots(caller: Caller, id: string): Promise<SnapshotView[]> {
     return listSnapshots(this.I, caller, id);
+  }
+  /**
+   * Human only. Every snapshot the backends hold, with size and age, those of sandboxes that no
+   * longer exist included (`orphaned`), and the total size.
+   */
+  listAllSnapshots(caller: Caller): Promise<SnapshotOverview> {
+    return listAllSnapshots(this.I, caller);
+  }
+  /**
+   * Human only. Delete snapshots by the `backend`, `sandboxId` and `id` of their entries. The
+   * sandboxes stay. A snapshot that cannot be deleted is reported without stopping the others.
+   */
+  deleteSnapshots(caller: Caller, refs: SnapshotRef[]): Promise<DeleteSnapshotsResult> {
+    return deleteSnapshots(this.I, caller, refs);
+  }
+  /**
+   * Human only. Create a new sandbox whose filesystem is a snapshot's: the same checks, policy,
+   * approvals, limits, network and secrets as `create`, with the template, the workspace (default
+   * `empty`: the workspace is what the snapshot holds) and overrides of `req`. Refused for a
+   * snapshot that holds secrets or was taken with another template. See docs/backends.md.
+   */
+  createFromSnapshot(
+    caller: Caller,
+    source: SnapshotSource,
+    req: CreateSandboxRequest,
+    opts: CreateOptions = {},
+  ): Promise<CreateResult> {
+    return createSandbox(
+      this.I,
+      caller,
+      { ...req, workspace: { ...req.workspace, mode: req.workspace?.mode ?? 'empty' } },
+      { ...opts, fromSnapshot: source },
+    );
   }
   /**
    * Human only. Interactive terminal in a running sandbox; the audit log gets `sandbox.attach` and

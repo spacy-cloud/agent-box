@@ -98,7 +98,8 @@ and tested with abox, so the `hardened` level itself is untested.
 - Disk limits need xfs with project quotas, btrfs or zfs. On `overlayfs` a template with
   `resources.disk` is rejected as `unsupported`.
 - Snapshots commit the container layer to an image `abox-snap/<id>:<name>`; volumes, tmpfs and
-  bind mounts are not part of a snapshot, and snapshots do not work with a read-only root.
+  bind mounts are not part of a snapshot, and snapshots do not work with a read-only root. See
+  [Snapshots](#snapshots) below for what one contains and what a new sandbox made from it gets.
 - **Package caches** are named volumes `abox-cache-<instance>-<key>` (labels `abox.managed`,
   `abox.role=cache`, `abox.instance`, `abox.cache=<key>`, plus project, template, cache name and
   owner), created on first use, mounted read-write at the paths the template declares and kept when
@@ -165,6 +166,73 @@ export ABOX_TEST_DOCKER=1 ABOX_TEST_ENGINE_SOCKET=$XDG_RUNTIME_DIR/podman/podman
 ABOX_TEST_ENGINE=podman npx vitest run packages/backend-docker --no-file-parallelism
 npx vitest run packages/e2e/src/contract-docker.test.ts packages/e2e/src/security.test.ts --no-file-parallelism
 ```
+
+### Snapshots
+
+A snapshot is `docker commit` of the sandbox container: a **copy of its whole filesystem layer**,
+labelled with the sandbox, the template, the user and the workspace path. That makes it useful as a
+starting point (a sandbox after `pnpm install`), and it decides what a snapshot contains:
+
+- **In it:** everything the sandbox changed in its filesystem since it was created, the workspace
+  when it was copied in (`copy`, `sync`, `clone`) or empty (`empty`), installed packages, caches
+  written to the home directory, build output.
+- **Not in it:** bind mounts (the `mount` and `worktree` workspaces, extra `mounts:`), package cache
+  volumes, the `/tmp` tmpfs, running processes and memory. A sandbox with a read-only root cannot be
+  snapshotted at all.
+- **Secrets that were placed inside the sandbox are in it.** `inject: env` secrets are part of the
+  container's environment, which the committed image keeps, and `inject: file` secrets are files.
+  `inject: proxy` secrets never enter the sandbox and are not in a snapshot. abox records on every
+  sandbox (label `abox.secret-material`) whether it got env or file secrets, and the snapshot
+  inherits it. For a sandbox from before that was recorded, the registry says what it was created
+  with.
+
+`abox snapshot`, the GUI **Snapshots** tab and `sandbox_snapshot` (agents, for their own sandboxes)
+create one; `abox restore` puts a sandbox back to it. Listing all snapshots with their size and age
+(`abox snapshot ls --all`, Settings in the GUI) and deleting them (`abox snapshot rm`) are human
+actions; so is creating a sandbox from one.
+
+**The size** shown is the layer the snapshot added on top of the sandbox's image (the history entry
+of the commit), i.e. what deleting it frees. Every snapshot of a sandbox holds everything the
+container changed since it was created, so a later snapshot is at least as big as an earlier one and
+the sizes can simply be added up. The image of the template is shared and not counted.
+
+**Creating a sandbox from a snapshot** (`abox create --from-snapshot`, **Clone** in the GUI) is a
+normal create: template resolution, trust, policy (`evaluateCreate`), approvals and confirmations,
+the owner and host quotas, secret injection and the audit entry `sandbox.create` (with
+`fromSnapshot`) all apply, and the **network, resource limits, user, labels, TTL and mounts come
+from the new request and the template, never from the snapshot**. Only the filesystem comes from the
+snapshot. Details:
+
+- The sandbox is created from the image of the snapshot instead of the template image. The template
+  image is still prepared (a cached image costs nothing), and the template must be the one the
+  snapshot was taken with (same name, user and workspace path), because the files only fit that.
+- The workspace is whatever the snapshot holds. Workspace mode `empty` (the default of the create
+  commands in this case) keeps it; `mount` / `worktree` put a host folder over it. A `copy`,
+  `sync` or `clone` workspace is refused: it would be unpacked on top of the files the snapshot
+  already has, which is neither a fresh workspace nor the snapshot.
+- Environment variables and labels the snapshot carried from its sandbox (the proxy address, the
+  stash of `/tmp` files, the old snapshot labels) are emptied unless the new sandbox sets them
+  itself. A deadline that `abox extend` had written into the snapshot is reset, so the TTL is the one
+  of the new request.
+- **A snapshot that holds secrets (see above) is refused**, and so is one where that is not known
+  and the registry cannot tell. A new sandbox gets its secrets from its own template and policy
+  only; copying them along would hand them to a sandbox the policy never granted them to.
+- Only humans can do it (the GUI, the CLI); `sandbox_create` has no way to name a snapshot. Docker
+  and Podman support it; the Python, process and VM backends do not.
+
+The new sandbox stands on a second reference to the image (`abox-snap-base/<id>:base`), not on the
+snapshot's own tag. That is why deleting a snapshot, or the sandbox it was taken of, never touches a
+sandbox that was created from it: the files stay until that sandbox is deleted. The same reference
+is used after `restore`, so the snapshot a sandbox was restored from can be deleted too.
+
+**Deleting snapshots** removes the image tag; the layers go with the last reference. Removing a
+sandbox removes all its snapshots. A snapshot whose sandbox is gone anyway (an engine that was down
+at that moment, say) is an _orphan_: it shows up in the global list marked "sandbox deleted", can be
+selected and deleted there, and `abox gc` removes it. Snapshot images of another abox home (its data
+directory was deleted) are found by `abox gc --orphans`. The process backend keeps
+them as directories next to the sandbox and can list (with a size) and delete them, but not create a
+sandbox from one. The VM backend keeps snapshots in the sandbox's disk image and has no way to
+delete one; it is listed from the manager's record, without a size.
 
 ## Python
 

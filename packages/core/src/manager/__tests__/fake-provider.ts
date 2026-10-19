@@ -34,6 +34,17 @@ interface FakeSandbox {
   snapshots: Map<string, Map<string, Buffer>>;
 }
 
+export interface FakeSnapshot {
+  snapshotId: string;
+  sandboxId: SandboxId;
+  name: string;
+  createdAt: number;
+  sizeBytes: number;
+  template: string;
+  carriesSecrets?: boolean;
+  files: Map<string, Buffer>;
+}
+
 export interface FakeOptions {
   kind?: SandboxProvider['kind'];
   capabilities?: Partial<ProviderCapabilities>;
@@ -67,6 +78,13 @@ export interface FakeOptions {
   portForward?: boolean | NetworkMode[];
   /** Provide `hostResources` (cpus and memory of the machine the engine runs on). */
   hostResources?: { cpus: number; memoryBytes: number };
+  /**
+   * Needs `capabilities.snapshots`. Provides `listSnapshots` / `deleteSnapshot` and creating from a
+   * snapshot (`snapshotClone`), like the container backends.
+   */
+  snapshotManagement?: boolean;
+  /** Snapshots survive `remove` (what a real engine does when it cannot delete an image in use). */
+  keepSnapshotsOnRemove?: boolean;
   failCreate?: boolean;
   failStart?: boolean;
   failPrepare?: boolean;
@@ -99,6 +117,9 @@ export class FakeProvider implements SandboxProvider {
   readonly cacheVolumes = new Map<string, Omit<CacheVolume, 'inUse' | 'sizeBytes'>>();
   readonly cacheSizes = new Map<string, number>();
   readonly cacheRemoved: string[] = [];
+  /** Snapshots by id (the data of `snapshot`, also kept after `remove` with `keepSnapshotsOnRemove`). */
+  readonly snapshotStore = new Map<string, FakeSnapshot>();
+  readonly snapshotDeleted: string[] = [];
   /** Egress events the fake proxy "recorded" per sandbox (`networkEvents` returns those with `ts >= since`). */
   readonly netEvents = new Map<SandboxId, NetworkEvent[]>();
   readonly networkEventCalls: Array<{ id: SandboxId; sinceTs: number | undefined }> = [];
@@ -124,6 +145,8 @@ export class FakeProvider implements SandboxProvider {
   hostResourcesCalls = 0;
   snapshot?: SandboxProvider['snapshot'];
   restore?: SandboxProvider['restore'];
+  listSnapshots?: SandboxProvider['listSnapshots'];
+  deleteSnapshot?: SandboxProvider['deleteSnapshot'];
   networkEvents?: SandboxProvider['networkEvents'];
   logs?: SandboxProvider['logs'];
   listForeign?: SandboxProvider['listForeign'];
@@ -309,8 +332,39 @@ export class FakeProvider implements SandboxProvider {
         // like the Docker backend: the id is not the name
         const snapshotId = `snap-${++this.snapCounter}-${name}`;
         sb.snapshots.set(snapshotId, new Map(sb.files));
+        this.snapshotStore.set(snapshotId, {
+          snapshotId,
+          sandboxId: id,
+          name,
+          createdAt: this.now(),
+          sizeBytes: [...sb.files.values()].reduce((n, b) => n + b.length, 0),
+          template: sb.spec.template.name,
+          ...(sb.spec.secretMaterial !== undefined
+            ? { carriesSecrets: sb.spec.secretMaterial }
+            : {}),
+          files: new Map(sb.files),
+        });
         return Promise.resolve(snapshotId);
       };
+      if (opts.snapshotManagement) {
+        this.caps.snapshotClone = true;
+        this.listSnapshots = (o) =>
+          Promise.resolve(
+            [...this.snapshotStore.values()]
+              .filter((s) => o?.sandboxId === undefined || s.sandboxId === o.sandboxId)
+              .map(({ files: _f, ...s }) => ({ ...s })),
+          );
+        this.deleteSnapshot = (sandboxId, snapshotId) => {
+          const s = this.snapshotStore.get(snapshotId);
+          if (!s) return Promise.resolve();
+          if (s.sandboxId !== sandboxId)
+            return Promise.reject(new AboxError('not_found', `unknown snapshot ${snapshotId}`));
+          this.snapshotStore.delete(snapshotId);
+          this.sandboxes.get(sandboxId)?.snapshots.delete(snapshotId);
+          this.snapshotDeleted.push(snapshotId);
+          return Promise.resolve();
+        };
+      }
       this.restore = (id, snap) => {
         const sb = this.get(id);
         const s = sb.snapshots.get(snap);
@@ -383,7 +437,15 @@ export class FakeProvider implements SandboxProvider {
           createdAt: this.now(),
           engine: 'docker',
         });
-    this.sandboxes.set(spec.id, { spec, state: 'created', files: new Map(), snapshots: new Map() });
+    const from = spec.fromSnapshot ? this.snapshotStore.get(spec.fromSnapshot) : undefined;
+    if (spec.fromSnapshot && !from)
+      return Promise.reject(new AboxError('not_found', `unknown snapshot ${spec.fromSnapshot}`));
+    this.sandboxes.set(spec.id, {
+      spec,
+      state: 'created',
+      files: new Map(from?.files),
+      snapshots: new Map(),
+    });
     return Promise.resolve(this.info(this.get(spec.id)));
   }
 
@@ -405,6 +467,8 @@ export class FakeProvider implements SandboxProvider {
 
   remove(id: SandboxId): Promise<void> {
     this.sandboxes.delete(id);
+    if (!this.opts.keepSnapshotsOnRemove)
+      for (const [k, v] of this.snapshotStore) if (v.sandboxId === id) this.snapshotStore.delete(k);
     this.portForwards.delete(id);
     return Promise.resolve();
   }

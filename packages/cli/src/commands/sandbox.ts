@@ -24,7 +24,7 @@ import {
   renderTable,
   safe,
 } from '../format.js';
-import { resolveSandboxId } from '../ids.js';
+import { resolveSandboxId, resolveSnapshot } from '../ids.js';
 import { commaList, durationMs, invalid, positiveNumber, sizeBytes } from '../parse.js';
 import { reviewLines } from '../review.js';
 
@@ -101,6 +101,10 @@ export function registerSandbox(program: Command, cli: Cli): void {
     )
     .option('--name <name>', 'sandbox name')
     .option(
+      '--from-snapshot <snapshot>',
+      'start from the files of a snapshot (an id from "abox snapshot ls --all", or <sandbox>:<name>): its template is the default, the workspace stays as the snapshot has it; network, limits and policy are those of this command',
+    )
+    .option(
       '-w, --workspace <path>',
       'host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared',
     )
@@ -142,6 +146,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
         templateArg: string | undefined,
         o: {
           name?: string;
+          fromSnapshot?: string;
           workspace?: string;
           mode?: WorkspaceMode;
           ref?: string;
@@ -158,7 +163,10 @@ export function registerSandbox(program: Command, cli: Cli): void {
         },
       ) => {
         const rt = await cli.rt();
-        const template = templateArg ?? rt.abox.config.defaults.template;
+        const fromSnapshot = o.fromSnapshot
+          ? await resolveSnapshot(cli, o.fromSnapshot)
+          : undefined;
+        const template = templateArg ?? fromSnapshot?.template ?? rt.abox.config.defaults.template;
         if (!template) {
           throw invalid(
             'no template given',
@@ -219,11 +227,17 @@ export function registerSandbox(program: Command, cli: Cli): void {
         const signal = cli.abortSignal();
         const started = Date.now();
         const r = await cli.confirmed(
-          (caller) =>
-            rt.abox.createSandbox(caller, req, {
-              signal,
-              onProgress: (line) => cli.info(`  ${safe(line)}`),
-            }),
+          (caller) => {
+            const opts = { signal, onProgress: (line: string) => cli.info(`  ${safe(line)}`) };
+            return fromSnapshot
+              ? rt.abox.createFromSnapshot(
+                  caller,
+                  { sandboxId: fromSnapshot.sandboxId, snapshotId: fromSnapshot.id },
+                  req,
+                  opts,
+                )
+              : rt.abox.createSandbox(caller, req, opts);
+          },
           {
             yes: o.yes,
             // A project template is foreign input: show what it does before the human trusts it.
@@ -248,7 +262,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
         cli.success(
           { ...r, durationMs: elapsed, ...(estimate ? { estimate } : {}) },
           () =>
-            `created ${r.sandbox.id}${r.sandbox.name ? ` (${safe(r.sandbox.name)})` : ''} from ${safe(r.sandbox.template)} in ${formatDuration(elapsed)}${r.idempotent ? ' (already existed)' : ''}\n` +
+            `created ${r.sandbox.id}${r.sandbox.name ? ` (${safe(r.sandbox.name)})` : ''} from ${safe(r.sandbox.template)}${fromSnapshot ? ` (snapshot ${safe(fromSnapshot.name)})` : ''} in ${formatDuration(elapsed)}${r.idempotent ? ' (already existed)' : ''}\n` +
             `  state ${r.sandbox.state}, network ${r.sandbox.network.mode}, expires in ${formatDuration(r.sandbox.ttlRemainingMs)}\n` +
             `  next: abox exec ${r.sandbox.id} -- <command>   |   abox shell ${r.sandbox.id}`,
           () => r.sandbox.id,
