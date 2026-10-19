@@ -74,6 +74,7 @@ describe('handlers pass the canonical project folder to the manager, as the huma
       showTemplate: rec('showTemplate'),
       reviewTemplate: rec('reviewTemplate'),
       createSandbox: rec('createSandbox', { status: 'created' }),
+      suggestTemplate: rec('suggestTemplate', { primary: null }),
     };
     const handlers = createManagerHandlers({ abox: abox as unknown as Abox, paths: {} as never });
     return { handlers, calls };
@@ -103,6 +104,19 @@ describe('handlers pass the canonical project folder to the manager, as the huma
       [human, 'p', { workspacePath: '/w', projectDir: project }],
       [{ contextId: 'human' }, { template: 'p', projectDir: project }, expect.anything()],
     ]);
+  });
+
+  it('templates:suggest asks as the human about the canonical folder, and only for a folder that passes the checks', async () => {
+    const { handlers, calls } = build();
+    await handlers['templates:suggest']({ path: join(root, 'link') }, {});
+    expect(calls.map((c) => c.args)).toEqual([[human, { path: project }]]);
+    await expect(
+      handlers['templates:suggest']({ path: join(root, 'missing') }, {}),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+    await expect(handlers['templates:suggest']({ path: 'relative' }, {})).rejects.toMatchObject({
+      code: 'invalid_input',
+    });
+    expect(calls).toHaveLength(1);
   });
 
   it('a folder the checks refuse never reaches the manager', async () => {

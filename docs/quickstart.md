@@ -193,6 +193,11 @@ $ abox export try1 --format branch       # creates the branch abox/<id>-export i
 $ abox rm -f try1
 ```
 
+Not sure which template fits the project? `abox create --auto --workspace .` picks it from the project
+(`package.json` gives `node-dev`, `Cargo.toml` `rust-dev`, ...; a `.sandbox/*.yaml` of the project wins) and
+says which and why; `abox template suggest` only prints the suggestion. See
+[templates](templates.md#choosing-a-template-for-a-project).
+
 Export formats:
 
 | Format   | Result                                                                                                                   |

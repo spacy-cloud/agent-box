@@ -9,6 +9,7 @@ import {
   type CreateSandboxRequest,
   type FitEstimate,
   type ResourceUsage,
+  type TemplateSuggestion,
   type SandboxState,
   type SandboxView,
   type WorkspaceMode,
@@ -91,6 +92,36 @@ async function estimateBeforeCreate(
   }
 }
 
+/**
+ * The template `create --auto` takes for `dir`, and why. Fails clearly when nothing matches (or the only matches
+ * are templates that do not exist or that the policy does not allow): a guess would be a wrong sandbox.
+ */
+async function autoTemplate(
+  rt: Awaited<ReturnType<Cli['rt']>>,
+  cli: Cli,
+  dir: string,
+): Promise<{ template: string; suggestion: TemplateSuggestion }> {
+  const suggestion = await rt.abox.suggestTemplate(cli.caller(), { path: dir });
+  const primary = suggestion.primary;
+  if (!primary) {
+    const left = suggestion.skipped.map(
+      (x) =>
+        `${x.template} (${x.files.join(', ')}; ${x.why === 'not_allowed' ? 'not allowed by the policy' : 'no such template'})`,
+    );
+    throw new AboxError(
+      'not_found',
+      `--auto found no template for ${safe(suggestion.path)}${left.length > 0 ? `; matched but unusable: ${left.join('; ')}` : ': no known marker file (package.json, Cargo.toml, pubspec.yaml, pyproject.toml, composer.json, ...) and no .sandbox/*.yaml'}`,
+      { hint: 'Name the template ("abox template ls" lists them) or add a .sandbox/<name>.yaml.' },
+    );
+  }
+  cli.info(
+    `auto: using template ${safe(primary.template)} for ${safe(suggestion.path)}: ${safe(primary.reason)}`,
+  );
+  if (suggestion.alternatives.length > 0)
+    cli.info(`  also possible: ${suggestion.alternatives.map((a) => safe(a.template)).join(', ')}`);
+  return { template: primary.template, suggestion };
+}
+
 export function registerSandbox(program: Command, cli: Cli): void {
   program
     .command('create')
@@ -98,6 +129,10 @@ export function registerSandbox(program: Command, cli: Cli): void {
     .argument(
       '[template]',
       'template name (see "abox template ls"); default: defaults.template of config.yaml',
+    )
+    .option(
+      '--auto',
+      'pick the template from the project: its .sandbox/*.yaml first, else marker files (package.json, Cargo.toml, ...) in --workspace (default: the project directory); says which and why',
     )
     .option('--name <name>', 'sandbox name')
     .option(
@@ -141,6 +176,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
       async (
         templateArg: string | undefined,
         o: {
+          auto?: boolean;
           name?: string;
           workspace?: string;
           mode?: WorkspaceMode;
@@ -158,11 +194,25 @@ export function registerSandbox(program: Command, cli: Cli): void {
         },
       ) => {
         const rt = await cli.rt();
-        const template = templateArg ?? rt.abox.config.defaults.template;
+        if (o.auto && templateArg) {
+          throw invalid(
+            '--auto and a template name exclude each other',
+            'Either name the template, or let --auto pick it from the project.',
+          );
+        }
+        // The folder to look at is the one that is shared (-w), else the project directory; sharing stays opt-in.
+        const auto = o.auto
+          ? await autoTemplate(
+              rt,
+              cli,
+              o.workspace ? cli.resolvePath(o.workspace) : cli.projectDir(),
+            )
+          : undefined;
+        const template = auto?.template ?? templateArg ?? rt.abox.config.defaults.template;
         if (!template) {
           throw invalid(
             'no template given',
-            'Pass a template ("abox template ls" lists them), or set defaults.template in config.yaml.',
+            'Pass a template ("abox template ls" lists them), use --auto, or set defaults.template in config.yaml.',
           );
         }
         const network: NonNullable<NonNullable<CreateSandboxRequest['overrides']>['network']> = {};
@@ -246,7 +296,12 @@ export function registerSandbox(program: Command, cli: Cli): void {
         const elapsed = Date.now() - started;
         for (const w of r.warnings) cli.warn(safe(w));
         cli.success(
-          { ...r, durationMs: elapsed, ...(estimate ? { estimate } : {}) },
+          {
+            ...r,
+            durationMs: elapsed,
+            ...(estimate ? { estimate } : {}),
+            ...(auto ? { auto: auto.suggestion } : {}),
+          },
           () =>
             `created ${r.sandbox.id}${r.sandbox.name ? ` (${safe(r.sandbox.name)})` : ''} from ${safe(r.sandbox.template)} in ${formatDuration(elapsed)}${r.idempotent ? ' (already existed)' : ''}\n` +
             `  state ${r.sandbox.state}, network ${r.sandbox.network.mode}, expires in ${formatDuration(r.sandbox.ttlRemainingMs)}\n` +
