@@ -58,7 +58,13 @@ export function FileTree(props: {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set(['']));
   const [active, setActive] = useState('');
   const refs = useRef(new Map<string, HTMLElement>());
-  const wantFocus = useRef(false);
+  /**
+   * Asks for DOM focus on a row (a key moved the selection). It is state, not a ref flag: a flag was read by
+   * whichever effect ran next, and a passive effect that was still pending from the render before (the folder
+   * listing had just arrived) ran first with the old selection, used the flag up and focused the old row.
+   * A new object per request, so each one is carried out exactly once, by the render that made it.
+   */
+  const [focusReq, setFocusReq] = useState<{ path: string } | null>(null);
   const loadRef = useRef(load);
   loadRef.current = load;
   const seq = useRef(0);
@@ -140,17 +146,15 @@ export function FileTree(props: {
   const select = useCallback(
     (path: string, entry: DirEntry | null, focus: boolean) => {
       setActive(path);
-      wantFocus.current = focus;
+      if (focus) setFocusReq({ path });
       onSelect({ path, entry });
     },
     [onSelect],
   );
 
   useEffect(() => {
-    if (!wantFocus.current) return;
-    wantFocus.current = false;
-    refs.current.get(active)?.focus();
-  }, [active, rows]);
+    if (focusReq) refs.current.get(focusReq.path)?.focus();
+  }, [focusReq]);
 
   function expand(path: string) {
     setOpen((o) => new Set(o).add(path));

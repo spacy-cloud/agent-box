@@ -90,6 +90,27 @@ describe('FileTree', () => {
     expect(stops).toHaveLength(1);
   });
 
+  it('a key pressed the moment a folder listing is drawn still moves the focus', async () => {
+    // The listing is committed first and its passive effects run a task later. A key that arrives in between
+    // (a fast typist, a slow machine) used to have its focus request taken by that stale effect, which focused
+    // the old row: the new one was selected (aria-selected, tab stop) but not focused.
+    mount();
+    await screen.findByRole('treeitem', { name: /README.md/ });
+    const tree = screen.getByRole('tree');
+    let pressed = false;
+    const observer = new MutationObserver(() => {
+      if (pressed || !screen.queryByRole('treeitem', { name: /main.ts/ })) return;
+      pressed = true;
+      observer.disconnect();
+      fireEvent.keyDown(tree, { key: 'ArrowRight' }); // into the folder that has just been listed
+    });
+    observer.observe(tree, { childList: true, subtree: true });
+    fireEvent.click(item(/^src\//));
+    await waitFor(() => expect(pressed).toBe(true));
+    await waitFor(() => expect(item(/^lib\//).getAttribute('aria-selected')).toBe('true'));
+    await waitFor(() => expect(document.activeElement).toBe(item(/^lib\//)));
+  });
+
   it('works with the keyboard: arrows move, Right opens and enters, Left leaves and closes, Home/End jump', async () => {
     const { onSelect } = mount();
     await screen.findByRole('treeitem', { name: /README.md/ });
