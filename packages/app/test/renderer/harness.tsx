@@ -14,6 +14,7 @@ export const INFO: AppInfo = {
   trayAvailable: false,
   notificationsAvailable: false,
   closeToTray: false,
+  notifications: { approvals: true, expiring: true, failed: true },
   managerError: null,
 };
 

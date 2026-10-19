@@ -50,6 +50,7 @@ import type {
   SandboxPortForward,
 } from '@abox/core';
 import type { EventChannel, EventPayloads, IpcChannel, IpcInput, IpcResult, Locale } from './ipc';
+import type { NotificationPrefs } from './constants';
 
 export type {
   AccessApplied,
@@ -110,6 +111,8 @@ export interface AppInfo {
   notificationsAvailable: boolean;
   /** Setting: closing the window hides it to the tray instead of quitting (default off). */
   closeToTray: boolean;
+  /** Setting: which kinds of desktop notification are on (default: all). */
+  notifications: NotificationPrefs;
   /** The manager could not be opened (message shown by the start screen). */
   managerError: string | null;
 }
@@ -337,7 +340,7 @@ export interface Outputs {
   'app:info': AppInfo;
   'app:setLocale': void;
   'app:copy': void;
-  'app:settings': { closeToTray: boolean };
+  'app:settings': { closeToTray: boolean; notifications: NotificationPrefs };
   'dialog:pickDirectory': string | null;
   'askpass:answer': void;
   'sandboxes:list': SandboxList;

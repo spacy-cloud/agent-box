@@ -39,13 +39,13 @@ it).
 | **Approvals**      | the queue of requests from agents, see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Audit**          | the audit log with filters (time, actor, sandbox, action, decision), verification of the hash chain and export as JSON Lines.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Policy**         | the profiles and agent contexts in force as cards (isolation `none` in red), an editor with a **form** for profiles and limits next to the **YAML** text, live validation by the manager, a diff and a confirmation before saving, and the revision history. See [The Policy view](#the-policy-view).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **Settings**       | language, closing the window to the tray (optional), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **package caches** (see [Package caches](#package-caches)), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Settings**       | language, closing the window to the tray (optional), **which desktop notifications** are sent (see [Notifications and the tray](#notifications-and-the-tray)), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **package caches** (see [Package caches](#package-caches)), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ## Approvals
 
 Pending requests appear in the **Approvals** view, in a count on the navigation entry, in the tray
-icon and as a desktop notification (where the desktop supports a tray and notifications; without
-them the count in the window remains). A request shows:
+icon and as a desktop notification (see [Notifications and the tray](#notifications-and-the-tray);
+without a tray or notifications the count in the window remains). A request shows:
 
 - who asks (the agent context), what kind of request it is (create, run command, extend access,
   trust a template, forward a port, a base image from a registry the profile does not list) and when it expires. A
@@ -105,6 +105,48 @@ The same review appears in two more places: in the **New sandbox** confirmation 
 is an untrusted project template (it is shown before anything is created, together with the base
 image when that lies outside the allowed registries), and as **Review …** in the Templates view for
 a project template. Looking at a review never trusts anything.
+
+## Notifications and the tray
+
+While the app runs, it can tell you about three things with a desktop notification (freedesktop
+notifications on Linux, through Electron). Each kind has its own switch in **Settings**
+("Benachrichtigungen" / "Notifications"), all on by default, saved per user in the GUI settings:
+
+| Kind                      | When                                                                                                                                                                                                                                             | A click opens                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| **New approval requests** | An agent files a request that needs your decision (also those already waiting when the app starts).                                                                                                                                              | that request in **Approvals** (the queue for a merged notification) |
+| **Expiring sandboxes**    | A running sandbox ends in less than 10 minutes (checked every 30 seconds; once per expiry time, so extending a sandbox re-arms the warning).                                                                                                     | the sandbox (the list for a merged notification)                    |
+| **Failed creations**      | An **agent's** creation of a sandbox failed after it was set up (audit `sandbox.create` with decision `error`, or an interrupted creation). Your own failed creations are not reported: the window or the CLI that started them shows the error. | the sandbox (the list for a merged notification)                    |
+
+What a notification contains and what it does not:
+
+- It names **who asks, what kind of request and what it is about** (template, or sandbox and port for a
+  port forward), for example `ci · Create sandbox · host-shell`. For an expiring sandbox its name and the
+  time left; for a failed creation the agent, the template and the error code. It never contains the
+  agent's free text (reason), a command, environment, file content or an error message: only fields the
+  manager computed or that are bound into the request, made safe the same way as the views (see [Text from
+  agents](#text-from-agents)) and cut short.
+- **A notification cannot approve or deny.** Approving is a human decision that needs the whole request
+  (the exact options, the risks, the digest the approval is bound to), and that is the Approvals view: the
+  only place where `approve` is called, as `human`, through the same manager call as everywhere else.
+  Electron offers notification buttons on macOS only, and a button that approves without showing the request
+  would approve blind, so there are none: a click brings the window to the front on the right view. The
+  notification text also says so ("Review and decide in abox.").
+- **Bursts are merged.** Items of one kind that arrive within about 1.5 seconds become one notification
+  ("5 new approval requests"; at most three are listed, then "... and 2 more"), and one kind shows at most
+  one notification per 10 seconds; what arrives in between is merged into the next one. An agent that files
+  requests in a loop cannot flood the desktop. A request that was decided (in the app, with the CLI) before
+  its notification was due is dropped.
+- A switch that is off sends nothing, also not what was queued before it was switched off.
+- **Nothing is sent while the app is closed.** The notifications come from the app's own polling of the
+  shared state. A small background service for that (an opt-in `abox notify` with a systemd user unit) is not
+  part of this version.
+
+The **tray icon** shows the number of pending approvals on the icon itself (a red disc with the count, `9+`
+above nine), in the tooltip and in the menu ("Approvals (3)"), and the launcher badge (where the desktop has
+one) shows it as well. A click on the icon opens the Approvals view while requests are waiting, otherwise the
+window. Where the desktop has no tray host (several Wayland setups) or no notification service, the count in
+the window remains; **Settings** shows what is available.
 
 ## Network tab
 
