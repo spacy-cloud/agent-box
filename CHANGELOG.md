@@ -10,6 +10,25 @@ release. Nothing has been released yet.
 
 ### Added
 
+- First-run setup wizard in the desktop app (closes #22): on the first start a dialog with five optional steps
+  opens over the sandbox list. **Check** runs `abox doctor` (the shared Diagnostics components). **Project
+  folders** explains what a workspace root allows, checks each chosen folder like an agent's workspace (home
+  directory, protected and hidden folders are refused with the reason, folders below an existing root are
+  "already allowed", a folder that looks like a single project gets a hint) and adds the new roots to
+  `workspace.roots` of the profile the agents use as a **diff of policy.yaml** that is saved only after a
+  confirmation, through the normal revisioned policy edit. **Agents** lists what `abox setup` detects, preselects
+  Claude Code only when it is installed and not yet registered, offers the plugin or the MCP entry (never both),
+  shows the preview (files with diff, commands, backups, warnings) and applies exactly that preview with its
+  digest. **Templates** preselects the templates that the projects below the chosen folders point to
+  (`suggestTemplate`) and builds the chosen ones in the background through the normal build action (with the note
+  that builds have network access; the wizard does not wait). **Approvals** shows an example approval card, where
+  requests appear (Approvals view, tray, notifications, `abox approvals ...`) and that only the human decides.
+  Every step can be skipped; **Skip setup** is remembered in the app settings, **Later** and Escape are not,
+  and Settings > **Run setup again** opens it again. New IPC channels `setup:detect`, `setup:plan`, `setup:apply`
+  (needs `confirmed` and the digest), `setup:roots` (proposes the policy text, writes nothing) and `setup:scan`;
+  the wizard cannot uninstall or change the command or marketplace. `ABOX_GUI_SETUP_WIZARD=off` keeps it from
+  opening by itself (the e2e helpers set it; the new e2e spec switches it on, with a throw-away `HOME` and a fake
+  `claude`).
 - Generated MCP tool and error catalogs (closes #35): `docs/mcp-catalog.md` lists every MCP tool (purpose, input
   schema as a parameter table, result fields, who may call it, approval behaviour, annotations) and
   `docs/errors.md` every error code (exit code, meaning, typical hint) with the error envelope, plus

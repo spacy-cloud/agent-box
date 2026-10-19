@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   APPROVAL_MODES,
   AUDIT_DECISIONS,
+  CLAUDE_CODE_METHODS,
+  SETUP_CLIENTS,
   ISOLATION_LEVELS,
   NETWORK_MODES,
   SANDBOX_STATES,
@@ -52,6 +54,45 @@ describe('IPC contract', () => {
     expect(ok('app:settings', { notifications: { approvals: 'no' } })).toBe(false);
     expect(ok('app:settings', { notifications: true })).toBe(false);
     expect(ok('app:settings', { extra: 1 })).toBe(false);
+  });
+
+  it('setup channels: the wizard can ask for agents and folders, nothing else', () => {
+    expect(ok('setup:detect', undefined)).toBe(true);
+    expect(ok('setup:plan', { clients: ['claude-code'] })).toBe(true);
+    expect(
+      ok('setup:plan', { clients: ['codex', 'cursor'], claudeCodeMethod: 'mcp', rules: true }),
+    ).toBe(true);
+    expect(ok('setup:plan', { clients: [] })).toBe(false);
+    expect(ok('setup:plan', { clients: ['vim'] })).toBe(false);
+    expect(ok('setup:plan', { clients: ['codex'], claudeCodeMethod: 'both' })).toBe(false);
+    // the wizard cannot uninstall or point the entry at another program or marketplace
+    expect(ok('setup:plan', { clients: ['codex'], uninstall: true })).toBe(false);
+    expect(ok('setup:plan', { clients: ['codex'], command: '/tmp/evil' })).toBe(false);
+    expect(ok('setup:plan', { clients: ['codex'], marketplace: 'evil/x' })).toBe(false);
+    const digest = 'a'.repeat(64);
+    expect(ok('setup:apply', { clients: ['codex'], digest, confirmed: true })).toBe(true);
+    expect(ok('setup:apply', { clients: ['codex'], digest })).toBe(false);
+    expect(ok('setup:apply', { clients: ['codex'], digest, confirmed: false })).toBe(false);
+    expect(ok('setup:apply', { clients: ['codex'], digest: 'abc', confirmed: true })).toBe(false);
+    expect(ok('setup:roots', { folders: [] })).toBe(true);
+    expect(ok('setup:roots', { folders: ['~/projects', '/data/app'], profile: 'default' })).toBe(
+      true,
+    );
+    expect(ok('setup:roots', { folders: ['relative/dir'] })).toBe(false);
+    expect(ok('setup:roots', { folders: ['~'] })).toBe(false);
+    expect(ok('setup:roots', { folders: ['~other/x'] })).toBe(false);
+    expect(ok('setup:roots', { folders: Array(21).fill('/a') })).toBe(false);
+    expect(ok('setup:roots', { folders: ['/a'], text: 'x' })).toBe(false);
+    expect(ok('setup:scan', { folders: ['~/projects'] })).toBe(true);
+    expect(ok('setup:scan', { folders: [] })).toBe(false);
+    expect(ok('app:settings', { setupWizard: 'skipped' })).toBe(true);
+    expect(ok('app:settings', { setupWizard: 'completed' })).toBe(true);
+    expect(ok('app:settings', { setupWizard: 'pending' })).toBe(false);
+  });
+
+  it('the setup constants copied for the renderer match @abox/core', () => {
+    expect([...ui.SETUP_CLIENTS]).toEqual([...SETUP_CLIENTS]);
+    expect([...ui.CLAUDE_CODE_METHODS]).toEqual([...CLAUDE_CODE_METHODS]);
   });
 
   it('accepts well-formed input', () => {

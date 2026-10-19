@@ -16,6 +16,8 @@ export const INFO: AppInfo = {
   closeToTray: false,
   notifications: { approvals: true, expiring: true, failed: true },
   managerError: null,
+  setupWizard: 'completed',
+  showSetupWizard: false,
 };
 
 export type InvokeFn = (
@@ -45,17 +47,26 @@ export function installBridge(
 
 export function renderApp(
   ui: ReactElement,
-  opts: { locale?: Locale; route?: Route; navigate?: (r: Route) => void } = {},
+  opts: {
+    locale?: Locale;
+    route?: Route;
+    navigate?: (r: Route) => void;
+    setupOpen?: boolean;
+    setSetupOpen?: (open: boolean) => void;
+    info?: Partial<AppInfo>;
+  } = {},
 ) {
   return render(
     <AppProvider
-      info={INFO}
+      info={opts.info ? { ...INFO, ...opts.info } : INFO}
       locale={opts.locale ?? 'de'}
       setLocale={() => undefined}
       route={opts.route ?? { view: 'sandboxes' }}
       navigate={opts.navigate ?? (() => undefined)}
       tick={0}
       pendingApprovals={0}
+      setupOpen={opts.setupOpen ?? false}
+      setSetupOpen={opts.setSetupOpen ?? (() => undefined)}
     >
       {ui}
     </AppProvider>,

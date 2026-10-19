@@ -76,6 +76,8 @@ export function makeHome(opts: HomeOptions = {}): TestHome {
     // Never use the real ssh agent or the real ~/.ssh in tests (HOME is a temp dir; ssh-agent is switched off).
     SSH_AUTH_SOCK: '',
     ABOX_GUI_LOCALE: 'de',
+    // The first-run wizard would cover every other test; the setup test switches it on (`ABOX_GUI_SETUP_WIZARD: ''`).
+    ABOX_GUI_SETUP_WIZARD: 'off',
     ABOX_GUI_POLL_MS: '500',
   };
   return { home, project, env, cleanup: () => rmSync(base, { recursive: true, force: true }) };

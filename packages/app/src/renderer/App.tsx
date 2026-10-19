@@ -15,6 +15,7 @@ import { TemplatesView } from './views/Templates';
 import { HostsView } from './views/Hosts';
 import { SshPanel, SshTabsProvider, useSshTabs } from './views/ssh-tabs';
 import { AskpassHost } from './components/AskpassDialog';
+import { SetupWizardHost } from './components/setup/SetupWizard';
 import logoMark from './assets/logo-mark.png';
 
 const NAV: Array<{ view: Exclude<ViewName, 'detail'>; key: string }> = [
@@ -32,6 +33,8 @@ export function App(props: { info: AppInfo }) {
   const [route, setRoute] = useState<Route>({ view: 'sandboxes' });
   const [tick, setTick] = useState(0);
   const [pending, setPending] = useState(0);
+  // The first-run wizard opens by itself until it was finished or skipped; Settings opens it again.
+  const [setupOpen, setSetupOpen] = useState(props.info.showSetupWizard);
 
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);
@@ -66,6 +69,8 @@ export function App(props: { info: AppInfo }) {
       navigate={setRoute}
       tick={tick}
       pendingApprovals={pending}
+      setupOpen={setupOpen}
+      setSetupOpen={setSetupOpen}
     >
       <SshTabsProvider>
         <Shell />
@@ -157,6 +162,7 @@ function Shell() {
         {active === 'settings' ? <SettingsView /> : null}
       </main>
       <AskpassHost />
+      <SetupWizardHost />
       <ToastRegion />
     </div>
   );

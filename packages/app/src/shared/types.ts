@@ -49,9 +49,13 @@ import type {
   HostKeyStatus,
   PortForward,
   SandboxPortForward,
+  ClientStatus,
+  SetupPlan,
+  SetupResult,
+  SetupStep,
 } from '@abox/core';
 import type { EventChannel, EventPayloads, IpcChannel, IpcInput, IpcResult, Locale } from './ipc';
-import type { NotificationPrefs } from './constants';
+import type { NotificationPrefs, SetupWizardState } from './constants';
 
 export type {
   AccessApplied,
@@ -99,6 +103,10 @@ export type {
   SandboxPortForward,
   PolicyRevisionDetail,
   PolicyRevisionSummary,
+  ClientStatus,
+  SetupPlan,
+  SetupResult,
+  SetupStep,
 };
 
 export interface AppInfo {
@@ -117,6 +125,65 @@ export interface AppInfo {
   notifications: NotificationPrefs;
   /** The manager could not be opened (message shown by the start screen). */
   managerError: string | null;
+  /** How the first-run wizard ended last time; `null` = not dealt with yet. */
+  setupWizard: SetupWizardState | null;
+  /** Open the first-run wizard now (it has not been dealt with yet, and this run does not switch it off). */
+  showSetupWizard: boolean;
+}
+
+/** One folder offered to the first-run wizard as a workspace root, and what the check made of it. */
+export interface SetupRootsFolder {
+  /** As given by the user. */
+  input: string;
+  /** Canonical path; `null` when the folder could not be resolved at all. */
+  path: string | null;
+  /** The text that would be written to `workspace.roots` (`~/…` below the home directory). */
+  entry: string | null;
+  /** `new`: would be added; `covered`: an existing root includes it already; `refused`: cannot be a root. */
+  status: 'new' | 'covered' | 'refused';
+  /** Why a folder is refused (plain text of the path check or of the folder check). */
+  reason?: string;
+  /** The existing root (as written) that covers the folder. */
+  coveredBy?: string;
+  /** The folder itself looks like a single project: agents can only use folders *below* a root. */
+  looksLikeProject: boolean;
+}
+
+/** An agent profile that `workspace.roots` can be added to, and the contexts that use it. */
+export interface SetupRootsProfile {
+  name: string;
+  usedBy: string[];
+}
+
+export interface SetupRootsProposal {
+  /** The profile the roots would be added to; `null` when no agent context exists. */
+  profile: string | null;
+  usedBy: string[];
+  profiles: SetupRootsProfile[];
+  /** `workspace.roots` of the profile now, as written. */
+  roots: string[];
+  folders: SetupRootsFolder[];
+  /** policy.yaml now, and with the new roots (`null`: nothing to add or the text cannot be edited). */
+  current: string;
+  proposed: string | null;
+  baseHash: string;
+  /** Why no text could be proposed although a folder is new (`parse`: policy.yaml is not valid YAML). */
+  error?: 'parse' | 'no_profile';
+}
+
+/** What the folders point to: templates by the number of projects below the folders that suggest them. */
+export interface SetupTemplateScan {
+  /** Folders looked at (the chosen ones and the folders directly below them). */
+  scanned: number;
+  /** There were more folders than the scan looks at. */
+  truncated: boolean;
+  templates: Array<{
+    name: string;
+    projects: number;
+    basis: 'project_template' | 'markers';
+    /** A few example project folder names. */
+    examples: string[];
+  }>;
 }
 
 export interface PolicyDocument {
@@ -342,7 +409,11 @@ export interface Outputs {
   'app:info': AppInfo;
   'app:setLocale': void;
   'app:copy': void;
-  'app:settings': { closeToTray: boolean; notifications: NotificationPrefs };
+  'app:settings': {
+    closeToTray: boolean;
+    notifications: NotificationPrefs;
+    setupWizard: SetupWizardState | null;
+  };
   'dialog:pickDirectory': string | null;
   'askpass:answer': void;
   'sandboxes:list': SandboxList;
@@ -405,6 +476,11 @@ export interface Outputs {
   'tokens:revoke': boolean;
   'mcp:config': McpConfig;
   'mcp:status': McpStatus;
+  'setup:detect': ClientStatus[];
+  'setup:plan': SetupPlan;
+  'setup:apply': SetupResult;
+  'setup:roots': SetupRootsProposal;
+  'setup:scan': SetupTemplateScan;
   'tty:open': TtyOpened;
   'tty:input': void;
   'tty:resize': void;

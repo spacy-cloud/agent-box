@@ -3,8 +3,7 @@
  * `human`; there are no rules here (policy, approval, audit and masking all live in @abox/core).
  * Electron-specific handlers (dialogs, clipboard, app info) are in ipc.ts.
  */
-import { readFile } from 'node:fs/promises';
-import { AboxError, DEFAULT_POLICY_YAML } from '@abox/core';
+import { AboxError } from '@abox/core';
 import type {
   Abox,
   AboxPaths,
@@ -20,6 +19,8 @@ import { mcpClaudeCommand, mcpJsonConfig } from '../shared/mcp-config';
 import { describeBase } from '../shared/image-ref';
 import { templateTarget } from './approval-context';
 import { projectOption, resolveProjectDir } from './projects';
+import { readPolicyText } from './policy-text';
+import { createSetupHandlers } from './setup';
 
 export interface ServiceRuntime {
   abox: Abox;
@@ -89,7 +90,12 @@ export type ManagerChannel =
   | 'tokens:create'
   | 'tokens:revoke'
   | 'mcp:config'
-  | 'mcp:status';
+  | 'mcp:status'
+  | 'setup:detect'
+  | 'setup:plan'
+  | 'setup:apply'
+  | 'setup:roots'
+  | 'setup:scan';
 
 const HUMAN: Caller = { contextId: 'human' };
 const confirmedHuman = (confirmed: boolean | undefined): Caller =>
@@ -121,27 +127,10 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
     }
   }
 
-  async function policyText(): Promise<{
-    text: string;
-    source: 'default' | 'file';
-    path: string | null;
-  }> {
-    const view = await abox.showPolicy(HUMAN);
-    if (view.policy.source === 'file' && view.policy.path) {
-      try {
-        return {
-          text: await readFile(view.policy.path, 'utf8'),
-          source: 'file',
-          path: view.policy.path,
-        };
-      } catch {
-        /* file vanished between calls: fall through to the built-in text */
-      }
-    }
-    return { text: DEFAULT_POLICY_YAML, source: 'default', path: null };
-  }
+  const policyText = () => readPolicyText(abox, HUMAN);
 
   return {
+    ...createSetupHandlers(abox),
     'sandboxes:list': (i) => abox.listSandboxes(HUMAN, clean({ ...(i ?? {}) })),
     'sandboxes:inspect': (i) => abox.inspectSandbox(HUMAN, i.id),
     'sandboxes:stats': (i) => abox.sandboxStats(HUMAN, i.ids),

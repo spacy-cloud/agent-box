@@ -28,6 +28,56 @@ second start focuses the running window (single instance). German and English ar
 language follows the system locale and can be switched in the settings (`ABOX_GUI_LOCALE` overrides
 it).
 
+## First-run setup
+
+The first time the app starts it opens a **setup wizard** over the sandbox list. It is a dialog with five
+steps (the header shows where you are; Back and Next move between them), and every step is optional. Nothing
+is changed without a preview and a click of yours, and every change goes through the same operations the CLI
+uses (policy edit, `abox setup`, template build), so it is revisioned and audited like them.
+
+1. **Check.** The same checks as `abox doctor` and Settings > Diagnostics (container engine, policy file,
+   state directory): a banner with the verdict, what needs a look, and the other checks behind a disclosure.
+   It only reads. You can continue when something is wrong and fix it later.
+2. **Project folders.** Says in plain words what a **workspace root** allows: agents may only work on project
+   folders _below_ a root (never on the root itself, your home directory, `~/.ssh`, `~/.config` or hidden
+   folders of your home). You type or browse for a folder; each one is checked like an agent's workspace (a
+   folder that cannot be a root, for example your home directory, is refused with the reason; one below an
+   existing root is "already allowed"; one that looks like a single project gets a hint to pick its parent).
+   The new roots are added to `workspace.roots` of the profile your agents use (a choice when several
+   profiles are in use), shown as a **diff of policy.yaml** and written only after **Review and save …** and a
+   second confirmation, through the normal policy edit (validated by the manager, revisioned, audited, refused
+   when the file changed meanwhile). Nothing widens what agents may access without that.
+3. **Agents.** The agents `abox setup` knows are listed with what was found on this computer and where abox is
+   already registered. You tick the ones to connect (Claude Code is ticked when it is installed and abox is not
+   registered yet, nothing else), choose for Claude Code between the **plugin** (recommended: skills, commands
+   and the MCP server) and a plain **MCP entry** (never both; the preview shows the other kind being removed),
+   and press **Preview changes**: every file with its diff and every command with its arguments, the backup
+   that will be kept, and the warnings (for example a context missing in your policy). **Apply these changes**
+   runs exactly that preview; the manager refuses it when a file changed since. See [Setting up agents](setup.md).
+4. **Templates.** The projects below your folders (the roots and the ones you just added; at most 60 folders,
+   only file names such as `package.json` are looked at) point to templates, as
+   [template auto-detection](templates.md#choosing-a-template-for-a-project) does; those are preselected, and you can tick others. Only
+   templates that can be built here are offered (a container engine must run). **Build in the background**
+   uses the normal build action: builds have network access whatever the sandbox's network mode, the wizard says
+   so, and they are recorded in the audit log. The builds run one after the other with a status per template and a
+   toast at the end; you can go on or close the wizard, they continue. A project's own template is not offered
+   (it needs a review first, see [Template review](#template-review)).
+5. **Approvals.** What a pending approval is, with a picture of an approval card (marked as an example, its
+   buttons do nothing), where requests show up (the Approvals view and the number next to it in the sidebar,
+   the tray icon and desktop notifications, `abox approvals list` / `show` / `approve` / `deny`), and that
+   only you can decide.
+
+**Skip setup** closes the wizard and remembers it (`setupWizard: skipped` in `gui-settings.json` in the app's
+data directory); **Later** and Escape close it without remembering, so it opens again on the
+next start. **Finish** remembers that it was completed. **Settings > First-run setup > Run setup again** opens
+it at any time (a finished or skipped setup stays that way). The environment variable
+`ABOX_GUI_SETUP_WIZARD=off` keeps it from opening by itself (the end-to-end tests set it; one test switches it
+on). The wizard is a dialog with a fixed footer; focus moves to the step heading when a step changes.
+
+Not verified: nothing here was tried with a real Claude Code, Codex or other agent. The tests use a fake
+`claude` on the `PATH` and a throw-away `HOME`; see [Setting up agents](setup.md#where-the-files-are) for what
+is verified for the agent configurations.
+
 ## Views
 
 | View               | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -39,7 +89,7 @@ it).
 | **Approvals**      | the queue of requests from agents, see below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Audit**          | the audit log with filters (time, actor, sandbox, action, decision), verification of the hash chain and export as JSON Lines.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **Policy**         | the profiles and agent contexts in force as cards (isolation `none` in red), an editor with a **form** for profiles and limits next to the **YAML** text, live validation by the manager, a diff and a confirmation before saving, and the revision history. See [The Policy view](#the-policy-view).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **Settings**       | language, closing the window to the tray (optional), **which desktop notifications** are sent (see [Notifications and the tray](#notifications-and-the-tray)), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)); the **Check** buttons of Templates and Hosts run the scoped version (see [Check: can this template or host run?](#check-can-this-template-or-host-run)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **package caches** (see [Package caches](#package-caches)), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke) and the state of tray and notifications.                                                                                                                                                                                                                                                                                                                 |
+| **Settings**       | language, closing the window to the tray (optional), **which desktop notifications** are sent (see [Notifications and the tray](#notifications-and-the-tray)), diagnostics (the `abox doctor` checks with severities, see [Diagnostics](#diagnostics)); the **Check** buttons of Templates and Hosts run the scoped version (see [Check: can this template or host run?](#check-can-this-template-or-host-run)), the reconcile report with an explicit "apply repairs" step, the MCP configuration for agents (copyable `claude mcp add` command and JSON for a chosen agent context), the **package caches** (see [Package caches](#package-caches)), the **MCP status** (see below), MCP HTTP tokens (create, shown once, revoke), the state of tray and notifications, and **Run setup again** for the [first-run setup](#first-run-setup).                                                                                                                                                                                                                                               |
 
 ## Approvals
 
