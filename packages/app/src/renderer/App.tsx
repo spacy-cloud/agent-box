@@ -34,7 +34,9 @@ export function App(props: { info: AppInfo }) {
   const [tick, setTick] = useState(0);
   const [pending, setPending] = useState(0);
   // The first-run wizard opens by itself until it was finished or skipped; Settings opens it again.
-  const [setupOpen, setSetupOpen] = useState(props.info.showSetupWizard);
+  const [setupOpen, setSetupOpen] = useState(
+    props.info.showSetupWizard && props.info.managerError === null,
+  );
 
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);
