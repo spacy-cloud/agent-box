@@ -55,6 +55,8 @@ export type ManagerChannel =
   | 'templates:review'
   | 'files:list'
   | 'export:run'
+  | 'changes:review'
+  | 'changes:apply'
   | 'processes:list'
   | 'processes:logs'
   | 'sandboxes:logs'
@@ -214,6 +216,19 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         HUMAN,
         i.id,
         clean({ format: i.format, paths: i.paths, branchName: i.branchName }),
+      ),
+    'changes:review': (i) => abox.reviewChanges(HUMAN, i.id),
+    'changes:apply': (i) =>
+      abox.applyChanges(
+        confirmedHuman(i.confirmed),
+        i.id,
+        clean({
+          digest: i.digest,
+          selection: i.selection,
+          acknowledgeFlagged: i.acknowledgeFlagged,
+          allowNonGit: i.allowNonGit,
+          dryRun: i.dryRun,
+        }),
       ),
     'processes:list': (i) => abox.listProcesses(HUMAN, i.id),
     'processes:logs': (i) => abox.processLogs(HUMAN, i.processId, clean({ tail: i.tail ?? 200 })),

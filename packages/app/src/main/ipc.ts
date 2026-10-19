@@ -231,6 +231,20 @@ export function registerIpc(d: IpcDeps): IpcHandle {
       await writeFile(r.filePath, res.content ?? '', { mode: 0o600 });
       return { saved: r.filePath, count: res.files.length };
     },
+    'changes:savePatch': async (i): Promise<SaveResult> => {
+      const res = await need().abox.changesPatch({ contextId: 'human' }, i.id, {
+        digest: i.digest,
+        selection: i.selection,
+      });
+      const win = d.getWindow();
+      const opts = {
+        defaultPath: `sandbox-${i.id.replace(/[^A-Za-z0-9._-]/g, '_')}-selection.patch`,
+      };
+      const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+      if (r.canceled || !r.filePath) return { saved: null };
+      await writeFile(r.filePath, res.patch, { mode: 0o600 });
+      return { saved: r.filePath, count: res.plan.files.length };
+    },
     'audit:exportSave': async (filter): Promise<SaveResult> => {
       const rt = need();
       const win = d.getWindow();

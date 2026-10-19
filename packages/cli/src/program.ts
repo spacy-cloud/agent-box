@@ -1,6 +1,7 @@
 import { Command, CommanderError } from 'commander';
 import { Cli, jsonRequested, processIo, type RunOptions } from './cli.js';
 import { CliError } from './errors.js';
+import { registerApply } from './commands/apply.js';
 import { registerApprovals } from './commands/approvals.js';
 import { registerCache } from './commands/cache.js';
 import { registerCompletion } from './commands/completion.js';
@@ -67,6 +68,7 @@ export function buildProgram(cli: Cli): Command {
   registerSandbox(program, cli);
   registerRun(program, cli);
   registerData(program, cli);
+  registerApply(program, cli);
   registerApprovals(program, cli);
   registerNetwork(program, cli);
   registerPolicy(program, cli);

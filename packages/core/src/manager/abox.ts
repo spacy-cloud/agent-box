@@ -51,6 +51,7 @@ import {
 } from './interactive.js';
 import { listCaches, removeCaches } from './caches.js';
 import { estimateFit, hostCapacity } from './capacity.js';
+import { applyChanges, changesPatch, reviewChanges } from './changes.js';
 import { estimateWorkspace } from './estimate.js';
 import { allowNetwork, networkLog, proposeNetworkPolicy } from './network-log.js';
 import { listPortForwards, removePortForward } from './ports.js';
@@ -98,6 +99,12 @@ import type {
   ExecCallOptions,
   ExecParams,
   ExecOutcome,
+  ApplyChangesParams,
+  ApplyChangesResult,
+  ApplyConfirmationRequired,
+  ChangesPatchResult,
+  ChangesSelectionParams,
+  ChangesView,
   ExportParams,
   ExportSandboxResult,
   FitEstimate,
@@ -457,6 +464,34 @@ export class Abox {
   /** Produces diff/patch/branch/files; never applies anything to the original project. */
   exportSandbox(caller: Caller, id: string, params: ExportParams): Promise<ExportSandboxResult> {
     return exportSandbox(this.I, caller, id, params);
+  }
+
+  /**
+   * Human only. The sandbox's changes as files and hunks (flags, digest) and the state of the project
+   * they would go to. Reads the sandbox, writes nothing.
+   */
+  reviewChanges(caller: Caller, id: string): Promise<ChangesView> {
+    return reviewChanges(this.I, caller, id);
+  }
+  /**
+   * Human only. Applies selected files / hunks of the sandbox's changes to the project it was created
+   * from: all or nothing, only after the digest of the reviewed diff matches, flagged files confirmed one by
+   * one, a clean target (git) and a `humanConfirmed` plan. Audited as `sandbox.apply`.
+   */
+  applyChanges(
+    caller: Caller,
+    id: string,
+    params: ApplyChangesParams,
+  ): Promise<ApplyChangesResult | ApplyConfirmationRequired> {
+    return applyChanges(this.I, caller, id, params);
+  }
+  /** Human only. The `git apply` patch of a selection (same selection rules and digest as `applyChanges`). */
+  changesPatch(
+    caller: Caller,
+    id: string,
+    params: ChangesSelectionParams,
+  ): Promise<ChangesPatchResult> {
+    return changesPatch(this.I, caller, id, params);
   }
 
   // -- approvals -----------------------------------------------------------------------------------------

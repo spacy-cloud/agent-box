@@ -10,6 +10,21 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Side-by-side diff with selective apply (closes #20): the sandbox detail view has a **Changes** ("Änderungen")
+  tab that lists the changed files (status, `+added −removed`, hunks, badges for dependency manifests, executables,
+  binaries, symlinks, large and flagged files, a note on what `.gitignore` kept out) and shows each file
+  side by side or unified with a checkbox per hunk. **Apply selection** runs every check, shows a summary dialog
+  (flagged files and projects without git need their own confirmation) and writes the selected files and hunks into
+  the project the sandbox was created from; **Save as patch** writes the selection as a `git apply` patch.
+  `abox apply <sandbox> [--path p ...] [--dry-run] [--yes] [--allow-flagged] [--allow-non-git]` does it per file on
+  the command line. Applying is a new human-only manager operation (`Abox.reviewChanges`, `applyChanges`,
+  `changesPatch`, `requireHuman`, audited as `sandbox.changes` / `sandbox.apply` / `sandbox.changes_patch`; no MCP
+  tool): the caller sends only paths, hunk indexes and the digest of the diff it reviewed, the manager recomputes the
+  diff, refuses a changed sandbox state and builds the patch itself; the target is the recorded source project and
+  cannot be chosen; paths with `..`, `.git`, symbolic links or nested repositories are refused; a git project with
+  uncommitted changes in an affected file is refused (a project without git needs `--allow-non-git`); the write is
+  all or nothing (`git apply --check`, then `git apply`, no index, hardened argv) and flagged files are never
+  preselected and need an explicit confirmation. See [security](docs/security.md#applying-the-changes-of-a-sandbox).
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):

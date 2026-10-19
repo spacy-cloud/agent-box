@@ -134,12 +134,58 @@ Mount checks happen in the core, not in the backend.
   a new or retargeted link is a `symlink` entry in `diff`/`patch`/`branch` (git mode `120000`, the
   target is the content) and is flagged when its target is absolute or leaves the workspace. The
   `files` format never creates a link in the output directory (it lists it as flagged and not
-  written). What you apply from a diff or branch is your decision, as with any other change. The
+  written). What you apply from a diff or branch is your decision, as with any other change (the
+  human-only apply of [selected files](#applying-the-changes-of-a-sandbox) refuses such links). The
   strict check stays for everything that is written to your machine as is: `abox cp` out of a
   sandbox (Docker backend) refuses a link with an absolute, empty or escaping target. For the comparison itself the
   tree is fetched into a private scratch directory where such links are recreated as links (the
   backend never writes through a link), only read with `lstat`/`readlink`, never followed, and
   removed afterwards.
+
+### Applying the changes of a sandbox
+
+Export never writes into your project. The one way to do that is **applying** selected files or hunks,
+from the **Changes** tab of the GUI or `abox apply`; it is a human-only operation of the manager
+(`applyChanges`, guarded by `requireHuman`, audited as `sandbox.apply` / `sandbox.changes_patch`). There is no MCP
+tool for it and no agent context can call it, not even for its own sandbox (`policy_denied`, audited as
+`sandbox.apply_denied`).
+
+- **The caller names, the manager decides.** A request carries file paths and hunk indexes plus the digest
+  (sha256) of the diff the human reviewed. The manager recomputes the diff from the sandbox itself, refuses a
+  digest that no longer matches (`conflict`, nothing written) and builds the patch from its own bytes; patch
+  text or a target path sent by a window or a script is never used (the request schema rejects unknown fields).
+- **The target is the sandbox's own source project**, the path recorded at create. It is checked again against
+  the paths a human may use today and the forbidden trees, must still be a real directory and cannot be
+  chosen. Sandboxes whose workspace is mounted (they already work in the project) or empty have no target.
+- **Refused paths.** Only plain relative paths are applied: no `..`, no absolute path, no empty or `.` part,
+  nothing named `.git` (also `.GIT`, `git~1` and look-alikes), no control characters. Along every path abox
+  checks the project with `lstat`: it refuses to write through a symbolic link, over a non-regular file or into
+  a nested repository. Files that are symlinks pointing outside the project, type changes between file and
+  link, and special entries are shown but cannot be selected. `git apply` adds its own checks (it has no
+  `--unsafe-paths`), and the paths git reads out of the patch must equal the selected set exactly.
+- **Clean target.** For a git project abox runs a status check first (all drivers and hooks of the repository
+  configuration switched off) and refuses when an affected file has uncommitted changes, is staged, deleted or
+  would overwrite an untracked file. A project that is not a git repository of its own (also a subfolder of
+  one) cannot be checked: applying then needs an explicit extra confirmation (`allowNonGit`, `--allow-non-git`,
+  a checkbox in the GUI), because unsaved work cannot be detected and there is no history to go back to.
+- **Flagged files** (executables, dependency manifests and lock files, hooks, CI, build scripts, links,
+  binaries, large files) are never preselected, and the manager refuses them unless the request lists each one
+  in `acknowledgeFlagged`. The GUI shows them with the reasons in the summary dialog behind a checkbox; the CLI
+  needs `--path` naming them and `--allow-flagged` (or a prompt).
+- **All or nothing, no index.** The patch is applied with `git apply` (argv only, hardened configuration, no
+  shell), first as `--check`, then for real. Git checks every file before it writes the first one; the index,
+  HEAD and branches are not touched. A patch that does not apply to the project as it is now (it moved on since
+  the sandbox started) is reported before anything is written.
+- **Summary before writing.** Without `humanConfirmed` the manager runs all checks and returns the plan
+  (`confirmation_required`); only the repeated call writes. `--dry-run` runs the checks and reports the plan.
+- The audit entry holds the digest, target, file list (path, status, hunks), counts and flagged paths, never file
+  content.
+
+Limits: the review reads at most 64 MiB of diff; a file whose diff is larger than 256 KiB (or beyond 8 MiB in
+all) is listed without its lines and can only be applied as a whole file. A concurrent change of the project
+between the last check and the write is not excluded (`git apply` still refuses a patch whose context no
+longer matches). The sandbox is read at the moment of each call: a sandbox that keeps running can change the
+diff between two calls, which is what the digest catches.
 
 ## Network modes and the egress proxy
 
