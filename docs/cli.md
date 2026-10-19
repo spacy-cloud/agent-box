@@ -955,10 +955,31 @@ Run the MCP server: stdio (the agent starts it) or --http on loopback
 
 Set up .sandbox/ with an example project template and show how to connect an agent
 
-| Option           | Meaning                                                                                        |
-| ---------------- | ---------------------------------------------------------------------------------------------- |
-| `--agent <name>` | print the MCP configuration for this agent (choices: "claude-code", "codex", "cursor", "orca") |
-| `--force`        | overwrite an existing example template                                                         |
+| Option           | Meaning                                                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `--agent <name>` | print the MCP configuration for this agent (choices: "claude-code", "claude-desktop", "codex", "cursor", "gemini-cli", "orca") |
+| `--force`        | overwrite an existing example template                                                                                         |
+
+### `abox setup`
+
+`abox setup [options]`
+
+Register the abox MCP server (and the agent rules) with Claude Code, Claude Desktop, Codex, Cursor and Gemini CLI. Human only. Details, file locations and the safety rules: [Setting up agents](setup.md).
+
+| Option                          | Meaning                                                                                                                                                                   |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--client <name>`               | agent to set up (repeatable or comma separated): claude-code, claude-desktop, codex, cursor, gemini-cli, orca; without it a terminal asks (registered agents preselected) |
+| `--claude-code-method <method>` | Claude Code: `plugin` (skills + MCP, default when `claude` is installed) or `mcp` (plain user-scope entry); never both                                                    |
+| `--command <path>`              | abox executable written into the MCP entries (default: abox)                                                                                                              |
+| `--marketplace <source>`        | Claude Code plugin marketplace (default: spacy-cloud/agent-box)                                                                                                           |
+| `--no-rules`                    | do not install the rules snippet into AGENTS.md / CLAUDE.md / GEMINI.md                                                                                                   |
+| `--uninstall`                   | remove what setup installed instead                                                                                                                                       |
+| `--list`                        | only show which agents were found and where abox is registered                                                                                                            |
+| `--dry-run`                     | show the preview (paths, diffs, commands) and change nothing                                                                                                              |
+| `--yes`                         | apply without asking (required without a terminal and with `--json`)                                                                                                      |
+
+`abox setup --client codex --client cursor --yes --json` prints `{"ok":true,"data":{"applied":true,"plan":...,"result":...}}`;
+without `--yes` and without a terminal it exits with code 3 and the digest of the preview in `details`.
 
 ### `abox host`
 
@@ -1224,6 +1245,11 @@ log <id> --denied", allow with "abox network allow <id> <domain>"`); with `--jso
 - **`abox token`** creates tokens for the HTTP MCP server, see [MCP](mcp.md#http).
 - **`abox init`** writes `.sandbox/<directory>-dev.yaml` (never overwriting without `--force`) and
   prints the MCP configuration and a rules snippet for an agent.
+- **`abox setup`** edits other programs' configuration files (or runs their CLI), so it shows the exact
+  paths, diffs and commands first and writes only after a yes (`--yes` without a terminal). It keeps
+  comments and unrelated entries, saves the first version of every file it changes under the abox data
+  directory, replaces files atomically, checks the result, refuses symbolic links and files that changed
+  meanwhile, and is audited (`setup.apply`, `setup.uninstall`). Agents cannot call it.
 - **`abox host`**, **`abox ssh`**: see [hosts and SSH](hosts-ssh.md).
 - **`abox secret set <ref>`** reads the value from standard input or a hidden prompt, never from
   an argument. It needs a Secret Service (GNOME Keyring, KWallet) and the `secret-tool` program.

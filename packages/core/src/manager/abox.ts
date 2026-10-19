@@ -1,4 +1,5 @@
 import type { AboxPaths } from '../config/paths.js';
+import type { ClientStatus, SetupPlan, SetupRequest, SetupResult } from '../setup/types.js';
 import type { AboxConfig } from '../config/config.js';
 import type { DirEntry, SandboxPortForward, TtySession } from '../types.js';
 import {
@@ -72,6 +73,7 @@ import {
   showTemplate,
   validateTemplateOp,
 } from './templates.js';
+import { setupApply, setupDetect, setupPlan } from './setup.js';
 import { sandboxStats } from './usage.js';
 import type {
   AboxEvent,
@@ -589,6 +591,27 @@ export class Abox {
   /** Human only. Removes caches by key, project or all; caches in use by a sandbox are never removed. */
   removeCaches(caller: Caller, selector: CacheSelector): Promise<CacheRemoveResult> {
     return removeCaches(this.I, caller, selector);
+  }
+  /**
+   * Human only. Which agents are on this machine and where abox is registered (reads config files,
+   * writes nothing). The first step of `abox setup` and of the GUI wizard.
+   */
+  setupDetect(caller: Caller, o: { command?: string } = {}): Promise<ClientStatus[]> {
+    return setupDetect(this.I, caller, o);
+  }
+  /**
+   * Human only. The preview of `abox setup`: per file the exact path, the diff and whether a backup
+   * is made; per program the argv. Writes nothing. `digest` binds the preview to `setupApply`.
+   */
+  setupPlan(caller: Caller, req: SetupRequest): Promise<SetupPlan> {
+    return setupPlan(this.I, caller, req);
+  }
+  /**
+   * Human only, and only with `caller.humanConfirmed`. Applies the plan whose `digest` the human saw;
+   * refuses when the files changed since. Backs up first, writes atomically, verifies, audits.
+   */
+  setupApply(caller: Caller, req: SetupRequest, digest: string): Promise<SetupResult> {
+    return setupApply(this.I, caller, req, digest);
   }
   /**
    * For long-running processes (`abox mcp serve`, the GUI): enforce sandbox deadlines in the

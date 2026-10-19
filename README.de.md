@@ -39,20 +39,21 @@ Die ausführliche Beschreibung (englisch) steht in der [README.md](README.md).
 
 ## Bausteine und Stand
 
-| Baustein                                                                | Stand                                                                                                                                             |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Core (Template-Engine, Lebenszyklus, Policy und Freigaben, Audit-Log)   | umgesetzt                                                                                                                                         |
-| Docker-Backend                                                          | umgesetzt, gegen eine Docker-Engine mit Root-Daemon getestet                                                                                      |
-| Podman-Backend                                                          | umgesetzt, **nicht** gegen ein echtes Podman geprüft                                                                                              |
-| Python-Backend (Container mit `uv`, oder Host-venv ohne Isolation)      | umgesetzt                                                                                                                                         |
-| VM-Backend (QEMU/KVM, eigener Kernel; braucht `/dev/kvm`, x86_64)       | umgesetzt                                                                                                                                         |
-| Prozess-Backend (keine Isolation, deutlich markiert)                    | umgesetzt                                                                                                                                         |
-| CLI `abox`, MCP-Server (21 Werkzeuge, stdio und lokales HTTP mit Token) | umgesetzt                                                                                                                                         |
-| Claude-Code-Plugin `agent-kit`                                          | umgesetzt; Auslösung des Skills nur headless geprüft (Einzelproben), Slash-Befehle ungeprüft                                                      |
-| Hosts/SSH (Sandboxes auf entfernten Rechnern)                           | umgesetzt, experimentell; nur gegen einen lokalen sshd-Container geprüft                                                                          |
-| Orca-Plugin                                                             | umgesetzt; nicht in einem laufenden Orca getestet                                                                                                 |
-| Electron-GUI                                                            | umgesetzt (E2E-Tests unter xvfb bestehen, AppImage baut lokal); nicht veröffentlicht                                                              |
-| Pakete (npm, AppImage, AUR)                                             | AppImage baut aus dem Quellcode, AUR-`PKGBUILD` geschrieben, npm geplant; nichts veröffentlicht, siehe [packaging/README.md](packaging/README.md) |
+| Baustein                                                                              | Stand                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core (Template-Engine, Lebenszyklus, Policy und Freigaben, Audit-Log)                 | umgesetzt                                                                                                                                                                   |
+| Docker-Backend                                                                        | umgesetzt, gegen eine Docker-Engine mit Root-Daemon getestet                                                                                                                |
+| Podman-Backend                                                                        | umgesetzt, **nicht** gegen ein echtes Podman geprüft                                                                                                                        |
+| Python-Backend (Container mit `uv`, oder Host-venv ohne Isolation)                    | umgesetzt                                                                                                                                                                   |
+| VM-Backend (QEMU/KVM, eigener Kernel; braucht `/dev/kvm`, x86_64)                     | umgesetzt                                                                                                                                                                   |
+| Prozess-Backend (keine Isolation, deutlich markiert)                                  | umgesetzt                                                                                                                                                                   |
+| CLI `abox`, MCP-Server (21 Werkzeuge, stdio und lokales HTTP mit Token)               | umgesetzt                                                                                                                                                                   |
+| `abox setup` (Agenten anbinden: MCP-Eintrag und Regeln mit Vorschau, Backup, Rückbau) | umgesetzt; mit Fixture-Konfigurationen getestet; Cursor, Gemini CLI sowie macOS-/Windows-Pfade **nicht** an einer echten Installation geprüft, siehe [setup](docs/setup.md) |
+| Claude-Code-Plugin `agent-kit`                                                        | umgesetzt; Auslösung des Skills nur headless geprüft (Einzelproben), Slash-Befehle ungeprüft                                                                                |
+| Hosts/SSH (Sandboxes auf entfernten Rechnern)                                         | umgesetzt, experimentell; nur gegen einen lokalen sshd-Container geprüft                                                                                                    |
+| Orca-Plugin                                                                           | umgesetzt; nicht in einem laufenden Orca getestet                                                                                                                           |
+| Electron-GUI                                                                          | umgesetzt (E2E-Tests unter xvfb bestehen, AppImage baut lokal); nicht veröffentlicht                                                                                        |
+| Pakete (npm, AppImage, AUR)                                                           | AppImage baut aus dem Quellcode, AUR-`PKGBUILD` geschrieben, npm geplant; nichts veröffentlicht, siehe [packaging/README.md](packaging/README.md)                           |
 
 ## Voraussetzungen und Bauen
 
@@ -67,7 +68,7 @@ pnpm build
 mkdir -p ~/.local/bin && ln -sf "$PWD/packages/cli/dist/bin.js" ~/.local/bin/abox
 abox doctor
 abox create alpine-min --name scratch && abox exec scratch -- sh -c 'echo hallo' && abox rm -f scratch
-claude mcp add abox -- abox mcp serve --agent claude-code
+abox setup          # Claude Code, Codex, Cursor, ... anbinden (mit Vorschau und Backup)
 pnpm test           # Unit-, Vertrags- und Sicherheitstests
 pnpm test:docker    # zusätzlich Integrationstests gegen eine echte Container-Engine
 ```
@@ -75,7 +76,8 @@ pnpm test:docker    # zusätzlich Integrationstests gegen eine echte Container-E
 ## Dokumentation (englisch)
 
 [Quickstart](docs/quickstart.md) · [Template-Handbuch](docs/templates.md) · [CLI](docs/cli.md) ·
-[MCP](docs/mcp.md) · [Claude Code und andere Agenten](docs/claude-code.md) ·
+[MCP](docs/mcp.md) · [Agenten einrichten](docs/setup.md) ·
+[Claude Code und andere Agenten](docs/claude-code.md) ·
 [Backends](docs/backends.md) · [Hosts und SSH](docs/hosts-ssh.md) · [GUI](docs/gui.md) ·
 [Fehlerbehebung](docs/troubleshooting.md) · [Architektur](docs/architecture.md) ·
 [Sicherheitsmodell](docs/security.md)

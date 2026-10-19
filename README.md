@@ -52,21 +52,22 @@ machine.
 
 ## Features by component
 
-| Component          | Description                                                                                     | Status                                                                                                                                                     |
-| ------------------ | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Core (`core`)      | domain model, template engine, lifecycle, policy and approvals, audit log, SQLite state         | implemented                                                                                                                                                |
-| Docker backend     | OCI containers through the engine API, hardened defaults, egress proxy sidecar                  | implemented; tested against a rootful Docker engine                                                                                                        |
-| Podman backend     | same code, Podman's Docker-compatible socket                                                    | implemented; **not verified** against a real Podman                                                                                                        |
-| Python backend     | container with `uv` (lock file baked into the image), or a host venv (no isolation)             | implemented                                                                                                                                                |
-| VM backend         | QEMU/KVM virtual machine with its own kernel, cloud images with checksum verification           | implemented; needs `/dev/kvm`, x86_64                                                                                                                      |
-| Process backend    | host process without isolation (level `none`), clearly marked; reference for the contract tests | implemented                                                                                                                                                |
-| CLI (`abox`)       | thin layer over the core, text or `--json` output, shell completion                             | implemented                                                                                                                                                |
-| MCP server         | 22 tools over stdio and local HTTP with token authentication, resources and a prompt            | implemented                                                                                                                                                |
-| Claude Code plugin | `agent-kit`: decision skill, slash commands, subagent, optional hook, marketplace               | implemented; skill triggering checked headless only (single samples), slash commands untested                                                              |
-| Electron GUI       | sandboxes, templates, hosts, approvals, audit, policy, terminal                                 | implemented; e2e tests pass under xvfb; AppImage builds locally; unreleased                                                                                |
-| Hosts and SSH      | sandboxes on a remote machine over SSH (agentless), host profiles, zones, host-key pinning      | implemented, experimental; verified only against a local sshd container                                                                                    |
-| Orca plugin        | commands and a launcher panel for the Orca IDE                                                  | implemented; not tested in a running Orca                                                                                                                  |
-| Packaging          | npm packages, AppImage, AUR (`abox-git`)                                                        | AppImage builds from source (`pnpm --filter @abox/app dist`); AUR `PKGBUILD` written; npm planned; nothing published, see [packaging](packaging/README.md) |
+| Component          | Description                                                                                                                              | Status                                                                                                                                                     |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core (`core`)      | domain model, template engine, lifecycle, policy and approvals, audit log, SQLite state                                                  | implemented                                                                                                                                                |
+| Docker backend     | OCI containers through the engine API, hardened defaults, egress proxy sidecar                                                           | implemented; tested against a rootful Docker engine                                                                                                        |
+| Podman backend     | same code, Podman's Docker-compatible socket                                                                                             | implemented; **not verified** against a real Podman                                                                                                        |
+| Python backend     | container with `uv` (lock file baked into the image), or a host venv (no isolation)                                                      | implemented                                                                                                                                                |
+| VM backend         | QEMU/KVM virtual machine with its own kernel, cloud images with checksum verification                                                    | implemented; needs `/dev/kvm`, x86_64                                                                                                                      |
+| Process backend    | host process without isolation (level `none`), clearly marked; reference for the contract tests                                          | implemented                                                                                                                                                |
+| CLI (`abox`)       | thin layer over the core, text or `--json` output, shell completion                                                                      | implemented                                                                                                                                                |
+| MCP server         | 22 tools over stdio and local HTTP with token authentication, resources and a prompt                                                     | implemented                                                                                                                                                |
+| Agent setup        | `abox setup`: registers the MCP server and rules with Claude Code, Claude Desktop, Codex, Cursor, Gemini CLI; preview, backup, uninstall | implemented; tested on fixture configs; Cursor, Gemini CLI, macOS and Windows paths **not verified** on a real install, see [setup](docs/setup.md)         |
+| Claude Code plugin | `agent-kit`: decision skill, slash commands, subagent, optional hook, marketplace                                                        | implemented; skill triggering checked headless only (single samples), slash commands untested                                                              |
+| Electron GUI       | sandboxes, templates, hosts, approvals, audit, policy, terminal                                                                          | implemented; e2e tests pass under xvfb; AppImage builds locally; unreleased                                                                                |
+| Hosts and SSH      | sandboxes on a remote machine over SSH (agentless), host profiles, zones, host-key pinning                                               | implemented, experimental; verified only against a local sshd container                                                                                    |
+| Orca plugin        | commands and a launcher panel for the Orca IDE                                                                                           | implemented; not tested in a running Orca                                                                                                                  |
+| Packaging          | npm packages, AppImage, AUR (`abox-git`)                                                                                                 | AppImage builds from source (`pnpm --filter @abox/app dist`); AUR `PKGBUILD` written; npm planned; nothing published, see [packaging](packaging/README.md) |
 
 Highlights of the design:
 
@@ -106,7 +107,7 @@ abox doctor                                    # what works on this machine
 abox create alpine-min --name scratch          # an empty sandbox
 abox exec scratch -- sh -c 'echo hello'
 abox rm -f scratch
-claude mcp add abox -- abox mcp serve --agent claude-code     # connect Claude Code
+abox setup                                     # connect Claude Code, Codex, Cursor, ... (preview, backup)
 ```
 
 The [quickstart](docs/quickstart.md) walks through this in detail. Tests:
@@ -150,6 +151,7 @@ are internal workspace names.
 - [Template handbook](docs/templates.md): every field, defaults, presets, validation, trust, examples.
 - [CLI reference](docs/cli.md): all commands, JSON output, exit codes, files.
 - [MCP server](docs/mcp.md): transports, identity, tokens, every tool, the approval flow.
+- [Setting up agents](docs/setup.md): `abox setup` registers the MCP server and rules with Claude Code, Claude Desktop, Codex, Cursor and Gemini CLI.
 - [Claude Code and other agents](docs/claude-code.md): the `agent-kit` plugin, rule snippets, Codex, Cursor, Orca.
 - [Backends](docs/backends.md): docker, podman, python, vm, process; capabilities and what is verified.
 - [Hosts and SSH](docs/hosts-ssh.md): remote hosts, zones, preparing a server.

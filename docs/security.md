@@ -525,6 +525,18 @@ the context files. A project template may only use a Dockerfile inside its own p
 The hash chain detects modification by accident or by a process that does not recompute it. It
 does not stop an attacker with full write access to the database from rewriting the whole chain.
 
+## Writing agent configuration (`abox setup`)
+
+`abox setup` is the one place where abox edits files outside its own directories (the MCP entry of an agent,
+a rules block), so it is human-only and gated like the rest: agents get `policy_denied` (audited as
+`setup.*_denied`), there is no MCP tool, and applying needs `humanConfirmed` plus the digest of the preview the
+human saw. It writes only what the preview showed; it saves the first version of each file, replaces files
+atomically after a staged parse-and-compare, refuses symbolic links and files that changed meanwhile, and runs
+the `claude` CLI by argv only. Details and the locations it assumes: [Setting up agents](setup.md). What it
+cannot protect against: another process rewriting the same file in the milliseconds between the final check and
+the rename (a check-then-rename race that exists for every editor), and Claude Code rewriting `~/.claude.json`
+while setup edits it directly (only without the `claude` CLI; setup asks you to close Claude Code).
+
 ## Remote hosts and SSH
 
 These rules apply to sandboxes on a remote host. Remote hosts are implemented but experimental;
@@ -741,6 +753,11 @@ of this documentation; it will be published per release alongside the changelog.
 
 ### Integrations
 
+- **`abox setup` was checked against real installs only in part**: the Claude Code CLI (2.1.302) and its
+  files, Codex (0.156.1) and the Linux Claude Desktop file were looked at (key names and `--help` only, plus a
+  run against a throw-away home directory for Claude Code); the Cursor and Gemini CLI locations, the macOS and
+  Windows paths and `CLAUDE_CONFIG_DIR` / `CODEX_HOME` handling are assumptions from documentation. See
+  [Setting up agents](setup.md#where-the-files-are).
 - **The Orca plugin has not been tested in a running Orca**; it was validated against Orca's own
   manifest parser and exercised with mocks, and it was written against the CLI source.
 - **The agent-kit skill's triggering is verified headless only, with single samples.** The

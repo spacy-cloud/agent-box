@@ -77,7 +77,7 @@ A connection acts as exactly one **agent context**, taken from `--agent` (stdio)
   network, mounts, secrets, minimum isolation, approval mode) and may list the hosts it can use
   (default `local` only).
 - Without a `policy.yaml`, the built-in policy defines the contexts `default`, `claude-code`,
-  `codex`, `cursor` and `orca`, all with the profile `default`. Its workspace roots are `~/projects`,
+  `claude-desktop`, `codex`, `cursor`, `gemini-cli` and `orca`, all with the profile `default`. Its workspace roots are `~/projects`,
   `~/Projekte`, `~/src`, `~/code`, `~/dev`, `~/work`, `~/git` and `~/repos`; the home directory as a
   whole and hidden directories directly below it (`~/.claude`, `~/.cache`, ...) are never usable
   for an agent. A project elsewhere gets `policy_denied` with a hint naming `workspace.roots` and
