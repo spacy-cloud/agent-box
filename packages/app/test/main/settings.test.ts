@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { GuiSettings } from '../../src/main/settings';
+import { GuiSettings, showSetupWizard } from '../../src/main/settings';
 
 let dir: string;
 beforeEach(() => {
@@ -54,5 +54,33 @@ describe('notification preferences', () => {
     expect(JSON.parse(readFileSync(join(dir, 'gui-settings.json'), 'utf8')).notifications).toEqual({
       approvals: false,
     });
+  });
+});
+
+describe('first-run wizard state', () => {
+  it('is empty on the first start, is kept across restarts and does not touch the other settings', () => {
+    const s = new GuiSettings(dir);
+    expect(s.setupWizard).toBeNull();
+    s.setCloseToTray(true);
+    s.setSetupWizard('skipped');
+    expect(new GuiSettings(dir).setupWizard).toBe('skipped');
+    expect(new GuiSettings(dir).closeToTray).toBe(true);
+    s.setSetupWizard('completed');
+    expect(new GuiSettings(dir).setupWizard).toBe('completed');
+  });
+
+  it('ignores a value that is not one of the two states', () => {
+    for (const bad of ['done', 1, true, null, ['skipped']]) {
+      writeFileSync(join(dir, 'gui-settings.json'), JSON.stringify({ setupWizard: bad }));
+      expect(new GuiSettings(dir).setupWizard).toBeNull();
+    }
+  });
+
+  it('opens by itself only while it was neither finished nor skipped, and not when a test switches it off', () => {
+    expect(showSetupWizard(null, undefined)).toBe(true);
+    expect(showSetupWizard(null, '')).toBe(true);
+    expect(showSetupWizard(null, 'off')).toBe(false);
+    expect(showSetupWizard('skipped', undefined)).toBe(false);
+    expect(showSetupWizard('completed', '')).toBe(false);
   });
 });

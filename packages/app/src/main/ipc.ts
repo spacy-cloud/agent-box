@@ -9,7 +9,14 @@ import { renderDockerfile } from '@abox/backend-docker';
 import type { AboxRuntime } from '@abox/runtime';
 import type { z } from 'zod';
 import { IPC } from '../shared/ipc';
-import type { IpcChannel, IpcErrorData, IpcResult, Locale, NotificationKind } from '../shared/ipc';
+import type {
+  IpcChannel,
+  IpcErrorData,
+  IpcResult,
+  Locale,
+  NotificationKind,
+  SetupWizardState,
+} from '../shared/ipc';
 import type { AppInfo, Outputs, SaveResult } from '../shared/types';
 import { toIpcError } from './errors';
 import { senderAllowed } from './guard';
@@ -34,6 +41,7 @@ export interface IpcDeps {
   appInfo(): Omit<AppInfo, 'managerError' | 'paths'>;
   setLocale(l: Locale): void;
   setCloseToTray(on: boolean): void;
+  setSetupWizard(state: SetupWizardState): void;
   setNotifications(change: Partial<Record<NotificationKind, boolean | undefined>>): void;
   /** Recently used project folders of this user (most recent first) and a way to add one. */
   recentProjects(): string[];
@@ -88,6 +96,7 @@ const WRITE_CHANNELS = new Set<IpcChannel>([
   'caches:remove',
   'tokens:create',
   'tokens:revoke',
+  'setup:apply',
 ]);
 
 export interface IpcHandle {
@@ -141,9 +150,14 @@ export function registerIpc(d: IpcDeps): IpcHandle {
   } = {
     'app:settings': (i) => {
       if (i.closeToTray !== undefined) d.setCloseToTray(i.closeToTray);
+      if (i.setupWizard !== undefined) d.setSetupWizard(i.setupWizard);
       if (i.notifications) d.setNotifications(i.notifications);
       const now = d.appInfo();
-      return { closeToTray: now.closeToTray, notifications: now.notifications };
+      return {
+        closeToTray: now.closeToTray,
+        notifications: now.notifications,
+        setupWizard: now.setupWizard,
+      };
     },
     'projects:recent': () => existingFolders(d.recentProjects()),
     'projects:remember': async (i) => {

@@ -14,6 +14,7 @@ import {
   ACTIVITY_KINDS,
   APPROVAL_STATUSES,
   AUDIT_DECISIONS,
+  CLAUDE_CODE_METHODS,
   EXPORT_FORMATS,
   FORWARD_KINDS,
   HOST_BACKENDS,
@@ -25,6 +26,8 @@ import {
   PORT_FORWARD_MIN_HOST_PORT,
   SANDBOX_STATES,
   TEMPLATE_BACKENDS,
+  SETUP_CLIENTS,
+  SETUP_WIZARD_STATES,
   TTY_MAX_COLS,
   TTY_MAX_INPUT,
   TTY_MAX_ROWS,
@@ -44,6 +47,24 @@ const absPath = z.string().min(1).max(4096);
  * like the CLI does for a human `--project`; relative paths and `~` are refused here.
  */
 const projectDir = absPath.refine((p) => p.startsWith('/') && !p.includes('\0'), 'absolute path');
+/**
+ * A folder the first-run wizard may turn into a workspace root: absolute or `~/…` (the main process expands it);
+ * the main process checks it again (exists, is a directory, passes the same forbidden-path check as a workspace).
+ */
+const rootFolder = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine(
+    (p) => (p.startsWith('/') || p.startsWith('~/')) && !p.includes('\0'),
+    'absolute path or ~/…',
+  );
+/** What `abox setup` is asked to do from the wizard: which agents, and how for Claude Code. Nothing else is exposed. */
+const setupRequest = {
+  clients: z.array(z.enum(SETUP_CLIENTS)).min(1).max(SETUP_CLIENTS.length),
+  claudeCodeMethod: z.enum(CLAUDE_CODE_METHODS).optional(),
+  rules: z.boolean().optional(),
+};
 const none = z.undefined();
 /** A TCP port inside a sandbox. */
 const sandboxPort = z.number().int().min(1).max(PORT_FORWARD_MAX_PORT);
@@ -242,6 +263,8 @@ export const IPC = {
   'app:settings': z
     .object({
       closeToTray: z.boolean().optional(),
+      /** The first-run wizard was finished or skipped (it is not shown again until it is opened from Settings). */
+      setupWizard: z.enum(SETUP_WIZARD_STATES).optional(),
       notifications: z
         .object({
           approvals: z.boolean().optional(),
@@ -561,6 +584,32 @@ export const IPC = {
     .optional(),
   /** MCP status for the settings view: agent contexts with their last activity, token usage. */
   'mcp:status': none,
+
+  // -- first-run setup wizard (human only; the agents in the wizard are written by `abox setup` in the manager) ----
+  /** Which agents are installed on this machine and where abox is registered (read-only). */
+  'setup:detect': none,
+  /** The preview of registering abox with the chosen agents: exact files, diffs, commands; writes nothing. */
+  'setup:plan': z.object(setupRequest).strict(),
+  /**
+   * Applies the previewed plan. `confirmed` is the click on "Apply" after the human saw the preview, `digest` binds
+   * the call to exactly that preview (the manager refuses when a file changed since).
+   */
+  'setup:apply': z
+    .object({
+      ...setupRequest,
+      digest: z.string().regex(/^[0-9a-f]{64}$/, '64 hex digits'),
+      confirmed: z.literal(true),
+    })
+    .strict(),
+  /**
+   * The edit of `workspace.roots` of an agent profile that adding `folders` would be: checks each folder, proposes the
+   * new policy.yaml text; writes nothing (the save is `policy:set`, with the diff and a confirmation).
+   */
+  'setup:roots': z
+    .object({ profile: shortText.optional(), folders: z.array(rootFolder).max(20) })
+    .strict(),
+  /** Which templates the projects below the chosen folders point to (read-only, from file names only). */
+  'setup:scan': z.object({ folders: z.array(rootFolder).min(1).max(20) }).strict(),
 
   // -- terminals (sandbox shell and ssh sessions). The renderer never names a command or a path. ----------
   'tty:open': z.discriminatedUnion('kind', [

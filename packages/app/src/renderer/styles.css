@@ -1887,3 +1887,95 @@ button.change-file-name:hover {
     grid-row: 2;
   }
 }
+
+/* first-run setup wizard */
+.wizard-footer-left {
+  margin-right: auto;
+  display: flex;
+  gap: 0.5rem;
+}
+.wizard-heading {
+  margin-top: 0.25rem;
+}
+.wizard-heading:focus {
+  outline: none;
+}
+.wizard-heading:focus-visible {
+  outline: 3px solid var(--focus);
+}
+.folder-list,
+.client-list ul,
+.template-pick ul,
+.plan-steps,
+.build-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0;
+}
+.client-list,
+.template-pick,
+.method {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.8rem 0.6rem;
+  margin: 0.6rem 0;
+}
+.method {
+  margin: 0.4rem 0 0.2rem 1.4rem;
+}
+.method-option {
+  display: flex;
+  align-items: flex-start;
+}
+.client-row,
+.template-pick-row,
+.plan-step,
+.build-list li {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.client-row:last-child,
+.template-pick-row:last-child,
+.plan-step:last-child,
+.build-list li:last-child {
+  border-bottom: 0;
+}
+.folder-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.folder-main {
+  min-width: 0;
+}
+/* the picture of an approval card in the wizard: nothing in it can be clicked */
+.approval-demo {
+  margin: 0.75rem 0;
+}
+.approval-dialog.demo {
+  margin-top: 0.25rem;
+  border-style: dashed;
+}
+.demo-title {
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin: 0;
+}
+.demo-button {
+  display: inline-block;
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  user-select: none;
+}
+.demo-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
