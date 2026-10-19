@@ -7,7 +7,16 @@ import { dirname, join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { openAbox } from '@abox/runtime';
 import { trustHostKey } from '@abox/core';
-import { SHELL_REQ, axeViolations, launchGui, makeHome, nav, openAgent, shot } from './helpers';
+import {
+  SHELL_REQ,
+  axeViolations,
+  launchGui,
+  makeHome,
+  nav,
+  openAgent,
+  rowAction,
+  shot,
+} from './helpers';
 import type { TestHome } from './helpers';
 
 let h: TestHome;
@@ -299,7 +308,7 @@ test.describe('ssh passphrase prompt as a dialog (local sshd, no docker)', () =>
       const label = `${userInfo().username}@127.0.0.1:${port}`;
 
       // 1) cancel: ssh cannot authenticate, the session ends; the terminal never showed a prompt
-      await row.getByRole('button', { name: /^Terminal/ }).click();
+      await (await rowAction(page, row, /^Terminal/)).click();
       const dlg = page.getByRole('dialog', { name: `SSH-Anmeldung: ${label}` });
       await expect(dlg).toBeVisible({ timeout: 30_000 });
       await expect(dlg).toContainText('passphrase');

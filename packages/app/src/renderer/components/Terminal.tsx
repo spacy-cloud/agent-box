@@ -17,12 +17,23 @@ export type TerminalState =
   | { kind: 'ended'; code: number | null; reason?: string }
   | { kind: 'error'; error: unknown };
 
-const THEME = {
-  background: '#0d1117',
-  foreground: '#e6edf3',
-  cursor: '#e6edf3',
-  selectionBackground: '#264f78',
-};
+/** The emulator takes colours as values, not CSS: read them from the `--term-*` tokens (styles.css) once per terminal. */
+function terminalTheme(): {
+  background: string;
+  foreground: string;
+  cursor: string;
+  selectionBackground: string;
+} {
+  const css = getComputedStyle(document.documentElement);
+  const token = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
+  const foreground = token('--term-fg', '#e6edf3');
+  return {
+    background: token('--term-bg', '#0d1117'),
+    foreground,
+    cursor: foreground,
+    selectionBackground: token('--term-select', '#264f78'),
+  };
+}
 
 /**
  * One terminal bound to one session in the main process.
@@ -96,7 +107,7 @@ export function TerminalPane(props: {
       scrollback: 5000,
       fontFamily: "ui-monospace, 'JetBrains Mono', 'DejaVu Sans Mono', Menlo, monospace",
       fontSize: 13,
-      theme: THEME,
+      theme: terminalTheme(),
       allowProposedApi: false,
       // Links in terminal output are never made clickable: output is data, not navigation.
       linkHandler: null,

@@ -301,7 +301,9 @@ describe('Snapshots tab of a sandbox', () => {
     expect(
       row.getByRole('button', { name: 'Clone snapshot installed into a new sandbox' }),
     ).toBeTruthy();
-    expect(row.getByRole('button', { name: 'Delete snapshot installed' })).toBeTruthy();
+    // delete is in the "⋯" menu of the row, in the danger style
+    fireEvent.click(row.getByRole('button', { name: 'More actions: installed' }));
+    expect(screen.getByRole('menuitem', { name: 'Delete' }).className).toContain('danger');
   });
 
   it('disables clone and delete with the reason when the backend cannot', async () => {
@@ -315,11 +317,13 @@ describe('Snapshots tab of a sandbox', () => {
     }) as HTMLButtonElement;
     expect(clone.disabled).toBe(true);
     expect(clone.title).toMatch(/secrets inside it/);
-    const del = screen.getByRole('button', {
-      name: 'Delete snapshot installed',
-    }) as HTMLButtonElement;
-    expect(del.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'More actions: installed' }));
+    const del = screen.getByRole('menuitem', { name: 'Delete' });
+    expect(del.getAttribute('aria-disabled')).toBe('true');
     expect(del.title).toMatch(/cannot delete a single snapshot/);
+    // a disabled entry does nothing
+    fireEvent.click(del);
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByText('unknown')).toBeTruthy();
   });
 
@@ -334,7 +338,8 @@ describe('Snapshots tab of a sandbox', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(calls.some((c) => c.channel === 'snapshots:restore')).toBe(false);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete snapshot installed' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More actions: installed' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
     dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).toContain('"installed" (12 MiB) will be deleted');
     expect(calls.some((c) => c.channel === 'snapshots:delete')).toBe(false);

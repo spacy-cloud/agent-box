@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { SandboxView } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
@@ -27,13 +27,15 @@ import {
   safeText,
 } from '../../shared/format';
 import { UsageLines } from '../components/usage';
+import { OverflowMenu } from '../components/OverflowMenu';
+import type { MenuAction } from '../components/OverflowMenu';
 import { NewSandboxDialog } from './NewSandbox';
 import { SANDBOX_STATES } from '../../shared/constants';
 
 const EXTEND_PRESETS = ['30m', '1h', '4h', '1d'] as const;
 
 export function SandboxesView() {
-  const { t, navigate, notify } = useApp();
+  const { t, navigate, notify, route } = useApp();
   const list = useQuery('sandboxes:list', {}, { pollMs: 4000 });
   const [filters, setFilters] = useState<SandboxFilters>(EMPTY_FILTERS);
   const [creating, setCreating] = useState(false);
@@ -41,6 +43,10 @@ export function SandboxesView() {
   const [deleteFor, setDeleteFor] = useState<SandboxView | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const now = useNow(1000);
+  // The `n` shortcut (from any view) lands here with `create` set.
+  useEffect(() => {
+    if (route.create) setCreating(true);
+  }, [route]);
 
   const all = list.data?.sandboxes ?? [];
   const shown = useMemo(() => filterSandboxes(all, filters), [all, filters]);
@@ -84,6 +90,35 @@ export function SandboxesView() {
     } finally {
       setBusyId(null);
     }
+  }
+
+  /** The less used actions of a row. Delete keeps its confirmation dialog. */
+  function rowMenu(s: SandboxView): MenuAction[] {
+    return [
+      {
+        id: 'open',
+        label: t('sandboxes.action.open'),
+        onSelect: () => navigate({ view: 'detail', sandboxId: s.id }),
+      },
+      { id: 'extend', label: t('sandboxes.action.extend'), onSelect: () => setExtendFor(s) },
+      {
+        id: 'export',
+        label: t('sandboxes.action.export'),
+        onSelect: () => navigate({ view: 'detail', sandboxId: s.id, tab: 'files' }),
+      },
+      {
+        id: 'snapshots',
+        label: t('sandboxes.action.snapshots'),
+        onSelect: () => navigate({ view: 'detail', sandboxId: s.id, tab: 'snapshots' }),
+      },
+      {
+        id: 'delete',
+        label: t('sandboxes.action.delete'),
+        danger: true,
+        disabled: busyId === s.id,
+        onSelect: () => setDeleteFor(s),
+      },
+    ];
   }
 
   return (
@@ -153,7 +188,8 @@ export function SandboxesView() {
 
       {list.data && all.length === 0 ? (
         <EmptyState title={t('sandboxes.empty.title')} text={t('sandboxes.empty.text')}>
-          <button type="button" className="primary" onClick={() => setCreating(true)}>
+          {/* One primary button per view: the header carries it */}
+          <button type="button" onClick={() => setCreating(true)}>
             {t('sandboxes.empty.action')}
           </button>
         </EmptyState>
@@ -171,6 +207,7 @@ export function SandboxesView() {
               {t('sandboxes.filter.text')}
               <input
                 type="search"
+                data-shortcut-search=""
                 value={filters.text}
                 onChange={(e) => setFilters({ ...filters, text: e.target.value })}
               />
@@ -335,12 +372,6 @@ export function SandboxesView() {
                         <div className="row-actions">
                           <button
                             type="button"
-                            onClick={() => navigate({ view: 'detail', sandboxId: s.id })}
-                          >
-                            {t('sandboxes.action.open')}
-                          </button>
-                          <button
-                            type="button"
                             disabled={s.state !== 'running' || s.stale || !s.hostReachable}
                             title={
                               s.state !== 'running' || s.stale || !s.hostReachable
@@ -380,37 +411,10 @@ export function SandboxesView() {
                               {t('sandboxes.action.start')}
                             </button>
                           ) : null}
-                          <button
-                            type="button"
-                            aria-label={t('sandboxes.action.extendNamed', {
-                              name: safeInline(s.name, 60),
-                            })}
-                            onClick={() => setExtendFor(s)}
-                          >
-                            {t('sandboxes.action.extend')}
-                          </button>
-                          <button
-                            type="button"
-                            aria-label={t('sandboxes.action.exportNamed', {
-                              name: safeInline(s.name, 60),
-                            })}
-                            onClick={() =>
-                              navigate({ view: 'detail', sandboxId: s.id, tab: 'files' })
-                            }
-                          >
-                            {t('sandboxes.action.export')}
-                          </button>
-                          <button
-                            type="button"
-                            className="danger"
-                            disabled={busyId === s.id}
-                            aria-label={t('sandboxes.action.deleteNamed', {
-                              name: safeInline(s.name, 60),
-                            })}
-                            onClick={() => setDeleteFor(s)}
-                          >
-                            {t('sandboxes.action.delete')}
-                          </button>
+                          <OverflowMenu
+                            label={t('menu.more', { name: safeInline(s.name, 60) })}
+                            items={rowMenu(s)}
+                          />
                         </div>
                       </td>
                     </tr>

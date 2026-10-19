@@ -186,6 +186,43 @@ is an untrusted project template (it is shown before anything is created, togeth
 image when that lies outside the allowed registries), and as **Review …** in the Templates view for
 a project template. Looking at a review never trusts anything.
 
+## Row actions, keyboard shortcuts and themes
+
+**The "⋯" menu.** A table row shows its one or two most used actions as buttons and keeps the rest in a
+**⋯** menu button (German: **Weitere Aktionen: <name>**): on a sandbox **Shell** and **Stop** or **Start** are
+visible, and **Open**, **Extend**, **Export diff**, **Snapshots** and **Delete** are in the menu; on a host
+**New sandbox** and **Check** are visible and **Test**, **Terminal**, **Host key**, **Forwards**, **Edit** and
+**Remove** (this computer: **Limits**) are in the menu; on a snapshot **Restore** and **Clone** are visible and
+**Delete** is in the menu; the template editor keeps **Duplicate**, **Export YAML** and **Export Dockerfile** in a
+menu of its toolbar. Nothing changed in what the actions do: **a destructive entry is drawn in the danger
+colour and still opens the same confirmation dialog** (sandbox, host, snapshot), and an entry that is not
+available (for example delete on a backend that cannot delete a single snapshot) is shown dimmed with the reason
+as its tooltip. The menu follows the WAI-ARIA menu-button pattern: **Enter**, **Space** or **Arrow down** on the
+button opens it and focuses the first entry (**Arrow up** the last), the **arrow keys**, **Home** and **End** move
+(wrapping), **Enter** or **Space** runs the entry, **Esc** closes it and gives the focus back to the button, and
+a click outside or **Tab** closes it. The menu is drawn in a layer of its own, so a scrolling table cannot clip
+it.
+
+**Keyboard shortcuts.** Three single-key shortcuts work in every view; **`?`** lists all of them, with the
+existing keys of the lists and the terminal, in a dialog (so does the **Keyboard shortcuts** button at the bottom of
+the navigation):
+
+| Key | What it does                                                                                                      |
+| --- | ----------------------------------------------------------------------------------------------------------------- |
+| `n` | opens **New sandbox** (switches to the Sandboxes view first when you are elsewhere)                               |
+| `/` | moves the focus to the search field of the current view (Sandboxes, Templates, Hosts); with none, nothing happens |
+| `?` | shows the list of shortcuts                                                                                       |
+
+They never fire while you type in a field (input, text area, selection list, the YAML editor), inside a terminal,
+while any dialog or a "⋯" menu is open, with **Ctrl**, **Alt** or **Meta** held (those belong to the system and
+the window), on key repeat or during text composition. Esc closes a dialog or a menu as before.
+
+**Themes.** The app follows the system's light or dark setting (`prefers-color-scheme`); there is no theme
+switch of its own. Every colour comes from a token in `styles.css` (`--surface`, `--text`, `--accent`, the
+`--ok-*`, `--warn-*`, `--danger-*`, `--info-*` and `--neutral-*` pairs, `--shadow`, `--scrim`, and the `--term-*`
+colours of the terminal, which stays dark in both themes); the accessibility test runs axe in both themes for every
+view.
+
 ## Notifications and the tray
 
 While the app runs, it can tell you about three things with a desktop notification (freedesktop

@@ -15,6 +15,8 @@ export interface Route {
   activityKinds?: string[];
   /** Audit view: start with this actor filter (e.g. coming from the MCP status). */
   actor?: string;
+  /** Sandboxes view: open the "New sandbox" dialog right away (the `n` shortcut). */
+  create?: boolean;
 }
 
 export interface Toast {

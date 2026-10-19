@@ -16,6 +16,8 @@ import {
 } from '../components/ui';
 import { hostColor } from '../components/Terminal';
 import { ReadinessDialog } from '../components/ReadinessCheck';
+import { OverflowMenu } from '../components/OverflowMenu';
+import type { MenuAction } from '../components/OverflowMenu';
 import { useSshTabs } from './ssh-tabs';
 import { NewSandboxDialog } from './NewSandbox';
 import {
@@ -202,6 +204,7 @@ export function HostsView() {
               {t('hosts.search')}
               <input
                 type="search"
+                data-shortcut-search=""
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 autoComplete="off"
@@ -393,6 +396,33 @@ function HostLine(props: {
   const { row } = props;
   const p = row.profile;
   const local = p.kind === 'local';
+  // Create and Check stay visible; the rest is in the "⋯" menu. Removing still asks in its own dialog.
+  const menuItems: MenuAction[] = local
+    ? [{ id: 'limits', label: t('hosts.action.limits'), onSelect: props.onEdit }]
+    : [
+        {
+          id: 'test',
+          label: props.busy ? t('hosts.testing') : t('hosts.action.test'),
+          disabled: props.busy,
+          onSelect: props.onTest,
+        },
+        {
+          id: 'terminal',
+          label: t('hosts.action.terminal'),
+          disabled: props.busy,
+          onSelect: props.onTerminal,
+        },
+        { id: 'key', label: t('hosts.action.key'), onSelect: props.onKey },
+        {
+          id: 'forwards',
+          label: `${t('hosts.action.forwards')}${
+            p.portForwards.length > 0 ? ` (${row.forwardsRunning}/${p.portForwards.length})` : ''
+          }`,
+          onSelect: props.onForwards,
+        },
+        { id: 'edit', label: t('hosts.action.edit'), onSelect: props.onEdit },
+        { id: 'remove', label: t('hosts.action.remove'), danger: true, onSelect: props.onRemove },
+      ];
   return (
     <tr>
       <th scope="row" className="plain">
@@ -481,42 +511,8 @@ function HostLine(props: {
             {t('hosts.action.check')}
             <span className="sr-only"> {p.id}</span>
           </button>
-          {local ? (
-            <button type="button" onClick={props.onEdit}>
-              {t('hosts.action.limits')}
-              <span className="sr-only"> {p.id}</span>
-            </button>
-          ) : null}
-          {!local ? (
-            <>
-              <button type="button" disabled={props.busy} onClick={props.onTest}>
-                {props.busy ? t('hosts.testing') : t('hosts.action.test')}
-                <span className="sr-only"> {p.id}</span>
-              </button>
-              <button type="button" disabled={props.busy} onClick={props.onTerminal}>
-                {t('hosts.action.terminal')}
-                <span className="sr-only"> {p.id}</span>
-              </button>
-              <button type="button" onClick={props.onKey}>
-                {t('hosts.action.key')}
-                <span className="sr-only"> {p.id}</span>
-              </button>
-              <button type="button" onClick={props.onForwards}>
-                {t('hosts.action.forwards')}
-                {p.portForwards.length > 0
-                  ? ` (${row.forwardsRunning}/${p.portForwards.length})`
-                  : ''}
-                <span className="sr-only"> {p.id}</span>
-              </button>
-              <button type="button" onClick={props.onEdit}>
-                {t('hosts.action.edit')}
-                <span className="sr-only"> {p.id}</span>
-              </button>
-              <button type="button" className="danger" onClick={props.onRemove}>
-                {t('hosts.action.remove')}
-                <span className="sr-only"> {p.id}</span>
-              </button>
-            </>
+          {menuItems.length > 0 ? (
+            <OverflowMenu label={t('menu.more', { name: p.id })} items={menuItems} />
           ) : null}
         </div>
       </td>

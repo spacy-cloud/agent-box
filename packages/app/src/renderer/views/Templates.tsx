@@ -17,6 +17,7 @@ import { YamlEditor } from '../components/CodeEditor';
 import { TemplateReviewPanel } from '../components/review';
 import { ProjectFolderPicker } from '../components/ProjectFolder';
 import { ReadinessDialog } from '../components/ReadinessCheck';
+import { OverflowMenu } from '../components/OverflowMenu';
 import { BuildDialog } from '../components/BuildDialog';
 import { FromProjectDialog, draftBaseText } from '../components/TemplateFromProject';
 import { TemplateSaveDialog } from '../components/TemplateSaveDialog';
@@ -253,7 +254,12 @@ export function TemplatesView() {
           <button type="button" onClick={() => setCreating(true)}>
             {t('tpl.fromProject')}
           </button>
-          <button type="button" className="primary" onClick={() => guard(newTemplate)}>
+          {/* One primary button per view: with a template open it is Save */}
+          <button
+            type="button"
+            className={opened ? undefined : 'primary'}
+            onClick={() => guard(newTemplate)}
+          >
             {t('tpl.new')}
           </button>
         </div>
@@ -267,6 +273,7 @@ export function TemplatesView() {
               <span className="sr-only">{t('tpl.search')}</span>
               <input
                 type="search"
+                data-shortcut-search=""
                 placeholder={t('tpl.search')}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -306,7 +313,7 @@ export function TemplatesView() {
           {loadError ? <ErrorBox error={loadError} /> : null}
           {!opened ? (
             <EmptyState title={t('tpl.empty.title')} text={t('tpl.empty.text')}>
-              <button type="button" className="primary" onClick={newTemplate}>
+              <button type="button" onClick={newTemplate}>
                 {t('tpl.new')}
               </button>
             </EmptyState>
@@ -360,25 +367,30 @@ export function TemplatesView() {
                   >
                     {t('tpl.check')}
                   </button>
-                  <button type="button" disabled={!form.valid} onClick={duplicate}>
-                    {t('tpl.duplicate')}
-                  </button>
                   {origin?.kind === 'project' ? (
                     <button type="button" onClick={() => setReviewing(true)}>
                       {t('tpl.review')}
                     </button>
                   ) : null}
-                  <button type="button" onClick={() => void exportYaml()}>
-                    {t('tpl.export')}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!runnable || !DOCKERFILE_BACKENDS.includes(form.backend)}
-                    title={runTitle}
-                    onClick={() => void exportYaml('dockerfile')}
-                  >
-                    {t('tpl.exportDockerfile')}
-                  </button>
+                  <OverflowMenu
+                    label={t('menu.moreGeneric')}
+                    items={[
+                      {
+                        id: 'duplicate',
+                        label: t('tpl.duplicate'),
+                        disabled: !form.valid,
+                        onSelect: duplicate,
+                      },
+                      { id: 'export', label: t('tpl.export'), onSelect: () => void exportYaml() },
+                      {
+                        id: 'dockerfile',
+                        label: t('tpl.exportDockerfile'),
+                        disabled: !runnable || !DOCKERFILE_BACKENDS.includes(form.backend),
+                        ...(runTitle ? { title: runTitle } : {}),
+                        onSelect: () => void exportYaml('dockerfile'),
+                      },
+                    ]}
+                  />
                 </div>
               </div>
               {fromProject ? (

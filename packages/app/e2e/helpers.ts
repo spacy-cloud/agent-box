@@ -209,3 +209,14 @@ export async function axeViolations(page: Page): Promise<string[]> {
         .join(' | ')}`,
   );
 }
+
+/**
+ * The control of a table row that does `name`: a visible button, or - when the action lives in the "⋯" overflow
+ * menu of the row - its menu item (the menu is opened on the way). `click()` the result.
+ */
+export async function rowAction(page: Page, row: Locator, name: string | RegExp): Promise<Locator> {
+  const direct = row.getByRole('button', { name });
+  if ((await direct.count()) > 0) return direct.first();
+  await row.getByRole('button', { name: /^(Weitere Aktionen|More actions)/ }).click();
+  return page.getByRole('menuitem', { name });
+}

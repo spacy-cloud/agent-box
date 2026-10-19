@@ -5,6 +5,7 @@ import { useApp } from '../context';
 import { useNow, useQuery } from '../hooks';
 import { CloneSnapshotDialog } from './CloneSnapshotDialog';
 import { Banner, ConfirmDialog, ErrorBox, Field, Loading, Safe } from './ui';
+import { OverflowMenu } from './OverflowMenu';
 import { formatBytes, formatDuration, formatTimestamp, safeInline } from '../../shared/format';
 import type { SnapshotView } from '../../shared/types';
 
@@ -139,7 +140,7 @@ export function SnapshotsTab(props: {
                       })}
                     </td>
                     <td>
-                      <div className="actions">
+                      <div className="row-actions">
                         <button
                           type="button"
                           aria-label={t('snapshots.restoreNamed', { name: label })}
@@ -160,16 +161,21 @@ export function SnapshotsTab(props: {
                         >
                           {t('snapshots.clone')}
                         </button>
-                        <button
-                          type="button"
-                          className="danger"
-                          aria-label={t('snapshots.deleteNamed', { name: label })}
-                          disabled={!snap.deletable}
-                          title={snap.deletable ? undefined : t('snapshots.deleteUnsupported')}
-                          onClick={() => setDeleteSnap(snap)}
-                        >
-                          {t('snapshots.delete')}
-                        </button>
+                        <OverflowMenu
+                          label={t('menu.more', { name: label })}
+                          items={[
+                            {
+                              id: 'delete',
+                              label: t('snapshots.delete'),
+                              danger: true,
+                              disabled: !snap.deletable,
+                              ...(snap.deletable
+                                ? {}
+                                : { title: t('snapshots.deleteUnsupported') }),
+                              onSelect: () => setDeleteSnap(snap),
+                            },
+                          ]}
+                        />
                       </div>
                     </td>
                   </tr>

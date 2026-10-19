@@ -17,6 +17,8 @@ import { HostsView } from './views/Hosts';
 import { SshPanel, SshTabsProvider, useSshTabs } from './views/ssh-tabs';
 import { AskpassHost } from './components/AskpassDialog';
 import { SetupWizardHost } from './components/setup/SetupWizard';
+import { ShortcutsDialog } from './components/ShortcutsDialog';
+import { useShortcuts } from './shortcuts';
 import logoMark from './assets/logo-mark.png';
 
 const NAV: Array<{ view: Exclude<ViewName, 'detail'>; key: string }> = [
@@ -87,6 +89,13 @@ function Shell() {
   const { t, route, navigate, pendingApprovals, info } = useApp();
   const ssh = useSshTabs();
   const mainRef = useRef<HTMLElement>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  // Single-key shortcuts (`n`, `/`, `?`); they stay quiet while typing, in dialogs, menus and terminals.
+  useShortcuts({
+    onNew: () => navigate({ view: 'sandboxes', create: true }),
+    onHelp: () => setHelpOpen(true),
+  });
 
   // After a view change move focus to the view heading's container so keyboard/screen reader users
   // start at the new content (not at the nav). Skipped on first render.
@@ -142,6 +151,14 @@ function Shell() {
           ))}
         </ul>
         <div className="sidebar-foot muted">
+          <button
+            type="button"
+            className="linklike sidebar-help"
+            title={t('shortcuts.openHint')}
+            onClick={() => setHelpOpen(true)}
+          >
+            {t('shortcuts.open')}
+          </button>
           <span>{t('app.actingAs', { context: info.contextId })}</span>
           <span>v{info.version}</span>
         </div>
@@ -168,6 +185,7 @@ function Shell() {
       </main>
       <AskpassHost />
       <SetupWizardHost />
+      {helpOpen ? <ShortcutsDialog onClose={() => setHelpOpen(false)} /> : null}
       <ToastRegion />
     </div>
   );

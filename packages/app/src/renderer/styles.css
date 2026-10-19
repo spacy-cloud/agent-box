@@ -25,7 +25,16 @@
   --neutral-fg: #28313a;
   --add-bg: #d4f0dc;
   --del-bg: #fbd9d5;
+  --scrim: rgb(0 0 0 / 0.5);
+  --shadow: 0 4px 14px rgb(0 0 0 / 0.25);
+  /* Terminals are dark in both themes (a terminal is a terminal); the same tokens feed the xterm theme. */
+  --term-bg: #0d1117;
+  --term-fg: #e6edf3;
+  --term-select: #264f78;
+  --term-head: #3b4651;
+  --term-head-fg: #ffffff;
   --radius: 6px;
+  --radius-lg: 10px;
   --font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', sans-serif;
   --mono: ui-monospace, 'JetBrains Mono', 'DejaVu Sans Mono', Menlo, monospace;
 }
@@ -55,6 +64,7 @@
     --neutral-fg: #dbe1e7;
     --add-bg: #173826;
     --del-bg: #4a1d19;
+    --shadow: 0 4px 14px rgb(0 0 0 / 0.55);
   }
 }
 
@@ -455,6 +465,16 @@ td.path {
   padding: 0.2rem 0.55rem;
   font-size: 0.85rem;
 }
+/* a row with a "⋯" menu has at most two buttons next to it: keep them on one line, the table scrolls instead */
+.row-actions:has(.menu-trigger) {
+  flex-wrap: nowrap;
+}
+.row-actions button.menu-trigger {
+  min-width: 2rem;
+  padding-inline: 0.4rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
 .row-changed > * {
   background: var(--warn-bg);
 }
@@ -623,7 +643,7 @@ td.path {
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--surface);
-  box-shadow: 0 4px 14px rgb(0 0 0 / 0.25);
+  box-shadow: var(--shadow);
 }
 .toast-ok {
   border-color: var(--ok-fg);
@@ -634,13 +654,98 @@ td.path {
   color: var(--danger-fg);
 }
 
+/* overflow menu ("⋯" button of a row: the less used actions) */
+.menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  min-width: 11rem;
+  max-width: min(22rem, 92vw);
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.menu:focus {
+  outline: none;
+}
+.menu .menu-item {
+  border: 0;
+  border-radius: 4px;
+  padding: 0.4rem 0.7rem;
+  background: transparent;
+  text-align: left;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+.menu .menu-item:hover:not([aria-disabled='true']),
+.menu .menu-item:focus {
+  background: var(--surface-2);
+}
+.menu .menu-item.danger {
+  color: var(--danger-fg);
+  border: 0;
+}
+.menu .menu-item.danger:hover,
+.menu .menu-item.danger:focus {
+  background: var(--danger-bg);
+}
+.menu .menu-item[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.menu .menu-item.danger:not(:first-child) {
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 4px 4px;
+}
+
+/* keyboard shortcut help */
+kbd {
+  font-family: var(--mono);
+  font-size: 0.85em;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.shortcuts {
+  margin: 0.3rem 0 0.8rem;
+}
+.shortcut-row {
+  display: grid;
+  grid-template-columns: 11rem 1fr;
+  gap: 0.75rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.shortcut-row:last-child {
+  border-bottom: 0;
+}
+.shortcut-row dt,
+.shortcut-row dd {
+  margin: 0;
+}
+.sidebar-help {
+  align-self: flex-start;
+  margin-bottom: 0.4rem;
+  font-size: 0.8rem;
+}
+
 /* dialog (native <dialog>) */
 /* title and footer stay put, only the body scrolls */
 dialog.modal {
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 0;
   width: min(560px, 92vw);
   max-height: 90vh;
@@ -654,7 +759,7 @@ dialog.modal.wide {
   width: min(720px, 94vw);
 }
 dialog.modal::backdrop {
-  background: rgb(0 0 0 / 0.5);
+  background: var(--scrim);
 }
 dialog.modal h2 {
   margin: 0;
@@ -804,7 +909,7 @@ dialog.modal h2 {
 .approval-dialog {
   background: var(--surface);
   border: 2px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 1rem 1.25rem;
 }
 .approval-dialog:focus-visible {
@@ -988,7 +1093,7 @@ dialog.modal h2 {
   --term-accent: var(--border);
   border: 2px solid var(--term-accent);
   border-radius: var(--radius);
-  background: #0d1117;
+  background: var(--term-bg);
   overflow: hidden;
   margin: 0.5rem 0;
 }
@@ -999,15 +1104,15 @@ dialog.modal h2 {
   gap: 0.6rem;
   padding: 0.35rem 0.6rem;
   background: var(--term-accent);
-  color: #ffffff;
+  color: var(--term-head-fg);
 }
 .term[data-kind='sandbox'] .term-head {
-  background: #3b4651;
+  background: var(--term-head);
 }
 .term-kind {
   font-weight: 700;
   letter-spacing: 0.04em;
-  border: 1px solid #ffffff;
+  border: 1px solid var(--term-head-fg);
   border-radius: 4px;
   padding: 0 0.4rem;
   font-size: 0.8rem;
@@ -1030,7 +1135,7 @@ dialog.modal h2 {
 .term-screen {
   height: 420px;
   padding: 6px 0 0 8px;
-  background: #0d1117;
+  background: var(--term-bg);
 }
 .term-screen .xterm {
   height: 100%;
@@ -1108,14 +1213,6 @@ dialog.modal h2 {
   gap: 0.25rem;
   flex-wrap: wrap;
   margin-top: 0.2rem;
-}
-.row-actions {
-  display: flex;
-  gap: 0.3rem;
-  flex-wrap: wrap;
-}
-.row-actions button {
-  padding: 0.2rem 0.55rem;
 }
 .fp {
   font-family: var(--mono);
