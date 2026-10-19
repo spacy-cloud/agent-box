@@ -52,6 +52,7 @@ import {
 import { listCaches, removeCaches } from './caches.js';
 import { estimateFit, hostCapacity } from './capacity.js';
 import { estimateWorkspace } from './estimate.js';
+import { suggestTemplate } from './suggest.js';
 import { allowNetwork, networkLog, proposeNetworkPolicy } from './network-log.js';
 import { listPortForwards, removePortForward } from './ports.js';
 import { Internals } from './internals.js';
@@ -136,6 +137,8 @@ import type {
   TemplateReview,
   TemplateValidation,
   WorkspaceEstimate,
+  TemplateSuggestion,
+  TemplateSuggestionInput,
   WorkspaceEstimateInput,
 } from './types.js';
 import type { ProgressInfo } from '../workspace/index.js';
@@ -234,6 +237,16 @@ export class Abox {
   }
   buildTemplate(caller: Caller, name: string, o: BuildTemplateOptions = {}): Promise<BuildResult> {
     return buildTemplate(this.I, caller, name, o);
+  }
+  /**
+   * Read-only. Which template fits a project folder: its own `.sandbox/*.yaml` templates first, then the
+   * templates that marker files point to (`package.json` -> node-dev, ...), best first. Only file names are
+   * looked at, bounded; nothing is executed. A template that does not exist or that the caller's policy does
+   * not allow is never suggested; an agent may only ask about folders it could use as a workspace. Not offered
+   * over MCP: choosing a template for a host folder is left to the human surfaces (CLI, GUI).
+   */
+  suggestTemplate(caller: Caller, input: TemplateSuggestionInput): Promise<TemplateSuggestion> {
+    return suggestTemplate(this.I, caller, input);
   }
   /** Human only. */
   gcImages(caller: Caller, o: { projectDir?: string } = {}): Promise<GcImagesResult> {

@@ -78,3 +78,10 @@ export {
   MAX_DOCKERFILE_BYTES,
   MAX_LISTED_FILES,
 } from './context.js';
+export {
+  scanProjectMarkers,
+  matchMarkers,
+  MAX_DETECT_ENTRIES,
+  type FoundMarkers,
+  type MarkerCandidate,
+} from './detect.js';

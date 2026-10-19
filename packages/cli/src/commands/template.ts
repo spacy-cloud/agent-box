@@ -61,6 +61,41 @@ export function registerTemplate(program: Command, cli: Cli): void {
       );
     });
 
+  t.command('suggest')
+    .description(
+      'Suggest the template for a project folder (its .sandbox/*.yaml, else marker files such as package.json); read-only',
+    )
+    .argument('[path]', 'project folder (default: the project directory)')
+    .action(async (path: string | undefined) => {
+      const rt = await cli.rt();
+      const s = await rt.abox.suggestTemplate(cli.caller(), {
+        path: path ? cli.resolvePath(path) : cli.projectDir(),
+      });
+      cli.success(
+        s,
+        () => {
+          const lines: string[] = [];
+          if (s.primary) {
+            lines.push(`suggested: ${safe(s.primary.template)}  (${safe(s.primary.reason)})`);
+          } else {
+            lines.push(
+              `no template suggested for ${safe(s.path)}: no known marker file and no project template`,
+            );
+          }
+          for (const a of s.alternatives)
+            lines.push(`also possible: ${safe(a.template)}  (${safe(a.reason)})`);
+          for (const x of s.skipped)
+            lines.push(
+              `left out: ${safe(x.template)}  (${x.files.map(safe).join(', ')}; ${x.why === 'not_allowed' ? 'not allowed by the policy' : 'no such template'})`,
+            );
+          if (s.truncated)
+            lines.push('note: the folder is large, only its first entries were looked at');
+          return lines.join('\n');
+        },
+        () => s.primary?.template,
+      );
+    });
+
   t.command('show')
     .description('Show a resolved template')
     .argument('<name>', 'template name')

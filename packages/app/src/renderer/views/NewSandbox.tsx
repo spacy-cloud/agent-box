@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { TemplateListEntry } from '@abox/core';
+import type { TemplateListEntry, TemplateSuggestion } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
 import { useQuery } from '../hooks';
@@ -129,6 +129,13 @@ export function NewSandboxDialog(props: {
   const templates = useQuery('templates:list', projectDir ? { projectDir } : undefined, {
     live: false,
   });
+  // Which template fits the picked folder (read-only, from file names). Best effort: a folder that cannot be
+  // looked at (outside the allowed roots, ...) simply gets no suggestion.
+  const suggestion = useQuery(
+    'templates:suggest',
+    { path: projectDir },
+    { enabled: projectDir !== '', live: false },
+  );
   const policy = useQuery('policy:get', undefined, { live: false });
   const hosts = useQuery('hosts:list', undefined, { live: false });
   const [progress, setProgress] = useState<string[]>([]);
@@ -146,6 +153,10 @@ export function NewSandboxDialog(props: {
   const key = useRef(`create-${Math.random().toString(36).slice(2)}`);
   const logRef = useRef<HTMLPreElement>(null);
 
+  // the query keeps its previous answer while a new folder loads: only an answer for this folder counts
+  const suggested =
+    projectDir !== '' && suggestion.data?.path === projectDir ? suggestion.data : undefined;
+  const suggestedPrimary = suggested?.primary ?? null;
   const profile = policy.data?.view.profile;
   const chosen: TemplateListEntry | undefined = templates.data?.templates.find(
     (x) => x.name === form.template,
@@ -249,6 +260,17 @@ export function NewSandboxDialog(props: {
     const detail = mode === 'allowlist' && allow.length > 0 ? `: ${shown}${more}` : '';
     return `${t('new.templateDefault')} (${t(`network.${mode}`)}${detail})`;
   }
+
+  // Preselect the suggestion once for a picked folder, while nothing is chosen yet: the human can still change it
+  // (a choice made before the answer arrived is never overridden). Only a template that can be chosen is selected.
+  const preselected = useRef('');
+  useEffect(() => {
+    if (!suggestedPrimary || form.template !== '' || preselected.current === projectDir) return;
+    const tpl = templates.data?.templates.find((x) => x.name === suggestedPrimary.template);
+    if (!tpl || !tpl.allowed || !tpl.backendAvailable) return;
+    preselected.current = projectDir;
+    setForm((f) => (f.template === '' ? { ...f, template: tpl.name } : f));
+  }, [suggestedPrimary, templates.data, form.template, projectDir]);
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -394,6 +416,9 @@ export function NewSandboxDialog(props: {
             value={projectDir}
             onChange={(dir) => setForm((f) => ({ ...f, projectDir: dir, template: '' }))}
           />
+          {projectDir && suggested ? (
+            <TemplateSuggestionNote suggestion={suggested} chosen={form.template} />
+          ) : null}
           {templates.loading && !templates.data ? <Loading /> : null}
           {templates.error ? <ErrorBox error={templates.error} /> : null}
           {projectDir &&
@@ -849,4 +874,33 @@ function validOptions(f: Form): boolean {
   if (f.memory.trim() && !/^\d{1,6}(\.\d+)?[kmgt]?b?$/i.test(f.memory.trim())) return false;
   if (f.ttl.trim() && !/^\d{1,6}(ms|s|m|h|d)$/.test(f.ttl.trim())) return false;
   return true;
+}
+
+/** Why a template is suggested for the picked folder, and what else the folder points to. */
+function TemplateSuggestionNote(props: { suggestion: TemplateSuggestion; chosen: string }) {
+  const { t } = useApp();
+  const { primary, alternatives, skipped } = props.suggestion;
+  const names = (xs: Array<{ template: string }>) =>
+    xs.map((x) => safeInline(x.template, 40)).join(', ');
+  return (
+    <div className="template-suggestion" data-testid="template-suggestion" role="status">
+      {primary ? (
+        <p>
+          {t(primary.basis === 'project_template' ? 'new.suggest.project' : 'new.suggest.markers', {
+            template: safeInline(primary.template, 40),
+            files: primary.files.map((f) => safeInline(f, 80)).join(', '),
+          })}
+          {props.chosen && props.chosen !== primary.template ? ` ${t('new.suggest.changed')}` : ''}
+        </p>
+      ) : (
+        <p className="muted">{t('new.suggest.none')}</p>
+      )}
+      {alternatives.length > 0 ? (
+        <p className="muted">{t('new.suggest.others', { templates: names(alternatives) })}</p>
+      ) : null}
+      {skipped.length > 0 ? (
+        <p className="muted">{t('new.suggest.skipped', { templates: names(skipped) })}</p>
+      ) : null}
+    </div>
+  );
 }

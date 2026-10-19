@@ -103,6 +103,7 @@ printf '%s\\n' "\${COMPREPLY[@]}"`;
     };
     expect(q('__abox_subs_for template | string split -f1 \\t')).toEqual([
       'ls',
+      'suggest',
       'show',
       'review',
       'validate',
@@ -136,7 +137,7 @@ print -r -- "$(_abox_subs 'template')"
 print -r -- "$(_abox_choices 'create' '--net')"`;
     const r = spawnSync('zsh', ['-c', script], { encoding: 'utf8' });
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout).toContain('ls show review validate build gc');
+    expect(r.stdout).toContain('ls suggest show review validate build gc');
     expect(r.stdout).toContain('none allowlist open');
   });
 

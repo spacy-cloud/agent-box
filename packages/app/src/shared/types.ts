@@ -40,6 +40,7 @@ import type {
   WorkspaceEstimate,
   TemplateDetails,
   TemplateList,
+  TemplateSuggestion,
   TemplateReview,
   TemplateValidation,
   BuildResult,
@@ -85,6 +86,7 @@ export type {
   SnapshotView,
   TemplateDetails,
   TemplateList,
+  TemplateSuggestion,
   TemplateReview,
   TemplateValidation,
   BuildResult,
@@ -351,6 +353,7 @@ export interface Outputs {
   'capacity:host': HostCapacity;
   'capacity:estimate': FitEstimate;
   'templates:list': TemplateList;
+  'templates:suggest': TemplateSuggestion;
   'templates:show': TemplateDetails;
   'templates:review': TemplateReview;
   'projects:recent': string[];

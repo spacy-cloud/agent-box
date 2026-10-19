@@ -284,6 +284,11 @@ export const IPC = {
   'jobs:cancel': z.object({ key: progressKey }).strict(),
   /** `projectDir`: also list the project templates of that folder (`.sandbox/*.yaml`); builtin and user ones always. */
   'templates:list': z.object({ projectDir: projectDir.optional() }).strict().optional(),
+  /**
+   * Which template fits a project folder (its `.sandbox/*.yaml` first, else marker files such as `package.json`);
+   * read-only, from file names only. The main process checks the folder like any project folder.
+   */
+  'templates:suggest': z.object({ path: projectDir }).strict(),
   'templates:show': z.object({ name: shortText, projectDir: projectDir.optional() }).strict(),
   /**
    * Review material for a project template (what it adds, its risks). `workspacePath`: the workspace of a

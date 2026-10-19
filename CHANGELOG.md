@@ -10,6 +10,20 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Template auto-detection from project markers (closes #17): `Abox.suggestTemplate` suggests the template for a
+  project folder, read-only and bounded: only the names of the top-level entries (at most 5000) and two fixed
+  files below `src-tauri/` are looked at, nothing is read, walked or run, and symbolic links are not followed.
+  The project's own `.sandbox/*.yaml` templates always win; otherwise `tauri.conf.json` (or
+  `src-tauri/tauri.conf.json`) with `Cargo.toml` gives `tauri-dev`, `pubspec.yaml` `flutter-dev`, `Cargo.toml`
+  `rust-dev`, `composer.json` `php-dev`, `pyproject.toml` / `uv.lock` `py-uv`, `package.json` `node-dev` and a
+  bare `*.php` file `php-dev` (weakest). The answer has the template, the reason (the marker files),
+  alternatives in priority order and the matches that were left out because the template does not exist or the
+  caller's policy does not allow it (never suggested as primary). `abox create --auto` takes it (`-w` folder,
+  else the project directory), says which template it chose and why on stderr (`data.auto` with `--json`) and
+  fails with `not_found` when nothing matches; `abox template suggest [path]` prints the suggestion. The New
+  sandbox wizard preselects the suggestion when a project folder is picked and shows the reason (de/en); the
+  choice stays free. Not an MCP tool (the tool count stays at 22): which host folder is worked on is a human
+  decision.
 - Network log with one-click allow (closes #16): `Abox.networkLog` groups what the egress proxy allowed and
   denied by destination (host and port) with counts, first and last time, the newest decision, the reason of a
   denial in words (`reasonKind`) and what can be done about it. It is a view of the audit log (`network.egress`):

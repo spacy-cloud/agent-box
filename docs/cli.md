@@ -109,7 +109,7 @@ epoch):
 
 | Command             | `data`                                                                                                                                                                                                                                                        |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create`            | `{status, sandbox, idempotent, warnings, durationMs, estimate?}`; `sandbox` is the object below; `estimate` is the fit on the host (see `abox create`)                                                                                                        |
+| `create`            | `{status, sandbox, idempotent, warnings, durationMs, estimate?, auto?}`; `sandbox` is the object below; `estimate` is the fit on the host, `auto` the template suggestion behind `--auto` (see `abox create`)                                                 |
 | `ls`                | `{sandboxes: [...], orphans: [...], unreachableHosts: [...]}`, plus `hostProblems: {host: reason}` when a host is listed as unreachable                                                                                                                       |
 | `inspect`           | the sandbox object plus `processes`, `pendingApprovals` and `effective` (`policy`: what was granted, `provider`: what the backend reports)                                                                                                                    |
 | `start`, `stop`     | `{results: [{id, sandbox}]}`                                                                                                                                                                                                                                  |
@@ -118,6 +118,7 @@ epoch):
 | `approvals ls`      | `{approvals: [...]}`                                                                                                                                                                                                                                          |
 | `audit`             | `{entries: [{seq, ts, actor, action, sandboxId, decision, details, prevHash, hash}]}` (with `--jsonl`: one entry per line instead)                                                                                                                            |
 | `template ls`       | `{templates: [...], problems: [...]}`                                                                                                                                                                                                                         |
+| `template suggest`  | `{path, primary, alternatives, skipped, truncated}`; `primary` and each alternative are `{template, basis, files, reason}` (see `abox template suggest`)                                                                                                      |
 | `template review`   | `{template, source, contentHash, trusted, against: {kind, label, template?}, diff, risks, buildContext?, changedSinceRequest?}`                                                                                                                               |
 | `template validate` | `{ok, issues, warnings, name, source, policy: {decision, reasons}}`                                                                                                                                                                                           |
 | `policy show`       | `{contextId, owner, kind, profile, allowedHosts, policy, profiles, contexts}`                                                                                                                                                                                 |
@@ -245,6 +246,23 @@ Show a resolved template
 | -------- | ------------- |
 | `name`   | template name |
 
+#### `abox template suggest`
+
+`abox template suggest [options] [path]`
+
+Suggest the template for a project folder (its .sandbox/\*.yaml, else marker files such as package.json); read-only
+
+| Argument | Meaning                                         |
+| -------- | ----------------------------------------------- |
+| `path`   | project folder (default: the project directory) |
+
+Prints the best template, why, and the other templates the folder points to (`also possible:`). The
+project's own `.sandbox/*.yaml` templates always come first; after them the marker files decide, see
+[templates](templates.md#choosing-a-template-for-a-project). Only the names of a few files are looked at,
+nothing is read or run. A template that does not exist or that the policy does not allow is not suggested
+but listed as `left out:`. Nothing matching is not an error here (`primary` is `null`); `--quiet` prints just
+the template name.
+
 #### `abox template review`
 
 `abox template review [options] <name>`
@@ -296,23 +314,31 @@ Create a sandbox from a template
 | ---------- | --------------------------------------------------------------------------------- |
 | `template` | template name (see "abox template ls"); default: defaults.template of config.yaml |
 
-| Option                   | Meaning                                                                                                                                                          |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--name <name>`          | sandbox name                                                                                                                                                     |
-| `-w, --workspace <path>` | host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared                         |
-| `--mode <mode>`          | how the workspace is delivered (default: the template's mode with --workspace, "empty" without) (choices: "mount", "clone", "worktree", "copy", "empty", "sync") |
-| `--ref <ref>`            | git ref for clone/worktree workspaces (needs --workspace)                                                                                                        |
-| `--exclude <patterns>`   | leave these out of a copy/sync workspace (on top of .gitignore), comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)                  |
-| `--gitignore`            | copy/sync workspace: leave out what .gitignore files ignore (node_modules, build output, .env...); the default                                                   |
-| `--no-gitignore`         | copy/sync workspace: copy everything, ignored files included (needs --workspace)                                                                                 |
-| `--no-cache`             | do not mount the template's package caches (pnpm store, Cargo registry, ...): a clean install; see "abox cache"                                                  |
-| `--net <mode>`           | network mode (choices: "none", "allowlist", "open")                                                                                                              |
-| `--allow <domains>`      | extra allowed destinations, comma separated (with --net allowlist)                                                                                               |
-| `--ttl <duration>`       | lifetime, e.g. 2h                                                                                                                                                |
-| `--cpus <n>`             | CPU limit                                                                                                                                                        |
-| `--memory <size>`        | memory limit, e.g. 4g                                                                                                                                            |
-| `--request-id <id>`      | idempotency key: repeating the call returns the same sandbox                                                                                                     |
-| `-y, --yes`              | confirm risky settings without asking (required when not interactive)                                                                                            |
+| Option                   | Meaning                                                                                                                                                                               |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--auto`                 | pick the template from the project: its .sandbox/\*.yaml first, else marker files (package.json, Cargo.toml, ...) in --workspace (default: the project directory); says which and why |
+| `--name <name>`          | sandbox name                                                                                                                                                                          |
+| `-w, --workspace <path>` | host project directory to give the sandbox (e.g. "-w ."); without it the workspace is empty - nothing of the current directory is shared                                              |
+| `--mode <mode>`          | how the workspace is delivered (default: the template's mode with --workspace, "empty" without) (choices: "mount", "clone", "worktree", "copy", "empty", "sync")                      |
+| `--ref <ref>`            | git ref for clone/worktree workspaces (needs --workspace)                                                                                                                             |
+| `--exclude <patterns>`   | leave these out of a copy/sync workspace (on top of .gitignore), comma separated, gitignore-like (e.g. "node_modules,*.log"; needs --workspace)                                       |
+| `--gitignore`            | copy/sync workspace: leave out what .gitignore files ignore (node_modules, build output, .env...); the default                                                                        |
+| `--no-gitignore`         | copy/sync workspace: copy everything, ignored files included (needs --workspace)                                                                                                      |
+| `--no-cache`             | do not mount the template's package caches (pnpm store, Cargo registry, ...): a clean install; see "abox cache"                                                                       |
+| `--net <mode>`           | network mode (choices: "none", "allowlist", "open")                                                                                                                                   |
+| `--allow <domains>`      | extra allowed destinations, comma separated (with --net allowlist)                                                                                                                    |
+| `--ttl <duration>`       | lifetime, e.g. 2h                                                                                                                                                                     |
+| `--cpus <n>`             | CPU limit                                                                                                                                                                             |
+| `--memory <size>`        | memory limit, e.g. 4g                                                                                                                                                                 |
+| `--request-id <id>`      | idempotency key: repeating the call returns the same sandbox                                                                                                                          |
+| `-y, --yes`              | confirm risky settings without asking (required when not interactive)                                                                                                                 |
+
+`--auto` replaces the template argument: it takes the template that `abox template suggest` would name for the
+`--workspace` folder (without one: the project directory; the workspace stays empty, as always) and says so on
+stderr (`auto: using template node-dev for /...: found package.json (a Node.js project)`, plus `also possible:`).
+A project's own `.sandbox/*.yaml` wins over marker files. When nothing matches, or the only matches are
+templates that do not exist or that the policy does not allow, `abox create --auto` fails with `not_found`
+(exit 2) and names what it saw instead of guessing. `--auto` together with a template name is refused.
 
 A `copy`/`sync` workspace is measured first (read-only, no file content is read); `abox create`
 prints `workspace: N files, X` and, while copying, `copying workspace ... X of Y` on stderr (not with
