@@ -209,7 +209,9 @@ Export formats:
 
 abox flags changed files that can run code on your machine later (CI workflows, git hooks,
 `Makefile`, `package.json` scripts, `.envrc`, editor tasks and so on). Review these especially
-carefully. There is no command that applies a result to your project; that step stays yours.
+carefully. `abox export` never writes into your project. To take over single files, use `abox apply <id>`
+(`--dry-run` first; flagged files need `--path` and `--allow-flagged`) or the **Changes** tab of the GUI, which
+also selects single hunks; both refuse a project with uncommitted changes in the affected files.
 
 ## Approvals
 

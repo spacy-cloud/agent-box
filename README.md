@@ -83,7 +83,9 @@ Highlights of the design:
   requests and the sandbox never sees it.
 - **Workspace modes** `mount`, `clone`, `worktree`, `copy`, `empty` (and `sync` for remote
   hosts); an empty workspace unless you pass one. Results come back through an explicit export; nothing is merged into the original
-  project automatically.
+  project automatically. You can review the changes side by side and take over single files or hunks
+  yourself (GUI **Changes** tab, `abox apply`): human only, all-or-nothing, flagged files need an extra
+  confirmation.
 - **Audit log** is append-only and hash-chained.
 
 ## Requirements

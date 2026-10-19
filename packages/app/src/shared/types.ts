@@ -11,10 +11,13 @@ import type {
   RecentActivityView,
   AccessResult,
   AgentTokenView,
+  ApplyChangesResult,
+  ApplyConfirmationRequired,
   ApprovalDecision,
   ApprovalView,
   AuditEntry,
   ChainVerification,
+  ChangesView,
   CreateResult,
   DirEntry,
   BackendReport,
@@ -378,6 +381,9 @@ export interface Outputs {
   'files:copyOut': { copied: string | null };
   'export:run': ExportSandboxResult;
   'export:save': SaveResult;
+  'changes:review': ChangesView;
+  'changes:apply': ApplyChangesResult | ApplyConfirmationRequired;
+  'changes:savePatch': SaveResult;
   'processes:list': ProcessView[];
   'processes:logs': ProcessLogsResult;
   'sandboxes:logs': { content: string };

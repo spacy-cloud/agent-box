@@ -21,7 +21,15 @@ import type {
   WorkspaceMode,
   BackendStatus,
 } from '../types.js';
-import type { ExportFormat, ExportResult, ProgressInfo } from '../workspace/index.js';
+import type {
+  ChangeBadge,
+  ChangeFile,
+  ChangeSelection,
+  ExportFormat,
+  ExportResult,
+  FileStatus,
+  ProgressInfo,
+} from '../workspace/index.js';
 
 /**
  * Who is calling. `contextId` comes from the surface configuration (CLI: `human`; MCP:
@@ -555,6 +563,95 @@ export interface ExportSandboxResult extends ExportResult {
   sandboxId: SandboxId;
   /** `files` format: the host directory the files were written to (`written` is relative to it). */
   outDir?: string;
+}
+
+// -- reviewing and applying a sandbox's changes (human only) ---------------------
+
+/** Where the changes would go: the project the sandbox was created from. */
+export interface ChangesTarget {
+  /**
+   * `git`: a repository (uncommitted changes in affected files are detected and refuse the apply).
+   * `plain`: a directory without its own repository (needs an extra confirmation).
+   * `unavailable`: nothing can be applied (see `reason`).
+   */
+  kind: 'git' | 'plain' | 'unavailable';
+  path?: string;
+  reason?: 'mount' | 'no_source' | 'missing' | 'not_allowed';
+  message?: string;
+  /** Affected paths that have uncommitted changes in the project (git targets). */
+  dirtyPaths: string[];
+}
+
+export interface ChangesView {
+  sandboxId: SandboxId;
+  /** Digest of the exact diff shown here; an apply or a patch must name it. */
+  digest: string;
+  files: ChangeFile[];
+  /** Flagged paths that are not changed files (tampered `.git`, entries that were not exported…). */
+  notices: Array<{ path: string; reason: string }>;
+  stats: { filesChanged: number; insertions: number; deletions: number };
+  /** Entries `.gitignore` rules of the workspace kept out of the comparison. */
+  ignored?: { count: number; paths: string[] };
+  warnings: string[];
+  target: ChangesTarget;
+}
+
+export interface ApplyChangesParams {
+  digest: string;
+  selection: ChangeSelection[];
+  acknowledgeFlagged?: string[];
+  allowNonGit?: boolean;
+  dryRun?: boolean;
+}
+
+export interface ChangesSelectionParams {
+  digest: string;
+  selection: ChangeSelection[];
+}
+
+export interface ApplyPlanFile {
+  path: string;
+  oldPath?: string;
+  status: FileStatus;
+  /** Hunks that are applied / that the file has. */
+  hunks: number;
+  totalHunks: number;
+  insertions: number;
+  deletions: number;
+  badges: ChangeBadge[];
+  flagged: boolean;
+}
+
+export interface ApplyPlan {
+  target: string;
+  targetKind: 'git' | 'plain';
+  files: ApplyPlanFile[];
+  insertions: number;
+  deletions: number;
+  hunks: number;
+  /** Selected files that needed the extra confirmation. */
+  flaggedPaths: string[];
+}
+
+export interface ApplyChangesResult {
+  status: 'applied' | 'dry_run';
+  sandboxId: SandboxId;
+  digest: string;
+  plan: ApplyPlan;
+  message: string;
+}
+
+/** Everything checked, nothing written: the human must confirm the plan (repeat with `humanConfirmed`). */
+export interface ApplyConfirmationRequired extends ConfirmationRequired {
+  plan: ApplyPlan;
+}
+
+export interface ChangesPatchResult {
+  sandboxId: SandboxId;
+  digest: string;
+  /** Byte-exact `git apply` patch of the selection. */
+  patch: Buffer;
+  plan: Omit<ApplyPlan, 'target' | 'targetKind'>;
 }
 
 // -- access requests / approvals -------------------------------------------------

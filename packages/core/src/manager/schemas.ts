@@ -198,4 +198,23 @@ export const exportSchema = z.strictObject({
   force: z.boolean().optional(),
 });
 
+const changeSelectionEntry = z.strictObject({
+  path: z.string().min(1).max(4096),
+  hunks: z.array(z.number().int().min(0).max(1_000_000)).min(1).max(100_000).optional(),
+});
+
+/** Review of a sandbox's changes (human only): the selection plus the digest of the diff it was made on. */
+export const changesSelectionSchema = z.strictObject({
+  digest: z.string().regex(/^[0-9a-f]{64}$/, '64 hex digits'),
+  selection: z.array(changeSelectionEntry).min(1).max(5000),
+});
+
+export const applyChangesSchema = changesSelectionSchema.extend({
+  /** Paths of flagged files the human confirmed one by one. Must cover every flagged file selected. */
+  acknowledgeFlagged: z.array(z.string().min(1).max(4096)).max(5000).optional(),
+  /** The project is not a git repository: the human accepts that uncommitted work cannot be detected. */
+  allowNonGit: z.boolean().optional(),
+  dryRun: z.boolean().optional(),
+});
+
 export const SNAPSHOT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;

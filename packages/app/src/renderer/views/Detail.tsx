@@ -10,6 +10,7 @@ import { UsageLines } from '../components/usage';
 import { ActivityTimeline } from '../components/ActivityTimeline';
 import { NetworkTab } from '../components/NetworkLog';
 import { PortsPanel } from '../components/PortsPanel';
+import { ChangesTab } from '../components/Changes';
 import { UnifiedDiff } from '../components/review';
 import {
   Badge,
@@ -37,7 +38,16 @@ import {
 } from '../../shared/format';
 import { ExtendDialog } from './Sandboxes';
 
-const TABS = ['overview', 'terminal', 'network', 'activity', 'files', 'logs', 'snapshots'] as const;
+const TABS = [
+  'overview',
+  'terminal',
+  'files',
+  'changes',
+  'network',
+  'activity',
+  'logs',
+  'snapshots',
+] as const;
 type Tab = (typeof TABS)[number];
 
 export function DetailView(props: { id: string }) {
@@ -53,6 +63,7 @@ export function DetailView(props: { id: string }) {
   const [extend, setExtend] = useState(false);
   const [del, setDel] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [changeCount, setChangeCount] = useState<number | null>(null);
   const now = useNow(1000);
   const s = q.data;
   const usage = useSandboxUsage(s && s.state === 'running' && !s.stale ? [s.id] : []);
@@ -161,7 +172,13 @@ export function DetailView(props: { id: string }) {
             label={t('detail.tabs')}
             active={tab}
             onChange={(x) => setTab(x as Tab)}
-            tabs={TABS.map((id) => ({ id, label: t(`detail.tab.${id}`) }))}
+            tabs={TABS.map((id) => ({
+              id,
+              label:
+                id === 'changes' && changeCount !== null
+                  ? t('detail.tab.changesCount', { count: changeCount })
+                  : t(`detail.tab.${id}`),
+            }))}
           >
             {tab === 'overview' ? (
               <OverviewTab
@@ -184,6 +201,7 @@ export function DetailView(props: { id: string }) {
               />
             ) : null}
             {tab === 'files' ? <FilesTab id={s.id} /> : null}
+            {tab === 'changes' ? <ChangesTab id={s.id} onCount={setChangeCount} /> : null}
             {tab === 'logs' ? <LogsTab id={s.id} /> : null}
             {tab === 'snapshots' ? <SnapshotsTab id={s.id} /> : null}
           </Tabs>

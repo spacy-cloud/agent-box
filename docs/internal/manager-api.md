@@ -234,6 +234,18 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
   `writeFile(caller, id, path, content, {mode?, encoding?}) -> {path, size}` (mode `0..0o777`, max 16 MiB),
   `listDir(caller, id, path?) -> DirEntry[]`. Relative paths resolve against the workspace path. Audit: path
   and sizes, never content.
+- `reviewChanges(caller, id) -> ChangesView`, `applyChanges(caller, id, {digest, selection, acknowledgeFlagged?, allowNonGit?, dryRun?}) -> ApplyChangesResult | ApplyConfirmationRequired`,
+  `changesPatch(caller, id, {digest, selection}) -> {patch: Buffer, plan, digest}` (all **human only**, `requireHuman`; audit
+  `sandbox.changes`, `sandbox.apply`, `sandbox.changes_patch`, denied: `<action>_denied`). The view is the `diff` export parsed
+  into files and hunks (`workspace/changes.ts`) with badges (`dependency`, `executable`, `binary`, `symlink`, `large`,
+  `flagged`), `applicable` / `notApplicable`, `needsConfirmation`, the sha256 `digest` of the exact diff bytes and the target
+  (`git` | `plain` | `unavailable` with `dirtyPaths`). A selection is `[{path, hunks?}]` (no `hunks`: the whole file); the
+  patch is built from the recomputed diff, never from caller data. `applyChanges` order: digest (else `conflict`, `details.stale`)
+  -> selection (`invalid_input`) -> flagged files all in `acknowledgeFlagged` (`policy_denied`) -> target resolved from
+  the recorded source and re-checked (`unsupported` for mount / empty workspaces) -> `allowNonGit` for a project without its own
+  repository (`policy_denied`, `details.nonGit`) -> dirty affected paths (`conflict`) -> `lstat` path checks (`policy_denied`)
+  -> `git apply --numstat` must list exactly the selected paths, `git apply --check` (`conflict`) -> `dryRun` returns here ->
+  without `humanConfirmed` returns `confirmation_required` with the plan -> `git apply`. See [security](../security.md#applying-the-changes-of-a-sandbox).
 - `snapshot(caller, id, name) -> {snapshotId}`, `restore(caller, id, snapshotIdOrName)`: `unsupported` (with hint)
   unless `capabilities().snapshots`. `restore` accepts the backend's snapshot id or the name given to `snapshot` (the
   newest snapshot of that name; an exact id wins), resolved through the snapshot index; it returns `{restored: <id>}`. Every snapshot is indexed in the state db (`snapshots` table, forgotten when the

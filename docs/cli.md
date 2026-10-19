@@ -619,6 +619,35 @@ names a few, and `--json` has `stats.ignored` and `stats.ignoredPaths`. The rule
 `.gitignore` files of the copy as it was made (not what the sandbox changed them to), so the sandbox
 cannot hide a change by editing them. Paths the copy contained are always compared, ignored or not.
 
+### `abox apply`
+
+`abox apply [options] <id>`
+
+Apply the changes of a sandbox to the project it was created from (per file; human only)
+
+| Argument | Meaning            |
+| -------- | ------------------ |
+| `id`     | sandbox id or name |
+
+| Option            | Meaning                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `--path <path>`   | file or directory (relative to the workspace) to apply; repeat for more. Default: every changed file that is not flagged        |
+| `--dry-run`       | run every check and show what would be applied, write nothing                                                                   |
+| `-y, --yes`       | confirm the plan without asking (required when not interactive)                                                                 |
+| `--allow-flagged` | also apply the flagged files named with `--path` (executables, dependency manifests, hooks, CI, build scripts, links, binaries) |
+| `--allow-non-git` | the project is not a git repository: confirm that uncommitted work cannot be detected                                           |
+
+The target is always the project recorded when the sandbox was created (`abox inspect` shows it as the
+workspace source); it cannot be chosen. Without `--path` every applicable file that is not flagged is
+selected. A directory in `--path` stands for the unflagged files below it: a flagged file is only taken when
+it is named itself and `--allow-flagged` (or the interactive question) confirms it. The command lists the
+plan, asks once (`Proceed?`, or `--yes`) and then writes all selected files or none. It refuses when an
+affected file has uncommitted changes in the project (exit code 2, `conflict`), when the sandbox's changes
+no longer apply to the project, or when the project is not a git repository and `--allow-non-git` was not
+given. Selecting single hunks is a GUI feature (**Changes** tab); on the command line the unit is the file.
+`--json` returns the plan (`status` `applied` or `dry_run`, `plan.files[]`). See
+[security](security.md#applying-the-changes-of-a-sandbox).
+
 ### `abox approvals`
 
 `abox approvals [options] [command]`
@@ -1275,7 +1304,8 @@ log <id> --denied", allow with "abox network allow <id> <domain>"`); with `--jso
   itself is updated. If the profile allows the destination already, only the sandbox changes. Agents
   cannot use it (they ask with `access_request`).
 - **`abox shell`** needs an interactive terminal and fails with exit code 2 otherwise.
-- **`abox export`** never applies anything; see [quickstart](quickstart.md#workspace-modes).
+- **`abox export`** never applies anything; see [quickstart](quickstart.md#workspace-modes). **`abox apply`** is the
+  deliberate, human-only step that writes selected files into your project.
 - **`abox snapshot` / `restore`** depend on the backend. `restore` accepts the snapshot name or its id
   (as printed by `snapshot`); it discards everything changed since the snapshot.
 - **`abox port`** is for previews: a Vite, Flutter web or `php -S` server that runs in a sandbox

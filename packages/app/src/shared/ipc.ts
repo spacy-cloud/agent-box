@@ -49,6 +49,23 @@ const sandboxPort = z.number().int().min(1).max(PORT_FORWARD_MAX_PORT);
 /** The port on 127.0.0.1 of this machine; privileged ports are refused here and again by the manager. */
 const forwardHostPort = z.number().int().min(PORT_FORWARD_MIN_HOST_PORT).max(PORT_FORWARD_MAX_PORT);
 
+/**
+ * A selection of changed files (and, optionally, of their hunks) as the renderer names it. It carries
+ * ids only: the main process recomputes the diff, checks it against `digest` and builds the patch itself.
+ */
+const changeSelection = z
+  .array(
+    z
+      .object({
+        path: z.string().min(1).max(4096),
+        hunks: z.array(z.number().int().min(0).max(1_000_000)).min(1).max(100_000).optional(),
+      })
+      .strict(),
+  )
+  .min(1)
+  .max(5000);
+const changesDigest = z.string().regex(/^[0-9a-f]{64}$/, '64 hex digits');
+
 const auditFilter = z
   .object({
     sandboxId: id.optional(),
@@ -337,6 +354,25 @@ export const IPC = {
     })
     .strict(),
   'export:save': z.object({ id, format: z.enum(['diff', 'patch']) }).strict(),
+  /** The sandbox's changes as files and hunks with flags, and the state of the project they would go to. */
+  'changes:review': z.object({ id }).strict(),
+  /**
+   * Applies a selection to the project the sandbox came from (the target is never sent: the manager uses
+   * the project recorded at create). `confirmed` is set after the summary dialog; `dryRun` runs all checks only.
+   */
+  'changes:apply': z
+    .object({
+      id,
+      digest: changesDigest,
+      selection: changeSelection,
+      acknowledgeFlagged: z.array(z.string().min(1).max(4096)).max(5000).optional(),
+      allowNonGit: z.boolean().optional(),
+      dryRun: z.boolean().optional(),
+      confirmed: z.boolean().optional(),
+    })
+    .strict(),
+  /** The patch of a selection, written to a file the human picks in a save dialog. */
+  'changes:savePatch': z.object({ id, digest: changesDigest, selection: changeSelection }).strict(),
   'processes:list': z.object({ id }).strict(),
   'processes:logs': z
     .object({

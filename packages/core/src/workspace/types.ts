@@ -171,6 +171,11 @@ export interface ExportInput {
   allowTamperedGit?: boolean;
   /** Message of the exported commit / patch. Default `abox export from <sandboxId>`. */
   message?: string;
+  /**
+   * `diff` format: also return the byte-exact text as `contentBytes` (the string `content` is decoded
+   * as UTF-8 and lossy for other encodings, so it cannot be turned back into a patch). In-process use only.
+   */
+  keepRaw?: boolean;
   /** Resource limits for the walk of the sandbox tree. */
   limits?: { maxEntries?: number; maxFileBytes?: number; maxTotalBytes?: number };
 }
@@ -226,6 +231,8 @@ export interface ExportResult {
   /** `diff` / `patch`: the text. Lossy (U+FFFD) when `contentLossy`. */
   content?: string;
   contentLossy?: boolean;
+  /** `diff` with `keepRaw`: the exact bytes of `content`. */
+  contentBytes?: Buffer;
   /** `branch`: created branch in the source repository and its commit. */
   branch?: string;
   commit?: string;

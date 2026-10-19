@@ -29,6 +29,8 @@ describe('tool surface', () => {
     await setup();
     const { tools } = await a.client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
+    // writing a sandbox's changes into the user's project is human only: there is no tool for it
+    expect(tools.map((t) => t.name).filter((n) => /apply|changes|patch/i.test(n))).toEqual([]);
     for (const t of tools) {
       expect(t.description, t.name).toBeTruthy();
       expect(t.description!.length, t.name).toBeLessThan(420);
