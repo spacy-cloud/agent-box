@@ -225,6 +225,15 @@ describe('saveTemplate: project', () => {
     expect(readdirSync(elsewhere)).toEqual([]);
   });
 
+  it('the plan refuses a .sandbox that is a symbolic link too', async () => {
+    const elsewhere = join(env.root, 'elsewhere');
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(env.project, '.sandbox'));
+    await expect(
+      abox.planTemplateSave(HUMAN, { yaml: tpl('p1'), target: 'project', projectDir: env.project }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+  });
+
   it('does not follow a symbolic link in place of the template file', async () => {
     mkdirSync(join(env.project, '.sandbox'));
     const victim = join(env.root, 'victim.txt');

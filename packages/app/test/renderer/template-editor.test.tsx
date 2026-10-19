@@ -44,7 +44,6 @@ function renderSave(
       yaml={NEW}
       name="mine"
       projectDir=""
-      userDir="/cfg/templates"
       inPlace
       initialTarget="user"
       onClose={onClose}

@@ -181,6 +181,28 @@ function existsError(path: string): AboxError {
   });
 }
 
+/** The directory a template goes to is not a symbolic link (and is a directory) when it exists; nothing is created. */
+export async function checkTemplateDir(dir: string): Promise<void> {
+  let st;
+  try {
+    st = await lstat(dir);
+  } catch (e) {
+    if (errno(e) === 'ENOENT' || errno(e) === 'ENOTDIR') return;
+    throw new AboxError('invalid_input', `cannot read ${dir}: ${(e as Error).message}`);
+  }
+  if (st.isSymbolicLink()) {
+    throw new AboxError(
+      'conflict',
+      `${dir} is a symbolic link; abox does not write through links`,
+      {
+        hint: 'Make it a real directory.',
+        details: { path: dir },
+      },
+    );
+  }
+  if (!st.isDirectory()) throw new AboxError('conflict', `${dir} exists and is not a directory`);
+}
+
 /** `dir` exists as a real directory (created when missing, one level, never through a link). */
 async function ensureRealDir(dir: string, mode: number): Promise<{ ino: number; dev: number }> {
   let st = await lstat(dir).catch((e: unknown) => {

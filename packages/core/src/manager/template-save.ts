@@ -6,6 +6,7 @@ import { AboxError } from '../errors.js';
 import { canonicalizePath, checkHostPath } from '../policy/index.js';
 import {
   builtinTemplatesDir,
+  checkTemplateDir,
   freeTemplateName,
   otherSpellingExists,
   projectTemplateDraft,
@@ -98,6 +99,7 @@ export async function planTemplateSave(
   const req = parseInput(templateSaveSchema, input, 'template save request');
   const { name } = parseTemplateText(req.yaml);
   const where = await locate(I, ctx, req, name);
+  await checkTemplateDir(where.dir);
   const current = await readTemplateFile(where.path);
   return {
     name,

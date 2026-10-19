@@ -20,8 +20,6 @@ export function TemplateSaveDialog(props: {
   name: string;
   /** The folder picked above the list ('' = none): the project target needs it. */
   projectDir: string;
-  /** The user template directory (shown while the plan loads). */
-  userDir: string | undefined;
   /** The editor holds the saved user template of this name: replacing its file is what the human expects. */
   inPlace: boolean;
   initialTarget: SaveTarget;

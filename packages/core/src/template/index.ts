@@ -89,6 +89,7 @@ export { estimateImageBytes, BUILD_SPACE_FACTOR, type ImageSizeEstimate } from '
 export {
   PROJECT_TEMPLATE_DIR,
   assertTemplateFileName,
+  checkTemplateDir,
   projectTemplatePath,
   userTemplatePath,
   readTemplateFile,

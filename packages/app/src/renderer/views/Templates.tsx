@@ -444,7 +444,6 @@ export function TemplatesView() {
           yaml={yaml}
           name={form.name}
           projectDir={projectDir}
-          userDir={catalog.data?.userDir}
           inPlace={origin?.kind === 'user' && origin.name === form.name}
           initialTarget={origin?.kind === 'project' ? 'project' : 'user'}
           onClose={() => setSaving(false)}
