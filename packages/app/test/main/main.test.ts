@@ -618,6 +618,53 @@ describe('monitor', () => {
     expect(expire).toHaveBeenCalled();
   });
 
+  it('reports creations that failed since the last poll, but not the ones from before it started', async () => {
+    let seq = 5;
+    const audit: Array<{ seq: number; action: string; decision: string }> = [
+      { seq: 4, action: 'sandbox.create', decision: 'error' }, // before the GUI started
+    ];
+    const queries: Array<Record<string, unknown>> = [];
+    const abox = {
+      onEvent: () => () => undefined,
+      expireApprovals: () => Promise.resolve([]),
+      listApprovals: () => Promise.resolve([]),
+      queryAudit: (_c: unknown, f: Record<string, unknown>) => {
+        queries.push(f);
+        if (f['limit'] === 1) return Promise.resolve([{ seq }]);
+        return Promise.resolve(
+          audit.filter(
+            (e) =>
+              e.seq > (f['afterSeq'] as number) &&
+              (f['action'] as string[]).includes(e.action) &&
+              e.decision === f['decision'],
+          ),
+        );
+      },
+    } as unknown as Abox;
+    const failed: number[][] = [];
+    const m = new Monitor({
+      abox,
+      intervalMs: 1_000_000,
+      onChanged: vi.fn(),
+      onApprovals: vi.fn(),
+      onCreateFailed: (e) => failed.push(e.map((x) => x.seq)),
+    });
+    await m.poll('poll');
+    expect(failed).toEqual([]);
+    audit.push({ seq: 6, action: 'sandbox.create', decision: 'deny' }); // a policy denial is not a failure
+    audit.push({ seq: 7, action: 'sandbox.create', decision: 'error' });
+    audit.push({ seq: 8, action: 'sandbox.create_interrupted', decision: 'error' });
+    seq = 8;
+    await m.poll('poll');
+    expect(failed).toEqual([[7, 8]]);
+    await m.poll('poll');
+    expect(failed).toHaveLength(1); // reported once
+    // nothing is queried when the audit sequence did not move; the one query asked from the old sequence on
+    expect(queries.filter((q) => q['afterSeq'] !== undefined)).toEqual([
+      expect.objectContaining({ afterSeq: 5, decision: 'error', order: 'asc' }),
+    ]);
+  });
+
   it('survives a failing poll (database busy)', async () => {
     const abox = {
       onEvent: () => () => undefined,

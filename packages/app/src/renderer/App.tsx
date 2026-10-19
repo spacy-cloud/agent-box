@@ -45,7 +45,11 @@ export function App(props: { info: AppInfo }) {
       setPending(ev.pendingApprovals);
     });
     const offNav = window.abox.on('evt:navigate', (ev) => {
-      setRoute({ view: ev.view, ...(ev.approvalId ? { approvalId: ev.approvalId } : {}) });
+      setRoute({
+        view: ev.view,
+        ...(ev.approvalId ? { approvalId: ev.approvalId } : {}),
+        ...(ev.sandboxId ? { sandboxId: ev.sandboxId } : {}),
+      });
     });
     return () => {
       offChanged();

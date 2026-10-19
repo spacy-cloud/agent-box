@@ -1,8 +1,10 @@
-import { Menu, Notification, Tray, app } from 'electron';
+import { Menu, Tray, app, nativeImage } from 'electron';
 import type { ApprovalView } from '@abox/core';
 import type { Locale } from '../shared/ipc';
 import { trayIcon } from './icons';
 import { mt } from './i18n';
+import { probeTray } from './probe';
+import { drawCountBadge } from './tray-badge';
 
 export interface TrayHandlers {
   showWindow(): void;
@@ -11,29 +13,31 @@ export interface TrayHandlers {
 }
 
 /**
- * Tray icon, launcher badge and desktop notification for pending approvals. Every part degrades
- * gracefully: without a tray host (many Wayland setups, CI) or notification daemon the app still works,
- * and the pending count stays visible in the window.
+ * Tray icon (with the number of pending approvals drawn on it), tooltip, menu and launcher badge. Every part
+ * degrades gracefully: without a tray host (many Wayland setups, CI) the app still works, and the pending count
+ * stays visible in the window. Desktop notifications are `notifier.ts`.
  */
 export class TrayController {
   private tray: Tray | null = null;
   private count = 0;
   readonly trayAvailable: boolean;
-  readonly notificationsAvailable: boolean;
+  private readonly icons = new Map<number, Electron.NativeImage>();
 
   constructor(
     private locale: Locale,
     private readonly handlers: TrayHandlers,
   ) {
-    this.notificationsAvailable = Notification.isSupported();
     try {
       this.tray = new Tray(trayIcon(false));
-      this.tray.on('click', () => handlers.showWindow());
-      this.refresh();
+      // With requests waiting a click goes straight to them.
+      this.tray.on('click', () =>
+        this.count > 0 ? handlers.showApprovals() : handlers.showWindow(),
+      );
     } catch {
       this.tray = null;
     }
     this.trayAvailable = this.tray !== null;
+    this.refresh();
   }
 
   setLocale(l: Locale): void {
@@ -41,7 +45,8 @@ export class TrayController {
     this.refresh();
   }
 
-  update(pending: ApprovalView[], fresh: ApprovalView[]): void {
+  /** The pending approvals changed. */
+  update(pending: readonly ApprovalView[]): void {
     this.count = pending.length;
     this.refresh();
     try {
@@ -49,18 +54,40 @@ export class TrayController {
     } catch {
       /* not supported on this desktop */
     }
-    if (fresh.length > 0 && this.notificationsAvailable) this.notify(fresh);
+  }
+
+  /** The icon for `count` pending approvals: the plain mark, or with the count drawn on it. */
+  private iconFor(count: number): Electron.NativeImage {
+    if (count <= 0) return trayIcon(false);
+    const key = Math.min(count, 10);
+    let img = this.icons.get(key);
+    if (!img) {
+      try {
+        const base = trayIcon(false);
+        const { width, height } = base.getSize();
+        // toBitmap() is BGRA on the little-endian machines Electron runs on
+        img = nativeImage.createFromBitmap(drawCountBadge(base.toBitmap(), width, key), {
+          width,
+          height,
+        });
+      } catch {
+        img = trayIcon(true); // the red dot
+      }
+      this.icons.set(key, img);
+    }
+    return img;
   }
 
   private refresh(): void {
+    const tooltip =
+      this.count > 0
+        ? mt(this.locale, 'main.tray.tooltipPending', { count: this.count })
+        : mt(this.locale, 'main.tray.tooltip');
+    probeTray(this.count, tooltip);
     if (!this.tray) return;
     try {
-      this.tray.setImage(trayIcon(this.count > 0));
-      this.tray.setToolTip(
-        this.count > 0
-          ? mt(this.locale, 'main.tray.tooltipPending', { count: this.count })
-          : mt(this.locale, 'main.tray.tooltip'),
-      );
+      this.tray.setImage(this.iconFor(this.count));
+      this.tray.setToolTip(tooltip);
       this.tray.setContextMenu(
         Menu.buildFromTemplate([
           { label: mt(this.locale, 'main.tray.open'), click: () => this.handlers.showWindow() },
@@ -74,25 +101,6 @@ export class TrayController {
       );
     } catch {
       /* tray vanished (e.g. the shell restarted) */
-    }
-  }
-
-  private notify(fresh: ApprovalView[]): void {
-    try {
-      const first = fresh[0]!;
-      // Agent-written text is shown as plain text only and kept short; the real decision happens in the GUI.
-      const n = new Notification({
-        title: mt(this.locale, 'main.notification.title', { count: fresh.length }),
-        body: mt(this.locale, 'main.notification.body', {
-          agent: first.requester.slice(0, 60),
-          kind: first.kind,
-        }),
-        silent: false,
-      });
-      n.on('click', () => this.handlers.showApprovals(first.id));
-      n.show();
-    } catch {
-      /* no notification service */
     }
   }
 

@@ -10,7 +10,11 @@ import { Askpass } from './askpass';
 import { openSshPty, sshLabel } from './ssh-pty';
 import { TtyManager, backendFromTtySession } from './tty';
 import { windowIcon } from './icons';
+import { ExpiryWatcher, DEFAULT_EXPIRY_CHECK_MS, DEFAULT_EXPIRY_WARN_MS } from './expiry';
 import { Monitor } from './monitor';
+import { Notifier, DEFAULT_MERGE_MS } from './notifier';
+import type { NotificationTarget } from './notifier';
+import { ElectronNotificationSink } from './notification-sink';
 import { originOf } from './guard';
 import { openRuntime } from './runtime';
 import {
@@ -42,6 +46,9 @@ let runtimeError: string | null = null;
 let monitor: Monitor | null = null;
 let stopTtlWatch: (() => void) | null = null;
 let tray: TrayController | null = null;
+let notifier: Notifier | null = null;
+let expiryWatch: ExpiryWatcher | null = null;
+let notificationSink: ElectronNotificationSink | null = null;
 let settings: GuiSettings;
 let locale: Locale = 'de';
 let quitting = false;
@@ -106,6 +113,22 @@ function showApprovals(approvalId?: string): void {
   send('evt:navigate', { view: 'approvals', ...(approvalId ? { approvalId } : {}) });
 }
 
+function openTarget(target: NotificationTarget): void {
+  switch (target.view) {
+    case 'approvals':
+      showApprovals(target.approvalId);
+      return;
+    case 'detail':
+      showWindow();
+      send('evt:navigate', { view: 'detail', sandboxId: target.sandboxId });
+      return;
+    case 'sandboxes':
+      showWindow();
+      send('evt:navigate', { view: 'sandboxes' });
+      return;
+  }
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1360,
@@ -158,7 +181,9 @@ function createWindow(): void {
 
 function onApprovals(pending: ApprovalView[], fresh: ApprovalView[]): void {
   pendingApprovals = pending.length;
-  tray?.update(pending, fresh);
+  tray?.update(pending);
+  notifier?.approvalsSettled(new Set(pending.map((p) => p.id)));
+  if (fresh.length > 0) notifier?.approvalsArrived(fresh);
 }
 
 async function boot(): Promise<void> {
@@ -178,6 +203,17 @@ async function boot(): Promise<void> {
     showWindow,
     showApprovals,
     quit: () => app.quit(),
+  });
+
+  // Desktop notifications; each kind can be switched off in Settings (read at the moment one would be shown).
+  notificationSink = new ElectronNotificationSink();
+  notifier = new Notifier({
+    sink: notificationSink,
+    prefs: () => settings.notifications,
+    locale: () => locale,
+    open: openTarget,
+    mergeMs:
+      Number(process.env['ABOX_GUI_NOTIFY_MERGE_MS'] ?? DEFAULT_MERGE_MS) || DEFAULT_MERGE_MS,
   });
 
   try {
@@ -202,10 +238,12 @@ async function boot(): Promise<void> {
       contextId: 'human',
       locale,
       trayAvailable: tray?.trayAvailable ?? false,
-      notificationsAvailable: tray?.notificationsAvailable ?? false,
+      notificationsAvailable: notificationSink?.supported ?? false,
       closeToTray: settings.closeToTray,
+      notifications: settings.notifications,
     }),
     setCloseToTray: (on) => settings.setCloseToTray(on),
+    setNotifications: (change) => settings.setNotifications(change),
     recentProjects: () => settings.recentProjects,
     rememberProject: (dir) => settings.addRecentProject(dir),
     setLocale: (l) => {
@@ -223,8 +261,35 @@ async function boot(): Promise<void> {
       intervalMs: Number(process.env['ABOX_GUI_POLL_MS'] ?? 2000) || 2000,
       onChanged: (ev) => send('evt:changed', ev),
       onApprovals,
+      onCreateFailed: (entries) =>
+        notifier?.createsFailed(
+          entries.map((e) => {
+            const template = e.details?.['template'];
+            const code = e.details?.['code'];
+            return {
+              actor: e.actor,
+              ...(e.sandboxId ? { sandboxId: e.sandboxId } : {}),
+              ...(typeof template === 'string' ? { template } : {}),
+              ...(typeof code === 'string' ? { code } : {}),
+            };
+          }),
+        ),
     });
     monitor.start();
+    // Warn before a sandbox's lifetime ends (only looks anything up while that notification is on).
+    const rt = runtime;
+    expiryWatch = new ExpiryWatcher({
+      list: async () =>
+        (await rt.abox.listSandboxes({ contextId: 'human' }, { state: ['created', 'running'] }))
+          .sandboxes,
+      enabled: () => settings.notifications.expiring,
+      onExpiring: (list) => notifier?.sandboxesExpiring(list),
+      warnMs: DEFAULT_EXPIRY_WARN_MS,
+      intervalMs:
+        Number(process.env['ABOX_GUI_EXPIRY_MS'] ?? DEFAULT_EXPIRY_CHECK_MS) ||
+        DEFAULT_EXPIRY_CHECK_MS,
+    });
+    expiryWatch.start();
     // Expired sandboxes are stopped on time while the GUI runs, not only when a command happens to.
     stopTtlWatch = runtime.abox.startTtlWatcher();
   }
@@ -244,6 +309,8 @@ if (!app.requestSingleInstanceLock()) {
     if (quitting) return;
     quitting = true;
     monitor?.stop();
+    expiryWatch?.stop();
+    notifier?.dispose();
     stopTtlWatch?.();
     tty.closeAll();
     askpass.dispose();
