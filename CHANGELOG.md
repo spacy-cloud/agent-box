@@ -538,6 +538,10 @@ into the sandbox …` lines through `onProgress` (stderr of `abox create`; the G
 
 ### Fixed
 
+- Removing foreign objects refused the shared networks `abox-open` and `abox-egress` only when they existed:
+  on an engine where they had not been created yet, the lookup ended in the "already gone" branch and the call
+  reported success. They are now refused by name before the lookup (found by the Docker integration test on a fresh
+  engine).
 - File tree keyboard focus (flaky tests): when a key pressed right after a folder listing had been drawn moved the
   selection, the focus request (a ref flag) was taken by the still-pending effect of the listing's render, which
   focused the previously selected row, so the new row was selected but not focused. The request is now state and is

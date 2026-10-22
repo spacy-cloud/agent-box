@@ -322,6 +322,10 @@ describe('listForeign / removeForeign (engine stand-in)', () => {
       r({ kind: 'network', ref: 'n-mine' }),
       r({ kind: 'network', ref: 'n-open' }),
       r({ kind: 'network', ref: 'n-egress' }),
+      // the shared networks by name, also when they do not exist (yet) on this engine
+      r({ kind: 'network', ref: 'abox-open' }),
+      r({ kind: 'network', ref: 'abox-egress' }),
+      r({ kind: 'network', ref: 'n-gone', name: 'abox-open' }),
       r({ kind: 'network', ref: 'n-plain' }),
       r({ kind: 'volume', ref: 'vol-mine' }),
       r({ kind: 'volume', ref: 'vol-plain' }),
