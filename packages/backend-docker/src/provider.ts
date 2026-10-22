@@ -1001,6 +1001,13 @@ export class DockerProvider implements SandboxProvider {
           `Refusing to remove ${resource.kind} ${resource.name}: not a foreign abox object`,
         );
       };
+      // the shared networks are refused by name before the lookup: a missing one would
+      // otherwise end in the 404 branch below and count as removed
+      if (
+        resource.kind === 'network' &&
+        (this.isSharedNetwork(resource.ref) || this.isSharedNetwork(resource.name))
+      )
+        refuse();
       try {
         if (resource.kind === 'container') {
           const c = await this.docker.getContainer(resource.ref).inspect();
