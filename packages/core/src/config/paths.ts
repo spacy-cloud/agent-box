@@ -18,6 +18,8 @@ export interface AboxPaths {
   runtimeDir: string;
   /** User templates (`*.yaml`). */
   templatesDir: string;
+  /** User skills (`<name>/SKILL.md`); not created by abox. */
+  skillsDir: string;
   policyFile: string;
   hostsFile: string;
   configFile: string;
@@ -73,6 +75,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): AboxPaths {
     logsDir: join(dataDir, 'logs'),
     runtimeDir,
     templatesDir: join(configDir, 'templates'),
+    skillsDir: join(configDir, 'skills'),
     policyFile: join(configDir, 'policy.yaml'),
     hostsFile: join(configDir, 'hosts.yaml'),
     configFile: join(configDir, 'config.yaml'),

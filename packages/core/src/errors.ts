@@ -7,6 +7,7 @@ import { z } from 'zod';
 export const ERROR_CODES = {
   invalid_input: 2,
   template_invalid: 2,
+  skill_invalid: 2,
   not_found: 2,
   unsupported: 2,
   conflict: 2,
@@ -54,9 +55,14 @@ export const ERROR_CODE_INFO: Record<ErrorCode, ErrorCodeInfo> = {
       'A template file does not validate; `issues` carry path, line and column, `details.path` the file.',
     hint: 'Fix the template (`abox template validate <name>` shows every problem) and try again.',
   },
+  skill_invalid: {
+    meaning:
+      'A skill folder does not validate (front matter, name, size, links); `issues` carry the file in `path` and, for SKILL.md, line and column, `details.path` the folder.',
+    hint: 'Fix the skill (`abox skill validate <name|folder>` shows every problem) and try again.',
+  },
   not_found: {
     meaning:
-      'The sandbox, process, snapshot, template or approval does not exist, or it belongs to someone else (indistinguishable on purpose).',
+      'The sandbox, process, snapshot, template, skill or approval does not exist, or it belongs to someone else (indistinguishable on purpose).',
     hint: 'Check the id with `abox ls` (MCP: `sandbox_list`); an agent only sees its own sandboxes.',
   },
   unsupported: {

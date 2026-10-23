@@ -43,6 +43,12 @@ export type PackageManager = (typeof PACKAGE_MANAGERS)[number];
 
 export type SecretInjection = 'proxy' | 'env' | 'file';
 
+/**
+ * Where the skills of a sandbox are placed (one folder per skill plus `INDEX.md`), the same path on
+ * every backend; the environment variable `ABOX_SKILLS_DIR` names it inside the sandbox.
+ */
+export const SKILLS_DIR = '/skills';
+
 /** Host identifier, e.g. `local`, `vps`. `[a-z0-9-]+`. */
 export type HostId = string;
 /** Sandbox identifier including its host: `<host>/<short>`, e.g. `local/ab12cd34`. */
@@ -121,6 +127,11 @@ export interface TemplateSpec {
    * the sandbox that outlives the sandbox, merged by `name` on `extends`.
    */
   caches?: CacheDeclaration[];
+  /**
+   * Skills (folders with a `SKILL.md`, see `docs/skills.md`) copied read-only into every sandbox of
+   * the template, below `SKILLS_DIR`. A union on `extends`.
+   */
+  skills?: string[];
 }
 
 /** One package cache of a template: where a tool keeps its downloads, and how to point it there. */
@@ -194,6 +205,8 @@ export interface ResolvedTemplate {
   image?: { sizeBytes: number };
   /** Package caches the template declares (they are only mounted when a project is shared). */
   caches: TemplateCache[];
+  /** Skill names the template gives its sandboxes (resolved against the skill catalog at create). Absent: none. */
+  skills?: string[];
   source: { kind: TemplateSourceKind; path?: string };
   /**
    * Templates with `base.dockerfile`: the Dockerfile and the build context it can `COPY`, as
@@ -382,8 +395,14 @@ export interface SandboxSpec {
   network: NetworkSpec;
   /** Plain env (no secrets except approved `inject: env` ones). */
   env: Record<string, string>;
-  /** Files to place into the sandbox at creation (e.g. approved `inject: file` secrets, CA bundle). */
-  files: Array<{ sandboxPath: string; content: Buffer; mode: number }>;
+  /**
+   * Files to place into the sandbox at creation (e.g. approved `inject: file` secrets, CA bundle,
+   * skills). `readonly`: the sandbox user must not be able to change the file or add files next to
+   * it; the backend makes the file and the directories it creates for it owned by root where it can
+   * (the mode is already without write bits). A backend without users (isolation `none`) only keeps
+   * the mode.
+   */
+  files: Array<{ sandboxPath: string; content: Buffer; mode: number; readonly?: boolean }>;
   user: ResolvedTemplate['user'];
   createdAt: number;
   expiresAt: number;

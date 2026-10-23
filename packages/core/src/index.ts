@@ -5,6 +5,7 @@ export * from './config/index.js';
 export * from './state/index.js';
 export * from './template/index.js';
 export * from './template/network-presets.js';
+export * from './skill/index.js';
 export * from './policy/index.js';
 export * from './workspace/index.js';
 export * from './secrets/index.js';
