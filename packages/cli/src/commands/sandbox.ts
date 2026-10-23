@@ -166,6 +166,11 @@ export function registerSandbox(program: Command, cli: Cli): void {
       '--no-cache',
       'do not mount the template\'s package caches (pnpm store, Cargo registry, ...): a clean install; see "abox cache"',
     )
+    .option(
+      '--skill <name>',
+      'give the sandbox this skill on top of the template\'s (repeatable; see "abox skill ls")',
+      (v: string, prev: string[] = []) => [...prev, v],
+    )
     .addOption(new Option('--net <mode>', 'network mode').choices([...NETWORK_MODES]))
     .option(
       '--allow <domains>',
@@ -189,6 +194,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
           exclude?: string;
           gitignore?: boolean;
           cache?: boolean;
+          skill?: string[];
           net?: (typeof NETWORK_MODES)[number];
           allow?: string;
           ttl?: string;
@@ -271,6 +277,7 @@ export function registerSandbox(program: Command, cli: Cli): void {
           ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
           ...(o.requestId ? { requestId: o.requestId } : {}),
           ...(o.cache === false ? { cache: false } : {}),
+          ...(o.skill?.length ? { skills: [...new Set(o.skill)] } : {}),
           projectDir: cli.projectDir(),
         };
         // Does it fit? One line on stderr for a person, the whole estimate in --json. A ceiling from limits and
@@ -307,7 +314,16 @@ export function registerSandbox(program: Command, cli: Cli): void {
                 projectDir: cli.projectDir(),
                 ...(workspace.path ? { workspacePath: workspace.path } : {}),
               });
-              return { lines: reviewLines(cli, review), details: { templateReview: review } };
+              // An unapproved project skill is the other source of this item: name how to read it.
+              const skillNote = c.items.some(
+                (i) => i.kind === 'template_trust' && i.reason.startsWith('skill '),
+              )
+                ? ['"abox skill show <name>" prints a skill of the project before you allow it.']
+                : [];
+              return {
+                lines: [...(review.trusted ? [] : reviewLines(cli, review)), ...skillNote],
+                details: { templateReview: review },
+              };
             },
           },
         );
@@ -458,6 +474,12 @@ export function registerSandbox(program: Command, cli: Cli): void {
                 undefined,
             ],
             ['secrets', s.secretRefs.map((r) => `${r.ref} (${r.inject})`).join(', ') || undefined],
+            [
+              'skills',
+              s.skills?.length
+                ? `${s.skills.map((k) => (k.source === 'project' ? `${k.name} (project)` : k.name)).join(', ')} in /skills`
+                : undefined,
+            ],
             ['processes', s.processes.length ? `${s.processes.length}` : undefined],
             ['ports', s.ports.map((p) => `${p.sandboxPort} -> ${p.url}`).join('; ') || undefined],
             ['approvals', s.pendingApprovals ? `${s.pendingApprovals} pending` : undefined],

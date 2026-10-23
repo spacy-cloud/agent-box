@@ -256,6 +256,7 @@ export function registerTemplate(program: Command, cli: Cli): void {
                 .join(', ') || undefined,
             ],
             ['secrets', x.secrets.map((s) => `${s.ref} (${s.inject})`).join(', ') || undefined],
+            ['skills', x.skills?.join(', ') || undefined],
             ['hash', x.hash.slice(0, 16)],
           ]),
         ];
