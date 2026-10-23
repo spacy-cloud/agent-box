@@ -42,6 +42,7 @@ Die ausführliche Beschreibung (englisch) steht in der [README.md](README.md).
 | Baustein                                                                                                  | Stand                                                                                                                                                                       |
 | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Core (Template-Engine, Lebenszyklus, Policy und Freigaben, Audit-Log)                                     | umgesetzt                                                                                                                                                                   |
+| Skill-Katalog (`SKILL.md`-Ordner, pro Template und Sandbox wählbar, schreibgeschützt in `/skills`)        | umgesetzt; gegen Docker und das Prozess-Backend geprüft, VM-Backend **nicht** geprüft, siehe [Skills](docs/skills.md)                                                       |
 | Docker-Backend                                                                                            | umgesetzt, gegen eine Docker-Engine mit Root-Daemon getestet                                                                                                                |
 | Podman-Backend                                                                                            | umgesetzt, **nicht** gegen ein echtes Podman geprüft                                                                                                                        |
 | Python-Backend (Container mit `uv`, oder Host-venv ohne Isolation)                                        | umgesetzt                                                                                                                                                                   |
@@ -76,7 +77,7 @@ pnpm test:docker    # zusätzlich Integrationstests gegen eine echte Container-E
 
 ## Dokumentation (englisch)
 
-[Quickstart](docs/quickstart.md) · [Template-Handbuch](docs/templates.md) · [CLI](docs/cli.md) ·
+[Quickstart](docs/quickstart.md) · [Template-Handbuch](docs/templates.md) · [Skills](docs/skills.md) · [CLI](docs/cli.md) ·
 [MCP](docs/mcp.md) · [Werkzeug-Katalog](docs/mcp-catalog.md) · [Fehlercodes](docs/errors.md) · [Agenten einrichten](docs/setup.md) · [Claude Code und andere Agenten](docs/claude-code.md) ·
 [Backends](docs/backends.md) · [Hosts und SSH](docs/hosts-ssh.md) · [GUI](docs/gui.md) ·
 [Fehlerbehebung](docs/troubleshooting.md) · [Architektur](docs/architecture.md) ·

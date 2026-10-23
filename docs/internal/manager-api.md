@@ -143,6 +143,26 @@ All methods are `async` and take `caller` first unless noted. Types: `manager/ty
 - `validateTemplate(caller, nameOrPath) -> {ok, issues[{kind: schema|invalid|unsupported|policy, path, message, line, column}], warnings, policy}`:
   schema, security rules, backend capabilities, and a policy dry run (what a create with the template's
   defaults would get). Positions come from `annotateIssuePositions`.
+- `validateTemplate` also looks up every name of `skills:` in the skill catalog (issue `skills[i]`, kind `invalid`).
+
+### Skills
+
+- `listSkills(caller, {projectDir?, workspacePath?}) -> {skills: SkillListEntry[], problems}`: name, description,
+  source, `shadows`, `trusted` (project skills: content hash approved, stored next to the template trust records
+  with the name `skill:<name>`), `allowed` (the profile's `skills` let a request add it), file count, size, hash.
+  Broken folders only listed for humans.
+- `showSkill(caller, name, {projectDir?, workspacePath?}) -> SkillDetails`: the entry plus `frontMatter`, `body`,
+  `files[]` and `sandboxPath`.
+- `validateSkill(caller, nameOrPath) -> {ok, name?, path?, issues[{path (file in the skill), line?, column?, message}], warnings}`;
+  a folder below an agent's workspace roots only.
+- `createSandbox` resolves `template.skills` plus `req.skills` (`resolveCreateSkills`), passes them to
+  `evaluateCreate` (`skills[]` with `requested`, `trusted`, `contentHash`), adds their files as `readonly` spec
+  files below `SKILLS_DIR` with `INDEX.md`, sets `ABOX_SKILLS_DIR`, and records `effective.skills`
+  (`SandboxView.skills`). Approving a `template_trust` request trusts the untrusted project skills it lists
+  (`skill.trust` audit entry).
+
+### Templates (continued)
+
 - `buildTemplate(caller, name, {update?, onProgress?, projectDir?, signal?}) -> {image, cached, durationMs, pinnedBase}`:
   stores the pinned base per template hash in `template_pins` and passes it as `pinnedBase` next time
   (`update` ignores it). Audited as `image.build_start` / `image.build` with `networkAccess: true` (the build runs

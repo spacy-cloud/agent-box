@@ -10,6 +10,26 @@ release. Nothing has been released yet.
 
 ### Added
 
+- Skill catalog: skills are folders with a `SKILL.md` (the Claude Code / Agent Skills format: front matter with
+  `name` and `description`, Markdown instructions, optional `scripts/`, `references/`), looked up like templates
+  (the project's `.sandbox/skills/<name>/` over `~/.config/abox/skills/<name>/` over the built-in ones) and
+  checked strictly (`skill_invalid` with file, line and column: name equal to the folder, description required and
+  at most 1024 characters, known front matter keys only, at most 100 files and 1 MiB, no links out of the folder,
+  no symlinked skill folders). Three short built-in skills: `run-tests`, `minimal-change`, `work-in-sandbox`. A
+  sandbox gets the skills of its template (new template field `skills:`, a union along `extends`) plus the ones
+  the create adds (`abox create --skill`, MCP `sandbox_create` `skills`, the GUI's New-sandbox dialog); they are
+  copied at create, read-only, to `/skills/<name>/` with `/skills/INDEX.md` (name, path, description) and
+  `ABOX_SKILLS_DIR`, so it works on every backend and on remote hosts (Docker, Podman, the Python container and
+  the VM backend place them owned by root; a read-only root file system gets a volume for `/skills`; the process
+  backend can only set the modes and points `ABOX_SKILLS_DIR` into the sandbox root; new contract test for
+  `readonly` spec files). Policy: a profile's new `skills` list says which skills a request may add (`'*'` = any;
+  default none; the built-in policy and the human profile allow any), the template's own skills need no entry;
+  project skills are trusted by content hash like project templates (a human confirms one call, an agent's
+  request is a `template_trust` approval whose approval records the hash, audit `skill.trust`). New: `abox skill
+ls|show|validate`, MCP tools `skill_list` and `skill_show`, skills in `sandbox_inspect` / `abox inspect`, a
+  Skills view in the GUI, the template's skills in `abox template show` and its review, and a missing skill in
+  `abox template validate`. See [skills](docs/skills.md).
+
 - Design pass over the GUI: overflow menus, keyboard shortcuts, dark-mode check (closes #24): a table row shows
   its one or two most used actions and keeps the rest in an accessible **⋯** menu (one reusable component, the
   WAI-ARIA menu-button pattern: arrow keys, Home/End, Esc returns the focus, a click outside or Tab closes it,

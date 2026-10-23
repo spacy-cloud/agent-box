@@ -164,6 +164,7 @@ killed by the timeout gives 5. A reader that goes away (`abox ls | head -1`) is 
 | `~/.config/abox/config.yaml`                 | optional settings, see below                                                                                                                       |
 | `~/.config/abox/policy.yaml`                 | the policy; without it the built-in policy applies (agents: projects below ~/projects, ~/src, ... only) (see [security](security.md#policy-model)) |
 | `~/.config/abox/templates/`                  | your templates                                                                                                                                     |
+| `~/.config/abox/skills/`                     | your skills, one folder with a `SKILL.md` each (see [skills](skills.md))                                                                           |
 | `~/.config/abox/hosts.yaml`                  | host profiles (metadata only, no keys or passwords)                                                                                                |
 | `~/.config/abox/known_hosts`                 | host keys you confirmed in abox                                                                                                                    |
 | `~/.local/share/abox/state.db`               | SQLite state: sandboxes, approvals, audit log, template trust, tokens                                                                              |
@@ -335,6 +336,53 @@ Build (or fetch) the environment image of a template
 
 Remove environment images no template or sandbox uses any more
 
+### `abox skill`
+
+`abox skill [options] [command]`
+
+List, inspect and validate skills (folders with a SKILL.md for agents)
+
+Skills are looked up like templates: the project's `.sandbox/skills/<name>/` (the project directory,
+or `--project`), then `~/.config/abox/skills/<name>/`, then the built-in ones. See [skills](skills.md).
+
+#### `abox skill ls`
+
+`abox skill ls|list [options]`
+
+List available skills (builtin, user, project)
+
+`SOURCE` names what a skill shadows (`project (shadows builtin)`), `TRUSTED` is `NO` for a project
+skill whose current content you have not approved, `FILES` counts its files. Folders that cannot be
+loaded are listed below the table as `problem:` with every issue.
+
+#### `abox skill show`
+
+`abox skill show [options] <name>`
+
+Show a skill: where it comes from, its files and its instructions
+
+| Argument | Meaning    |
+| -------- | ---------- |
+| `name`   | skill name |
+
+Prints the source folder, whether it is trusted, the files (`(x)` = executable), the size, where a
+sandbox has it (`/skills/<name>`), the optional front matter keys and the instructions of its
+`SKILL.md`. Read a project skill with it before you allow it.
+
+#### `abox skill validate`
+
+`abox skill validate [options] <name|folder>`
+
+Validate a skill by name or folder
+
+| Argument       | Meaning                                                     |
+| -------------- | ----------------------------------------------------------- |
+| `name\|folder` | skill name, or a path to the skill folder (or its SKILL.md) |
+
+An argument with a `/` (or `.`) is a folder. Every problem is printed with its file and, for
+`SKILL.md`, line and column (`.../my-skill/SKILL.md:2:7 name "other" differs from the folder name`);
+the exit code is 2 (`skill_invalid`).
+
 ### `abox create`
 
 `abox create [options] [template]`
@@ -357,6 +405,7 @@ Create a sandbox from a template
 | `--gitignore`                | copy/sync workspace: leave out what .gitignore files ignore (node_modules, build output, .env...); the default                                                                                                               |
 | `--no-gitignore`             | copy/sync workspace: copy everything, ignored files included (needs --workspace)                                                                                                                                             |
 | `--no-cache`                 | do not mount the template's package caches (pnpm store, Cargo registry, ...): a clean install; see "abox cache"                                                                                                              |
+| `--skill <name>`             | give the sandbox this skill on top of the template's (repeatable; see "abox skill ls")                                                                                                                                       |
 | `--net <mode>`               | network mode (choices: "none", "allowlist", "open")                                                                                                                                                                          |
 | `--allow <domains>`          | extra allowed destinations, comma separated (with --net allowlist)                                                                                                                                                           |
 | `--ttl <duration>`           | lifetime, e.g. 2h                                                                                                                                                                                                            |
@@ -390,6 +439,12 @@ live in volumes that outlive the sandbox, so the second sandbox of the project s
 `--no-cache` leaves them out for one sandbox (a clean install); without a project directory (empty
 workspace) there are no caches, and a profile with `caches: false` switches them off for good.
 See [`abox cache`](#abox-cache).
+
+`--skill` (repeatable) adds [skills](skills.md) to the ones the template lists; they are copied
+read-only to `/skills/<name>/` with an index in `/skills/INDEX.md`, and `ABOX_SKILLS_DIR` names the
+directory. An unknown skill fails the create with `not_found` before anything is built; a project
+skill whose content you have not approved is one more point to confirm (`--yes`). `abox inspect`
+lists the skills of a sandbox.
 
 On a terminal (and with `--json`) `abox create` first estimates how the sandbox fits on the host:
 `Fits ~3x on home-server (limited by a configured limit). With it: ~80% CPU and ~95% RAM reserved; in use now: 35% CPU, 60% RAM.`

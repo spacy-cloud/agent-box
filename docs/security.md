@@ -453,7 +453,7 @@ bound to profile rights.
 ### Profiles
 
 A profile (in `policy.yaml`) groups the limits and rights for an agent context: allowed
-templates, limits (sandbox count, CPUs, memory, TTL), workspace roots and modes, network modes and
+templates and the [skills](#skills) a request may add, limits (sandbox count, CPUs, memory, TTL), workspace roots and modes, network modes and
 presets, mounts, allowed secrets and injection methods, minimum isolation per capability, and the
 [package caches](#package-caches) (`caches: true|false`, `cache_max_bytes`). Profiles can extend
 each other. The agent contexts themselves (which names exist and which profile
@@ -468,6 +468,7 @@ profiles:
   default:
     approval: medium
     templates: [node-dev, py-dev]
+    skills: [run-tests, minimal-change] # skills a create may add; the template's own need no entry
     limits: { sandboxes: 3, cpus: 4, memory: 8g, ttl: 4h }
     workspace:
       roots: [~/projects]
@@ -566,6 +567,29 @@ Dockerfile can `COPY`), and for a template that `extends` another project templa
 content. The same digest is part of the create request and of the image cache key, so rewriting
 the Dockerfile after an approval needs a new approval. The review shows the Dockerfile and lists
 the context files. A project template may only use a Dockerfile inside its own project.
+
+## Skills
+
+[Skills](skills.md) are folders with a `SKILL.md` that abox copies into a sandbox for the agent to
+read. They are instructions, so a foreign skill is prompt injection by design: it can steer an
+agent to change or send anything the sandbox can reach. The controls:
+
+- **Project skills are trusted by content hash**, exactly like project templates: the name and every
+  file (path, executable bit, content) are hashed; until a human approves that hash, a create that
+  gives the sandbox the skill needs a confirmation (humans, one call, no trust recorded) or an
+  approval of kind `template_trust` (agents, all approval modes; approving records the hash, audit
+  `skill.trust`). Read a skill with `abox skill show <name>` or in the GUI before you allow it.
+- **The policy decides what an agent may add.** A request's own skills must be in the profile's
+  `skills` (`'*'` = any; missing = none). The skills a template lists come with the template the
+  profile already allows. The approval digest binds to the names and content hashes.
+- **Read-only in the sandbox** (container and VM backends): files and folders below `/skills` belong to
+  root and have no write bits, so the sandbox user cannot rewrite a skill for itself or a later step;
+  the sandbox file tools write as the sandbox user and are refused there too. The process backend
+  (isolation `none`) can only set the modes.
+- **Bounded and inert on the host.** Loading a skill never follows a symbolic link out of its folder
+  (links to files inside are copied, everything else is refused), never reads a symlinked skill folder,
+  and stops at 100 files and 1 MiB per skill (32 skills and 8 MiB per sandbox). abox never runs a
+  skill's scripts; code in the sandbox may, with the sandbox user's rights.
 
 ## Audit log
 
@@ -820,6 +844,9 @@ of this documentation; it will be published per release alongside the changelog.
   the final component.
 - Approvals protect against agents, not against yourself: an overly broad `policy.yaml` or a hasty
   "Allow" remains your responsibility.
+- **Skills are not a boundary.** Nothing enforces what a skill says, and a trusted skill can still
+  give bad advice; the sandbox limits are what protects the host. Skills are delivered on the VM
+  backend by the same code path as other spec files, but no VM run with skills was made.
 
 ### Remote hosts
 
