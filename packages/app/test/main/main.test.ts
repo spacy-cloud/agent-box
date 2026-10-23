@@ -95,6 +95,8 @@ describe('manager handlers are thin: always the human caller, confirmation only 
       extendTtl: rec('extendTtl'),
       sandboxStats: rec('sandboxStats', { usage: {} }),
       listCaches: rec('listCaches', { caches: [], totalBytes: 0, unreachable: [] }),
+      listSkills: rec('listSkills', { skills: [], problems: [] }),
+      showSkill: rec('showSkill', { name: 'run-tests' }),
       removeCaches: rec('removeCaches', { removed: [], skipped: [], errors: [] }),
       hostCapacity: rec('hostCapacity', { host: 'srv' }),
       estimateFit: rec('estimateFit', { host: 'srv', fits: 3 }),
@@ -169,6 +171,18 @@ describe('manager handlers are thin: always the human caller, confirmation only 
     expect(calls[0]!.args[1]).toEqual({ template: 'node-dev', cache: false });
     expect(calls[1]!.args[1]).toEqual({ template: 'node-dev' });
     expect(calls[2]!.args[1]).toEqual({ template: 'node-dev' });
+  });
+
+  it('skills are listed and shown as the human; create forwards the extra skills', async () => {
+    const { abox, calls } = fakeAbox();
+    const h = createManagerHandlers({ abox, paths });
+    await h['skills:list'](undefined, {});
+    await h['skills:show']({ name: 'run-tests' }, {});
+    await h['sandboxes:create']({ template: 'node-dev', skills: ['run-tests'] }, {});
+    expect(calls.map((c) => c.fn)).toEqual(['listSkills', 'showSkill', 'createSandbox']);
+    expect(calls[0]!.args).toEqual([{ contextId: 'human' }, {}]);
+    expect(calls[1]!.args).toEqual([{ contextId: 'human' }, 'run-tests', {}]);
+    expect(calls[2]!.args[1]).toEqual({ template: 'node-dev', skills: ['run-tests'] });
   });
 
   it('package caches are listed with sizes and removed as the human, by key or all', async () => {

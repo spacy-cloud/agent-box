@@ -82,6 +82,7 @@ export const VIEWS = [
   'overview',
   'sandboxes',
   'templates',
+  'skills',
   'hosts',
   'approvals',
   'audit',

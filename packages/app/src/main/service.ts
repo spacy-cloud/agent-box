@@ -57,6 +57,8 @@ export type ManagerChannel =
   | 'templates:review'
   | 'templates:draft'
   | 'templates:savePlan'
+  | 'skills:list'
+  | 'skills:show'
   | 'files:list'
   | 'export:run'
   | 'changes:review'
@@ -233,6 +235,8 @@ export function createManagerHandlers(rt: ServiceRuntime): ManagerHandlers {
         .map((s) => s.name);
       return { ...plan, usedBy: { count: names.length, names: names.slice(0, 10) } };
     },
+    'skills:list': async (i) => abox.listSkills(HUMAN, await projectOption(i?.projectDir)),
+    'skills:show': async (i) => abox.showSkill(HUMAN, i.name, await projectOption(i.projectDir)),
     'files:list': (i) => abox.listDir(HUMAN, i.id, i.path),
     'export:run': (i) =>
       abox.exportSandbox(

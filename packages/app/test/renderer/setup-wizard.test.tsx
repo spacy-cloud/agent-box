@@ -161,6 +161,8 @@ function mount(opts: Opts = {}) {
             },
           ],
         };
+      case 'skills:list':
+        return { skills: [], problems: [] };
       case 'templates:list':
         return {
           problems: [],
@@ -521,6 +523,8 @@ describe('templates step', () => {
             proposed: null,
             baseHash: 'h',
           };
+        case 'skills:list':
+          return { skills: [], problems: [] };
         case 'templates:list':
           return { problems: [], templates: [tpl('node-dev', 'Node.js')] };
         case 'setup:scan':

@@ -13,6 +13,7 @@ import { AuditView } from './views/Audit';
 import { PolicyView } from './views/Policy';
 import { SettingsView } from './views/Settings';
 import { TemplatesView } from './views/Templates';
+import { SkillsView } from './views/Skills';
 import { HostsView } from './views/Hosts';
 import { SshPanel, SshTabsProvider, useSshTabs } from './views/ssh-tabs';
 import { AskpassHost } from './components/AskpassDialog';
@@ -25,6 +26,7 @@ const NAV: Array<{ view: Exclude<ViewName, 'detail'>; key: string }> = [
   { view: 'overview', key: 'nav.overview' },
   { view: 'sandboxes', key: 'nav.sandboxes' },
   { view: 'templates', key: 'nav.templates' },
+  { view: 'skills', key: 'nav.skills' },
   { view: 'hosts', key: 'nav.hosts' },
   { view: 'approvals', key: 'nav.approvals' },
   { view: 'audit', key: 'nav.audit' },
@@ -173,6 +175,7 @@ function Shell() {
         {active === 'overview' ? <OverviewView /> : null}
         {active === 'sandboxes' ? <SandboxesView /> : null}
         {active === 'templates' ? <TemplatesView /> : null}
+        {active === 'skills' ? <SkillsView /> : null}
         {active === 'hosts' ? <HostsView /> : null}
         <SshPanel visible={active === 'hosts'} />
         {active === 'approvals' ? <ApprovalsView /> : null}

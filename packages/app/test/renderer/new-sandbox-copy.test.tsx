@@ -71,6 +71,8 @@ function rig(opts: {
     calls.push({ channel, input });
     const data = await (async (): Promise<unknown> => {
       switch (channel) {
+        case 'skills:list':
+          return { skills: [], problems: [] };
         case 'templates:list':
           return { templates: [TEMPLATE], problems: [] };
         case 'policy:get':

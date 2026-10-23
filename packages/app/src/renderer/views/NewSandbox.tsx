@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { TemplateListEntry, TemplateSuggestion } from '@abox/core';
+import type { SkillListEntry, TemplateListEntry, TemplateSuggestion } from '@abox/core';
 import { call } from '../api';
 import { useApp } from '../context';
 import { useQuery } from '../hooks';
@@ -45,6 +45,8 @@ interface Form {
   gitignore?: boolean;
   /** Use the template's package caches; unset = yes (`false` is sent as the opt-out). */
   cache?: boolean;
+  /** Skills on top of the template's own (the template's are always given and never listed here). */
+  skills?: string[];
   cpus: string;
   memory: string;
   ttl: string;
@@ -80,6 +82,8 @@ export function buildCreateInput(
   f: Form,
   /** Mode the workspace really gets (the form's choice, else the template's). */
   effectiveMode: string = f.workspaceMode,
+  /** Skills the template gives anyway: they are not sent again. */
+  templateSkills: readonly string[] = [],
 ): IpcInput<'sandboxes:create'> {
   const workspace: NonNullable<IpcInput<'sandboxes:create'>['workspace']> = {};
   if (f.workspaceMode) workspace.mode = f.workspaceMode as (typeof WORKSPACE_MODES)[number];
@@ -110,7 +114,15 @@ export function buildCreateInput(
     ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
     // an empty workspace has no project the cache could belong to: nothing to opt out of
     ...(f.cache === false && effectiveMode !== 'empty' ? { cache: false } : {}),
+    ...(extraSkills(f, templateSkills).length > 0
+      ? { skills: extraSkills(f, templateSkills) }
+      : {}),
   };
+}
+
+/** The chosen skills that the template does not bring itself. */
+function extraSkills(f: Form, templateSkills: readonly string[]): string[] {
+  return (f.skills ?? []).filter((n) => !templateSkills.includes(n));
 }
 
 export function NewSandboxDialog(props: {
@@ -192,6 +204,18 @@ export function NewSandboxDialog(props: {
   const templateCaches = (details.data?.template as { caches?: unknown[] } | undefined)?.caches;
   const templateHasNoCaches = Array.isArray(templateCaches) && templateCaches.length === 0;
   const cacheDisabled = cachesNeedProject || templateHasNoCaches;
+  // Skills: the template's own are always given (shown checked and fixed); the others can be added.
+  const skillList = useQuery('skills:list', projectDir ? { projectDir } : undefined, {
+    enabled: step === 'options' || step === 'summary',
+    live: false,
+  });
+  const templateSkills = (details.data?.template.skills ?? []) as string[];
+  const chosenSkills = [
+    ...templateSkills,
+    ...extraSkills(form, templateSkills).filter((n) =>
+      (skillList.data?.skills ?? []).some((x) => x.name === n),
+    ),
+  ];
   // empty resource fields fall back to the template: show what it resolves to
   const resolved = details.data?.template as
     | {
@@ -293,7 +317,7 @@ export function NewSandboxDialog(props: {
     setError(undefined);
     try {
       const res = await call('sandboxes:create', {
-        ...buildCreateInput(form, effectiveMode),
+        ...buildCreateInput(form, effectiveMode, templateSkills),
         confirmed,
         progressKey: key.current,
       });
@@ -414,7 +438,10 @@ export function NewSandboxDialog(props: {
         <>
           <ProjectFolderPicker
             value={projectDir}
-            onChange={(dir) => setForm((f) => ({ ...f, projectDir: dir, template: '' }))}
+            onChange={(dir) =>
+              // the skills of the old folder are gone with it
+              setForm((f) => ({ ...f, projectDir: dir, template: '', skills: [] }))
+            }
           />
           {projectDir && suggested ? (
             <TemplateSuggestionNote suggestion={suggested} chosen={form.template} />
@@ -602,6 +629,14 @@ export function NewSandboxDialog(props: {
                     : t('new.cacheHint')}
               </small>
             </div>
+            <SkillPicker
+              skills={skillList.data?.skills ?? []}
+              loading={skillList.loading && !skillList.data}
+              error={skillList.error}
+              fromTemplate={templateSkills}
+              chosen={form.skills ?? []}
+              onChange={(next) => set('skills', next)}
+            />
             {form.workspaceMode !== 'empty' ? (
               <WorkspaceEstimateNote
                 state={estimate}
@@ -752,6 +787,12 @@ export function NewSandboxDialog(props: {
                 </dd>
               </>
             )}
+            {chosenSkills.length > 0 ? (
+              <>
+                <dt>{t('new.skills')}</dt>
+                <dd className="plain">{chosenSkills.join(', ')}</dd>
+              </>
+            ) : null}
             <dt>
               {t('new.cpus')} / {t('new.memory')} / {t('new.ttl')}
             </dt>
@@ -902,5 +943,57 @@ function TemplateSuggestionNote(props: { suggestion: TemplateSuggestion; chosen:
         <p className="muted">{t('new.suggest.skipped', { templates: names(skipped) })}</p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The skills of the catalog as checkboxes: those of the template checked and fixed, the others optional.
+ * A project skill that nobody approved yet is marked: creating with it asks for a confirmation.
+ */
+function SkillPicker(props: {
+  skills: SkillListEntry[];
+  loading: boolean;
+  error: unknown;
+  fromTemplate: readonly string[];
+  chosen: readonly string[];
+  onChange(next: string[]): void;
+}) {
+  const { t } = useApp();
+  return (
+    <fieldset className="field opt-skills">
+      <legend>{t('new.skills')}</legend>
+      {props.loading ? <Loading /> : null}
+      {props.error ? <ErrorBox error={props.error} /> : null}
+      {!props.loading && !props.error && props.skills.length === 0 ? (
+        <p className="muted small">{t('new.skillsNone')}</p>
+      ) : null}
+      {props.skills.map((s) => {
+        const fixed = props.fromTemplate.includes(s.name);
+        return (
+          <label key={s.name} className="inline opt-skill" title={safeInline(s.description, 400)}>
+            <input
+              type="checkbox"
+              checked={fixed || props.chosen.includes(s.name)}
+              disabled={fixed}
+              onChange={(e) =>
+                props.onChange(
+                  e.target.checked
+                    ? [...props.chosen, s.name]
+                    : props.chosen.filter((x) => x !== s.name),
+                )
+              }
+            />{' '}
+            <span className="plain">{safeInline(s.name, 80)}</span>
+            {fixed ? <small className="muted"> ({t('new.skillFromTemplate')})</small> : null}
+            {s.source.kind === 'project' ? (
+              <Badge tone={s.trusted ? 'ok' : 'warn'}>
+                {s.trusted ? t('skills.trusted') : t('skills.untrusted')}
+              </Badge>
+            ) : null}
+          </label>
+        );
+      })}
+      <small className="muted">{t('new.skillsHint')}</small>
+    </fieldset>
   );
 }

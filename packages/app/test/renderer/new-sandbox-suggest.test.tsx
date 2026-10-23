@@ -68,6 +68,8 @@ const ANSWERS: Record<string, TemplateSuggestion> = {
 function bridge(templates: TemplateListEntry[] = TEMPLATES) {
   return installBridge((channel, input) => {
     switch (channel) {
+      case 'skills:list':
+        return { skills: [], problems: [] };
       case 'templates:list':
         return { templates, problems: [] };
       case 'templates:suggest':
@@ -182,6 +184,8 @@ describe('New sandbox: the template is suggested for the picked folder', () => {
   it('a failing suggestion is no error: the list stays usable', async () => {
     installBridge((channel) => {
       switch (channel) {
+        case 'skills:list':
+          return { skills: [], problems: [] };
         case 'templates:list':
           return { templates: TEMPLATES, problems: [] };
         case 'templates:suggest':

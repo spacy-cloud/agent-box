@@ -87,6 +87,8 @@ function estimate(over: Partial<FitEstimate> = {}): FitEstimate {
 function mount(answer: (input: Record<string, unknown>) => FitEstimate | Error) {
   const calls = installBridge((channel, input) => {
     switch (channel) {
+      case 'skills:list':
+        return { skills: [], problems: [] };
       case 'templates:list':
         return { templates: [NODE], problems: [] };
       case 'templates:show':
@@ -146,6 +148,8 @@ describe('New sandbox: fit estimate banner', () => {
   it('names this computer in the dative for local', async () => {
     installBridge((channel) => {
       switch (channel) {
+        case 'skills:list':
+          return { skills: [], problems: [] };
         case 'templates:list':
           return { templates: [NODE], problems: [] };
         case 'templates:show':
@@ -315,6 +319,8 @@ describe('New sandbox: the estimate follows host and resources (debounced)', () 
     let n = 0;
     installBridge((channel) => {
       switch (channel) {
+        case 'skills:list':
+          return { skills: [], problems: [] };
         case 'templates:list':
           return { templates: [NODE], problems: [] };
         case 'templates:show':
