@@ -27,6 +27,8 @@ const PINNED_TOOLS = [
   'sandbox_start',
   'sandbox_stop',
   'sandbox_write_file',
+  'skill_list',
+  'skill_show',
   'template_list',
   'template_show',
 ];

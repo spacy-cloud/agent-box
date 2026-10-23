@@ -37,6 +37,7 @@ export interface CreateMcpServerOptions {
 const INSTRUCTIONS = [
   'abox gives you isolated sandboxes for risky work: unknown code, dependency installs, test runs, experiments.',
   'Flow: template_list -> sandbox_create (fresh request_id) -> sandbox_exec -> sandbox_export format=diff (show it to the human, point out flagged paths) -> sandbox_delete.',
+  'Skills (skill_list) are instructions abox copies read-only into a sandbox: pass skills to sandbox_create, then read /skills/INDEX.md inside the sandbox and a SKILL.md when it fits.',
   'To show the human a dev server that runs in your sandbox (Vite, Flutter web, php -S), listen on 0.0.0.0 there and call sandbox_port_forward.',
   'Policy is a boundary: on policy_denied or approval_denied do not work around it; use access_request or tell the human.',
   'status=pending_approval means a human must run `abox approvals approve <approval_id>`; then repeat the identical call.',

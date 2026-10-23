@@ -148,6 +148,9 @@ const APPROVE_PORT =
   APPROVAL_WAIT +
   ' `list` and `remove` never need approval.';
 
+/** A SKILL.md is at most 256 KiB; the tool result keeps a smaller part and says so. */
+const SKILL_BODY_MAX_BYTES = 64 * 1024;
+
 const READ: ToolAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -187,6 +190,7 @@ function briefSandbox(s: SandboxView): Record<string, unknown> {
     network: s.network,
     mounts: s.mounts,
     resources: s.resources,
+    ...(s.skills ? { skills: s.skills.map((k) => ({ name: k.name, path: k.path })) } : {}),
     ...(s.humanAttached ? { humanAttached: s.humanAttached } : {}),
   };
 }
@@ -430,6 +434,124 @@ export function registerTools(register: Register): void {
     },
   });
 
+  // -- skills ---------------------------------------------------------------------------------
+  register({
+    name: 'skill_list',
+    title: 'List skills',
+    doc: {
+      scope: 'context',
+      approval: 'None.',
+      result:
+        '`skills[]` (`name`, `description`, `source`, `project`, `trusted`, `needs_approval`, `shadows`, `allowed`, `file_count`), `hidden_count`',
+    },
+    description:
+      "List skills: SKILL.md folders (task instructions) abox copies read-only into a sandbox at /skills. Add them with sandbox_create skills=[...]; the template's skills come on their own. Lists the skills your profile lets you add (all=true: every one). workspace_path adds the project's .sandbox/skills; those need human approval until trusted.",
+    input: {
+      filter: z
+        .string()
+        .max(100)
+        .optional()
+        .describe('Case-insensitive text to match in name or description.'),
+      all: z
+        .boolean()
+        .optional()
+        .describe('Also list skills your profile does not let you add (default: only those).'),
+      workspace_path: z
+        .string()
+        .min(1)
+        .max(4096)
+        .optional()
+        .describe(
+          'Host project path, the same as workspace.path of sandbox_create: also lists the skills of that project (<path>/.sandbox/skills/<name>/). Must be below your workspace roots.',
+        ),
+    },
+    annotations: READ,
+    async handler(args, rt) {
+      const list = await rt.abox.listSkills(
+        rt.caller,
+        args.workspace_path !== undefined ? { workspacePath: args.workspace_path } : {},
+      );
+      const f = args.filter?.trim().toLowerCase();
+      const matching = list.skills.filter((x) =>
+        f ? [x.name, x.description].some((v) => v.toLowerCase().includes(f)) : true,
+      );
+      const shown = (args.all ? matching : matching.filter((x) => x.allowed)).map((x) => ({
+        name: x.name,
+        description: x.description.replace(/\s+/g, ' ').trim(),
+        source: x.source.kind,
+        project: x.source.kind === 'project',
+        trusted: x.trusted,
+        needsApproval: !x.trusted,
+        ...(x.shadows ? { shadows: [...new Set(x.shadows.map((h) => h.kind))] } : {}),
+        allowed: x.allowed,
+        fileCount: x.fileCount,
+      }));
+      const hidden = matching.length - shown.length;
+      return ok(
+        `${shown.length} skill(s)${hidden ? `; ${hidden} more your profile does not let you add (all=true shows them)` : ''}`,
+        { skills: shown, hiddenCount: hidden },
+        shown
+          .map(
+            (x) =>
+              `- ${x.name}${x.project ? ' (project skill)' : ''}${x.shadows ? ` (SHADOWS the ${x.shadows.join('/')} skill of the same name)` : ''}${x.allowed ? '' : ' (not allowed for you)'}${x.needsApproval ? ' (needs human approval first)' : ''}: ${x.description}`,
+          )
+          .join('\n'),
+      );
+    },
+  });
+
+  register({
+    name: 'skill_show',
+    title: 'Show skill',
+    doc: {
+      scope: 'context',
+      approval: 'None.',
+      result:
+        '`skill` (`name`, `description`, `source`, `trusted`, `allowed`, `files`, `sandbox_path`, `front_matter`), `body`, `truncated`',
+    },
+    description:
+      'Show one skill: its description, files and the instructions of its SKILL.md. Inside a sandbox that has the skill, the same files are in /skills/<name>/. For a skill of a project pass the same workspace_path as for skill_list.',
+    input: {
+      name: z.string().min(1).max(64).describe('Skill name from skill_list.'),
+      workspace_path: z
+        .string()
+        .min(1)
+        .max(4096)
+        .optional()
+        .describe(
+          'Host project path, the same as workspace.path of sandbox_create: also looks for the skill in <path>/.sandbox/skills. Must be below your workspace roots.',
+        ),
+    },
+    annotations: READ,
+    async handler(args, rt) {
+      const d = await rt.abox.showSkill(
+        rt.caller,
+        args.name,
+        args.workspace_path !== undefined ? { workspacePath: args.workspace_path } : {},
+      );
+      const body = truncateText(d.body, SKILL_BODY_MAX_BYTES);
+      return ok(
+        `Skill ${d.name} (${d.source.kind}${d.trusted ? '' : ', not approved yet'})`,
+        {
+          skill: {
+            name: d.name,
+            description: d.description,
+            source: d.source.kind,
+            ...(d.shadows ? { shadows: [...new Set(d.shadows.map((h) => h.kind))] } : {}),
+            trusted: d.trusted,
+            allowed: d.allowed,
+            files: d.files,
+            sandboxPath: d.sandboxPath,
+            frontMatter: d.frontMatter,
+          },
+          body: body.text,
+          truncated: body.truncated,
+        },
+        body.text,
+      );
+    },
+  });
+
   // -- sandbox lifecycle -----------------------------------------------------------------------
   register({
     name: 'sandbox_create',
@@ -523,6 +645,13 @@ export function registerTools(register: Register): void {
       ttl: duration
         .optional()
         .describe('Lifetime: duration string like "2h" or seconds (same as overrides.ttl).'),
+      skills: z
+        .array(z.string().min(1).max(64))
+        .max(32)
+        .optional()
+        .describe(
+          'Skills from skill_list to copy read-only into the sandbox (/skills/<name>/, index in /skills/INDEX.md, path in $ABOX_SKILLS_DIR), on top of the skills of the template.',
+        ),
       cache: z
         .boolean()
         .optional()
@@ -582,6 +711,7 @@ export function registerTools(register: Register): void {
         ...(Object.keys(overrides).length ? { overrides } : {}),
         ...(args.request_id !== undefined ? { requestId: args.request_id } : {}),
         ...(args.cache === false ? { cache: false } : {}),
+        ...(args.skills?.length ? { skills: [...new Set(args.skills)] } : {}),
       };
       const res = await rt.abox.createSandbox(rt.caller, req, {
         signal: rt.signal,
@@ -637,10 +767,11 @@ export function registerTools(register: Register): void {
     doc: {
       scope: 'sandbox',
       approval: 'None.',
-      result: '`sandbox`, `processes[]`, `pending_approvals`, `ports[]`',
+      result:
+        '`sandbox` (with `skills[]` when it has some), `processes[]`, `pending_approvals`, `ports[]`',
     },
     description:
-      'Show state, effective limits (what policy granted vs. what the backend reports), network, mounts, TTL, processes, port forwards and pending approvals of one of your sandboxes.',
+      'Show state, effective limits (what policy granted vs. what the backend reports), network, mounts, skills, TTL, processes, port forwards and pending approvals of one of your sandboxes.',
     input: { id: sandboxId },
     annotations: READ,
     async handler(args, rt) {
@@ -655,6 +786,11 @@ export function registerTools(register: Register): void {
             ? ['Processes:', ...processes.map((p) => `- ${processLine(p)}`)]
             : []),
           ...(ports.length ? ['Port forwards:', ...ports.map((p) => `- ${portLine(p)}`)] : []),
+          ...(view.skills?.length
+            ? [
+                `Skills (read-only, read /skills/INDEX.md first): ${view.skills.map((k) => k.name).join(', ')}`,
+              ]
+            : []),
           ...(pendingApprovals ? [`Pending approvals: ${pendingApprovals}`] : []),
         ].join('\n'),
       );
