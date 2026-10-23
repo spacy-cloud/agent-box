@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import type { Readable } from 'node:stream';
 import { PassThrough, Readable as ReadableCtor, pipeline } from 'node:stream';
 import Docker from 'dockerode';
-import { AboxError, collectBuildContext, parseSandboxId } from '@abox/core';
+import { AboxError, SKILLS_DIR, collectBuildContext, parseSandboxId } from '@abox/core';
 import type {
   BackendKind,
   BackendStatus,
@@ -1251,6 +1251,9 @@ export class DockerProvider implements SandboxProvider {
         Source: '',
         Target: `/home/${spec.user.name}`,
       } as Docker.MountSettings);
+      // The skills are files of the spec; on a read-only root they need a writable place of their own.
+      if (spec.files.some((f) => f.sandboxPath.startsWith(`${SKILLS_DIR}/`)))
+        add({ Type: 'volume', Source: '', Target: SKILLS_DIR } as Docker.MountSettings);
     }
     return mounts;
   }
@@ -1405,14 +1408,20 @@ export class DockerProvider implements SandboxProvider {
           p.startsWith(`${CA_DIR}/`) ||
           p.startsWith('/tmp/') ||
           p.startsWith(`${wsPath}/`) ||
-          p.startsWith(`/home/${spec.user.name}/`)
+          p.startsWith(`/home/${spec.user.name}/`) ||
+          p.startsWith(`${SKILLS_DIR}/`)
         )
       ) {
         throw new AboxError(
           'unsupported',
-          `With a read-only root filesystem files can only be placed in ${CA_DIR}, /tmp, the workspace or the home directory (${p})`,
+          `With a read-only root filesystem files can only be placed in ${CA_DIR}, /tmp, the workspace, the home directory or ${SKILLS_DIR} (${p})`,
         );
       }
+      if (f.readonly && p.startsWith('/tmp/'))
+        throw new AboxError(
+          'invalid_input',
+          `${p}: a read-only file cannot go to /tmp (every user may write there)`,
+        );
     }
 
     const hasTmpFiles = spec.files.some((f) => sandboxPath(f.sandboxPath).startsWith('/tmp/'));
@@ -1602,7 +1611,9 @@ export class DockerProvider implements SandboxProvider {
         });
         continue;
       }
-      const root = p.startsWith(`${CA_DIR}/`);
+      // Read-only files (skills) and the abox directory belong to root, and so do the directories
+      // created for them: the sandbox user can read them but neither change nor add files there.
+      const root = f.readonly === true || p.startsWith(`${CA_DIR}/`);
       await putFile(c, p, f.content, { mode: f.mode, uid: root ? 0 : uid, gid: root ? 0 : gid });
     }
 

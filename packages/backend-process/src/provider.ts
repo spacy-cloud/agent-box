@@ -14,6 +14,7 @@ import { access, constants as fsConstants } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
   AboxError,
+  SKILLS_DIR_ENV,
   isolationAtLeast,
   type BackendStatus,
   type DirEntry,
@@ -976,6 +977,10 @@ export class ProcessProvider implements SandboxProvider {
       ...(await this.layout.readEnv(short)),
       ...req.env,
     };
+    // The skills directory is a sandbox path; a host process finds it inside the sandbox root.
+    const skillsDir = env[SKILLS_DIR_ENV];
+    if (skillsDir?.startsWith('/'))
+      env[SKILLS_DIR_ENV] = join(rootReal, ...normalizeSandboxPath(skillsDir).split('/'));
     return { short, argv, cwd: cwd.hostPath, env, runDir: this.layout.runDir(short) };
   }
 }

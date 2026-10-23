@@ -5,6 +5,7 @@ import { join, posix } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, type TestContext } from 'vitest';
 import {
   NETWORK_MODES,
+  SKILLS_DIR,
   type ErrorCode,
   type ExecEvent,
   type ExecRequest,
@@ -49,6 +50,9 @@ import { cleanupSandbox, makeTestSpec, randomId, sleep, waitFor } from './helper
  *   Commands should use relative paths against `cwd`: backends without a filesystem boundary
  *   (`process`) cannot translate absolute sandbox paths inside command lines.
  * - `spawn` ignores `maxOutputBytes` (there is no truncation flag on a stream).
+ * - Spec files with `readonly: true` (skills) keep their mode; a backend with isolation above `none`
+ *   makes them and the directories it creates for them owned by root, so the sandbox user can neither
+ *   change them nor add, move or remove files there.
  */
 export interface ContractOptions {
   name: string;
@@ -1190,6 +1194,55 @@ export function defineProviderContract(opts: ContractOptions): void {
           ).toBe(true);
           const entry = (await provider.listDir(spec.id, dir)).find((e) => e.name === 'secret.txt');
           expect((entry?.mode ?? 0) & 0o777).toBe(0o600);
+        } finally {
+          await finish(spec.id);
+        }
+      });
+
+      test('read-only files (skills) have no write bits; an isolated sandbox user cannot change them', async (ctx) => {
+        if (!caps.secretInjection.includes('file')) return ctx.skip();
+        const dir = `${SKILLS_DIR}/ct-${randomId('', 4)}`;
+        const spec = await mk({
+          files: [
+            {
+              sandboxPath: `${dir}/SKILL.md`,
+              content: Buffer.from('skill\n'),
+              mode: 0o444,
+              readonly: true,
+            },
+            {
+              sandboxPath: `${dir}/run.sh`,
+              content: Buffer.from('#!/bin/sh\n'),
+              mode: 0o555,
+              readonly: true,
+            },
+          ],
+        });
+        await provider.create(spec);
+        try {
+          await provider.start(spec.id);
+          expect((await provider.readFile(spec.id, `${dir}/SKILL.md`, 100)).data.toString()).toBe(
+            'skill\n',
+          );
+          const modes = Object.fromEntries(
+            (await provider.listDir(spec.id, dir)).map((e) => [e.name, e.mode & 0o777]),
+          );
+          expect(modes).toEqual({ 'SKILL.md': 0o444, 'run.sh': 0o555 });
+          // Without isolation the host user owns the files; the mode is all a backend can do there.
+          if (caps.isolation === 'none') return;
+          const tries = [
+            `echo changed > ${dir}/SKILL.md`,
+            `touch ${dir}/new.txt`,
+            `rm -f ${dir}/run.sh`,
+            `chmod u+w ${dir}/SKILL.md`,
+          ];
+          for (const t of tries) {
+            const r = await provider.exec(spec.id, { argv: ['sh', '-c', `${t} 2>/dev/null`] });
+            expect(r.exitCode, t).not.toBe(0);
+          }
+          expect((await provider.readFile(spec.id, `${dir}/SKILL.md`, 100)).data.toString()).toBe(
+            'skill\n',
+          );
         } finally {
           await finish(spec.id);
         }
