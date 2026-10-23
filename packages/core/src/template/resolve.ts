@@ -24,7 +24,13 @@ import {
   shQuote,
   type RenderedTool,
 } from './presets.js';
-import { isSafePackageName, parseDuration, parseSize, templateSchema } from './schema.js';
+import {
+  MAX_TEMPLATE_SKILLS,
+  isSafePackageName,
+  parseDuration,
+  parseSize,
+  templateSchema,
+} from './schema.js';
 
 /** Maximum number of `extends` hops (child -> parent -> … ). */
 export const MAX_EXTENDS_DEPTH = 5;
@@ -252,6 +258,8 @@ export function mergeTemplateSpecs(parent: TemplateSpec, child: TemplateSpec): T
       ...(child.caches ?? []),
     ];
   }
+  if (parent.skills || child.skills)
+    out.skills = unique([...(parent.skills ?? []), ...(child.skills ?? [])]);
   if (parent.env || child.env) out.env = { ...parent.env, ...child.env };
   if (parent.labels || child.labels) out.labels = { ...parent.labels, ...child.labels };
   return out;
@@ -579,6 +587,13 @@ export async function resolveTemplate(
     problems,
   );
 
+  // --- skills (they exist and validate is checked against the skill catalog at create) ---
+  if ((merged.skills?.length ?? 0) > MAX_TEMPLATE_SKILLS)
+    problems.add(
+      'skills',
+      `the template and the templates it extends list ${merged.skills!.length} skills; at most ${MAX_TEMPLATE_SKILLS} are allowed`,
+    );
+
   // --- python / vm --------------------------------------------------------
   let python: ResolvedTemplate['python'];
   if (backend === 'python') {
@@ -683,6 +698,7 @@ export async function resolveTemplate(
     secrets,
     labels: { ...(merged.labels ?? {}) },
     caches,
+    ...(merged.skills?.length ? { skills: [...merged.skills] } : {}),
     ...(python ? { python } : {}),
     ...(vm ? { vm } : {}),
     ...(image ? { image } : {}),

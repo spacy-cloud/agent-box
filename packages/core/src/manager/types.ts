@@ -1,6 +1,7 @@
 import type { AuditDecision, AuditEntry, ChainVerification } from '../state/audit-log.js';
 import type { AgentContext, ApprovalItem, HostInfo, ResolvedProfile } from '../policy/index.js';
 import type { ErrorIssue } from '../errors.js';
+import type { SkillFile } from '../skill/index.js';
 import type {
   AccessMode,
   BackendKind,
@@ -204,6 +205,73 @@ export interface TemplateValidation {
   policy?: { decision: 'allow' | 'deny' | 'approval'; reasons: string[]; hint?: string };
 }
 
+// -- skills ------------------------------------------------------------------
+
+export interface SkillListEntry {
+  name: string;
+  description: string;
+  source: { kind: TemplateSourceKind; path: string };
+  /** Lower-precedence skills of the same name that this one hides (a project skill over a builtin one). */
+  shadows?: Array<{ kind: TemplateSourceKind; path: string }>;
+  /** Project skills: true only when this exact content hash was approved. Others: always true. */
+  trusted: boolean;
+  /** The caller's profile lets a request add this skill (`skills` of the profile). */
+  allowed: boolean;
+  fileCount: number;
+  totalBytes: number;
+  contentHash: string;
+}
+
+export interface SkillProblemView {
+  kind: TemplateSourceKind;
+  path: string;
+  /** The folder name. */
+  name: string;
+  message: string;
+  issues: ErrorIssue[];
+}
+
+export interface SkillList {
+  skills: SkillListEntry[];
+  /** Folders that could not be loaded (humans only; agents get an empty list). */
+  problems: SkillProblemView[];
+}
+
+export interface SkillDetails extends SkillListEntry {
+  /** Front matter keys besides name and description, as written. */
+  frontMatter: Record<string, unknown>;
+  /** The instructions of `SKILL.md` (after the front matter). */
+  body: string;
+  files: SkillFile[];
+  /** Where a sandbox has the skill (`/skills/<name>`). */
+  sandboxPath: string;
+}
+
+export interface SkillValidation {
+  ok: boolean;
+  name?: string;
+  /** The skill folder. */
+  path?: string;
+  source?: { kind: TemplateSourceKind; path: string };
+  /** `path` is the file inside the folder (`SKILL.md`, `scripts/x.sh`); SKILL.md issues have line and column. */
+  issues: ErrorIssue[];
+  warnings: string[];
+  contentHash?: string;
+  fileCount?: number;
+  totalBytes?: number;
+}
+
+/** A skill of a sandbox (see `SandboxView.skills`). */
+export interface SandboxSkillView {
+  name: string;
+  source: TemplateSourceKind;
+  contentHash: string;
+  /** Folder inside the sandbox. */
+  path: string;
+  /** Came from the create request, not from the template. */
+  requested: boolean;
+}
+
 export interface BuildTemplateOptions {
   /** Ignore the pinned base and the cache (`--update`). */
   update?: boolean;
@@ -274,6 +342,11 @@ export interface CreateSandboxRequest {
   requestId?: string;
   /** Directory with `.sandbox/*.yaml` project templates; default: workspace path, then the abox project dir. */
   projectDir?: string;
+  /**
+   * Skills to give the sandbox on top of the template's `skills` (names from the skill catalog). An
+   * agent may only add the skills of its profile's `skills`.
+   */
+  skills?: string[];
   /**
    * `false`: do not mount the package caches of the template for this sandbox (a fresh install).
    * `true` / absent: use them when the policy, the backend and the workspace allow it. Never
@@ -360,6 +433,8 @@ export interface SandboxView {
   resources: { cpus: number; memoryBytes: number; ttlMs: number; pids?: number };
   /** Secret references and how they are injected (never values). */
   secretRefs: Array<{ ref: string; inject: string; hosts: string[] }>;
+  /** The skills placed read-only below `/skills` (absent: none, or created before skills existed). */
+  skills?: SandboxSkillView[];
   /** Effective options as applied: `policy` (what the policy engine granted) and `provider` (what the backend reports). */
   effective: Record<string, unknown> | null;
   requestId: string | null;

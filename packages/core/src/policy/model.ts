@@ -19,7 +19,7 @@ export type PortsAllow = false | 'ask' | true;
 /**
  * A profile after `extends` resolution and defaulting. Same shape as the
  * policy.yaml profile, but every field is present. Safe defaults for fields
- * that are missing from the whole chain: no templates, no secrets, no mounts,
+ * that are missing from the whole chain: no templates, no extra skills, no secrets, no mounts,
  * network `none`, workspace `empty` only, host `local`, isolation `container`.
  */
 export interface ResolvedProfile {
@@ -27,6 +27,11 @@ export interface ResolvedProfile {
   approval: ApprovalMode;
   /** Template names, or `['*']` for any. */
   templates: string[];
+  /**
+   * Skills a request may add on top of the template's own (`sandbox_create` `skills`, `abox create
+   * --skill`), or `['*']` for any. Default: none. A project skill still needs its content approved.
+   */
+  skills: string[];
   limits: {
     sandboxes: number;
     cpus: number;

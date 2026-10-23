@@ -34,6 +34,8 @@ const USER_NAME_RE = /^[a-z_][a-z0-9_-]{0,31}$/;
 export const CACHE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 /** At most this many caches per template. */
 export const MAX_TEMPLATE_CACHES = 16;
+/** At most this many skills per template (and per sandbox, see `MAX_SANDBOX_SKILLS`). */
+export const MAX_TEMPLATE_SKILLS = 32;
 const LABEL_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$/;
 /** Image reference / distro name. Must not start with `-` (option injection) and has a conservative charset. */
 const IMAGE_REF_RE = /^[a-z0-9][A-Za-z0-9._/:@+-]{0,254}$/;
@@ -411,6 +413,29 @@ export const templateSchema = z.strictObject({
     )
     .max(MAX_TEMPLATE_CACHES, {
       error: `a template can declare at most ${MAX_TEMPLATE_CACHES} caches`,
+    })
+    .optional(),
+  skills: z
+    .array(
+      strOf('skills entry').regex(TEMPLATE_NAME_RE, {
+        error:
+          'skills entries are skill names (^[a-z0-9]([a-z0-9-]{0,62})$, the folder name of the skill)',
+      }),
+    )
+    .max(MAX_TEMPLATE_SKILLS, {
+      error: `a template can list at most ${MAX_TEMPLATE_SKILLS} skills`,
+    })
+    .superRefine((list, ctx) => {
+      const seen = new Set<string>();
+      list.forEach((name, i) => {
+        if (seen.has(name))
+          ctx.addIssue({
+            code: 'custom',
+            path: [i],
+            message: `skill "${name}" is listed twice`,
+          });
+        seen.add(name);
+      });
     })
     .optional(),
 });

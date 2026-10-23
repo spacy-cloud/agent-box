@@ -55,6 +55,17 @@ export const createRequestSchema = z.strictObject({
   requestId: z.string().regex(REQUEST_ID_RE, 'use letters, digits . _ : @ - (max 128)').optional(),
   projectDir: hostPathStr.optional(),
   cache: z.boolean().optional(),
+  skills: z
+    .array(
+      z
+        .string()
+        .regex(
+          /^[a-z0-9]([a-z0-9-]{0,62})$/,
+          'skill names use lowercase letters, digits and - (max 63)',
+        ),
+    )
+    .max(32)
+    .optional(),
 });
 
 const hostIdStr = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/, 'invalid host id');

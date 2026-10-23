@@ -3,6 +3,7 @@ import type { Approval } from '../state/approval-queue.js';
 import { hashRequest } from '../state/approval-queue.js';
 import type { AgentContext, ApprovalItem } from '../policy/index.js';
 import type { Internals } from './internals.js';
+import { trustSkills } from './skills.js';
 import { trustSnapshot } from './templates.js';
 import type {
   ApprovalBase,
@@ -327,7 +328,20 @@ async function decide(
       const t = tpl
         ? { contentHash: tpl.contentHash, name: tpl.name, path: tpl.source?.path }
         : undefined;
-      if (t?.contentHash && /^[0-9a-f]{64}$/.test(t.contentHash)) {
+      // The approval also covers the unapproved project skills of the request.
+      trustSkills(
+        I,
+        ctx.owner,
+        decided.id,
+        (decided.request as { skills?: unknown } | null)?.skills,
+      );
+      const tplKind = (tpl?.source as { kind?: unknown } | undefined)?.kind;
+      if (
+        t?.contentHash &&
+        /^[0-9a-f]{64}$/.test(t.contentHash) &&
+        // only a project template has a trust record (a request may be about a skill alone)
+        (tplKind === undefined || tplKind === 'project')
+      ) {
         // Keep what was approved, so the next change of this template is reviewed as a diff against it.
         const snapshot = await trustSnapshot(I, t.path, t.contentHash);
         I.state.templateTrust.trust(t.contentHash, {

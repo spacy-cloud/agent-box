@@ -82,6 +82,12 @@ export interface CreateRequest {
   mounts: Array<{ hostPath: string; target: string; access: AccessMode; lexicalPath?: string }>;
   network: { mode: NetworkMode; allow: string[]; privateExceptions?: string[] };
   secrets: Array<{ ref: string; inject: SecretInjection }>;
+  /**
+   * Skills the sandbox gets (the template's and the request's). `requested`: added by the request,
+   * so it must be in the profile's `skills`; `trusted`: false for a project skill whose content hash
+   * has not been approved. Absent or empty: none.
+   */
+  skills?: CreateSkill[];
   /** Final resources (template defaults + overrides). */
   resources: { cpus: number; memoryBytes: number };
   ttlMs: number;
@@ -101,6 +107,15 @@ export interface CreateRequest {
    * Never overrides a deny.
    */
   humanConfirmed?: boolean;
+}
+
+/** One skill of a create request (see `CreateRequest.skills`). */
+export interface CreateSkill {
+  name: string;
+  source: { kind: TemplateSourceKind; path?: string };
+  contentHash: string;
+  trusted: boolean;
+  requested: boolean;
 }
 
 export type ApprovalKind =
@@ -160,6 +175,8 @@ export interface EffectiveCreate {
   mounts: Array<{ hostPath: string; target: string; access: AccessMode }>;
   network: { mode: NetworkMode; allow: string[]; privateExceptions: string[] };
   secrets: Array<{ ref: string; inject: SecretInjection }>;
+  /** Skill names of the sandbox; absent when it gets none. */
+  skills?: string[];
 }
 
 export type CreateEvaluation = PolicyDecision & {
@@ -603,6 +620,21 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
 
   checkBaseImage(ctx, req.template, f);
 
+  // --- skills -----------------------------------------------------------
+  const skills = [...(req.skills ?? [])].sort((a, b) =>
+    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+  );
+  for (const s of skills) {
+    if (s.requested && !p.skills.includes('*') && !p.skills.includes(s.name)) {
+      f.deny(
+        `skill "${s.name}" is not allowed for profile "${p.name}"`,
+        p.skills.length > 0
+          ? `Use one of the allowed skills: ${p.skills.join(', ')} (the skills of the template need no entry).`
+          : 'This profile allows no extra skills; use the skills of the template, or ask the human to add some (skills: in policy.yaml).',
+      );
+    }
+  }
+
   // --- host -------------------------------------------------------------
   if (!ctx.allowedHosts.includes('*') && !ctx.allowedHosts.includes(req.host.id)) {
     f.deny(
@@ -862,6 +894,14 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
       risk: 'A foreign template can run arbitrary setup commands and request mounts, network and secrets.',
     });
   }
+  for (const s of skills) {
+    if (s.trusted) continue;
+    invariant(f, {
+      kind: 'template_trust',
+      reason: `skill "${s.name}" comes from ${s.source.kind === 'project' ? 'a project' : 'an unapproved'} source${s.source.path ? ` (${s.source.path})` : ''} whose content has not been approved`,
+      risk: 'A foreign skill is instructions the agent reads and may follow: it can steer the agent to change or send anything the sandbox can reach.',
+    });
+  }
   if (req.host.zone === 'shared' || req.host.zone === 'restricted') {
     invariant(f, {
       kind: 'host_zone',
@@ -908,6 +948,7 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
     mounts: sortedMounts.map((m) => ({ hostPath: m.hostPath, target: m.target, access: m.access })),
     network: { mode: net.mode, allow: netAllow, privateExceptions },
     secrets: sortedSecrets.map((s) => ({ ref: s.ref, inject: s.inject })),
+    ...(skills.length > 0 ? { skills: skills.map((s) => s.name) } : {}),
   };
   const requestDigest: Record<string, unknown> = {
     v: 1,
@@ -937,6 +978,17 @@ export function evaluateCreate(req: CreateRequest, deps: EngineDeps = {}): Creat
     secrets: sortedSecrets.map((s) => ({ ref: s.ref, inject: s.inject })),
     resources: { cpus: reqRes?.cpus, memoryBytes: reqRes?.memoryBytes },
     ttlMs: req.ttlMs,
+    // only when there are some, so the digest of a request without skills stays what it was
+    ...(skills.length > 0
+      ? {
+          skills: skills.map((s) => ({
+            name: s.name,
+            source: { kind: s.source.kind, path: s.source.path },
+            contentHash: s.contentHash,
+            trusted: s.trusted,
+          })),
+        }
+      : {}),
   };
 
   return { ...f.decide(ctx, req.humanConfirmed), effective, requestDigest };

@@ -79,6 +79,7 @@ import {
   validateTemplateOp,
 } from './templates.js';
 import { setupApply, setupDetect, setupPlan } from './setup.js';
+import { listSkills, showSkill, validateSkillOp } from './skills.js';
 import { sandboxStats } from './usage.js';
 import type {
   AboxEvent,
@@ -156,6 +157,9 @@ import type {
   StartProcessResult,
   TemplateDetails,
   TemplateList,
+  SkillDetails,
+  SkillList,
+  SkillValidation,
   TemplateReview,
   TemplateValidation,
   WorkspaceEstimate,
@@ -261,6 +265,32 @@ export class Abox {
     o: { projectDir?: string } = {},
   ): Promise<TemplateValidation> {
     return validateTemplateOp(this.I, caller, nameOrPath, o);
+  }
+  /**
+   * Skills of the catalog (builtin, `~/.config/abox/skills`, the project's `.sandbox/skills`), one
+   * per name. `allowed` says whether the caller's profile lets a request add it.
+   */
+  listSkills(
+    caller: Caller,
+    o: { projectDir?: string; workspacePath?: string } = {},
+  ): Promise<SkillList> {
+    return listSkills(this.I, caller, o);
+  }
+  /** One skill with its instructions and files. */
+  showSkill(
+    caller: Caller,
+    name: string,
+    o: { projectDir?: string; workspacePath?: string } = {},
+  ): Promise<SkillDetails> {
+    return showSkill(this.I, caller, name, o);
+  }
+  /** Every problem of a skill folder (a path) or of a catalog skill (a name). */
+  validateSkill(
+    caller: Caller,
+    nameOrPath: string,
+    o: { projectDir?: string } = {},
+  ): Promise<SkillValidation> {
+    return validateSkillOp(this.I, caller, nameOrPath, o);
   }
   buildTemplate(caller: Caller, name: string, o: BuildTemplateOptions = {}): Promise<BuildResult> {
     return buildTemplate(this.I, caller, name, o);

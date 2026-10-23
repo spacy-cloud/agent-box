@@ -4,7 +4,7 @@ import { AboxError, isAboxError } from '../errors.js';
 import type { ErrorIssue } from '../errors.js';
 import type { SandboxProvider } from '../provider.js';
 import { canonicalizePath, checkHostPath, evaluateCreate } from '../policy/index.js';
-import type { AgentContext } from '../policy/index.js';
+import type { AgentContext, CreateSkill } from '../policy/index.js';
 import {
   MAX_TEMPLATE_BYTES,
   TemplateCatalog,
@@ -23,6 +23,7 @@ import type {
 } from '../types.js';
 import { redactLogLine } from '../state/redact.js';
 import type { Internals } from './internals.js';
+import { isSkillTrusted, loadSkill } from './skills.js';
 import type {
   BuildResult,
   BuildTemplateOptions,
@@ -572,6 +573,32 @@ export async function validateTemplateOp(
     warnings.push(...r.warnings);
   }
 
+  // skills: each name must exist (and validate) in the catalog a create would look in
+  const skillPolicy: CreateSkill[] = [];
+  const skillDirs = projectDirCandidates(I, ctx, o.projectDir, undefined);
+  for (const [i, name] of (template.skills ?? []).entries()) {
+    try {
+      const { skill } = await loadSkill(I, name, skillDirs);
+      skillPolicy.push({
+        name,
+        source: { kind: skill.source.kind, path: skill.source.path },
+        contentHash: skill.contentHash,
+        trusted: isSkillTrusted(I, skill),
+        requested: false,
+      });
+    } catch (e) {
+      if (!isAboxError(e)) throw e;
+      collected.push({
+        path: `skills[${i}]`,
+        message:
+          e.code === 'not_found'
+            ? `skill "${name}" does not exist (abox skill ls lists the skills)`
+            : `skill "${name}" is invalid: ${e.message}`,
+        kind: 'invalid',
+      });
+    }
+  }
+
   // policy dry run with the template's own defaults
   try {
     const hostRes = host ?? (await I.resolveHost('local'));
@@ -592,6 +619,7 @@ export async function validateTemplateOp(
       mounts,
       network: { mode: template.network.mode, allow: template.network.allow },
       secrets: template.secrets.map((s) => ({ ref: s.ref, inject: s.inject })),
+      ...(skillPolicy.length > 0 ? { skills: skillPolicy } : {}),
       resources: { cpus: template.resources.cpus, memoryBytes: template.resources.memoryBytes },
       ttlMs: template.resources.ttlMs,
       currentSandboxCount: 0,

@@ -13,6 +13,7 @@ export {
   SECRET_REF_RE,
   CACHE_NAME_RE,
   MAX_TEMPLATE_CACHES,
+  MAX_TEMPLATE_SKILLS,
   type TemplateSchemaOutput,
 } from './schema.js';
 export {

@@ -14,6 +14,7 @@ import { tryParseDuration, tryParseSize } from './units.js';
 const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const CONTEXT_ID = /^[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})?$/;
 const TEMPLATE_PATTERN = /^(?:\*|[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+const SKILL_PATTERN = /^(?:\*|[a-z0-9][a-z0-9-]{0,62})$/;
 const HOST_PATTERN = /^(?:\*|[a-z0-9-]{1,63})$/;
 const SECRET_REF = /^(?:\*|[A-Za-z0-9_.:/@-]{1,200})$/;
 // eslint-disable-next-line no-control-regex
@@ -75,6 +76,8 @@ export const ProfileSchema = z.strictObject({
   extends: nameSchema.optional(),
   approval: z.enum(APPROVAL_MODES).optional(),
   templates: z.array(z.string().regex(TEMPLATE_PATTERN, 'invalid template name')).optional(),
+  /** Skills an agent may add to a sandbox on create (`*` = any); the template's own skills need no entry. */
+  skills: z.array(z.string().regex(SKILL_PATTERN, 'invalid skill name')).optional(),
   limits: z
     .strictObject({
       sandboxes: z.number().int().min(0).max(10_000).optional(),

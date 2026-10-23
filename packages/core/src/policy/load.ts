@@ -30,6 +30,7 @@ import { parseDuration, parseSize } from './units.js';
 export const BUILTIN_HUMAN_PROFILE: RawProfile = {
   approval: 'open',
   templates: ['*'],
+  skills: ['*'],
   limits: { sandboxes: 50, cpus: 64, memory: '512g', ttl: '30d' },
   workspace: { roots: [ANY_ROOT], modes: [...WORKSPACE_MODES] },
   network: {
@@ -100,6 +101,8 @@ profiles:
   default:
     approval: medium
     templates: [node-dev, py-dev, py-uv, py-offline, rust-dev, tauri-dev, flutter-dev, php-dev, shell-dev, alpine-min]
+    # Skills an agent may add to a sandbox (\`sandbox_create\` skills); a project's own skills still need your approval.
+    skills: ['*']
     limits: { sandboxes: 3, cpus: 4, memory: 8g, ttl: 4h }
     # Agents: projects below these folders only (the home directory itself is never a root).
     # Add your own with \`abox policy edit\`.
@@ -405,7 +408,14 @@ function resolveChain(
 /** Child fields override parent fields; arrays are replaced, objects merged one level deep. */
 export function mergeProfiles(parent: RawProfile, child: RawProfile): RawProfile {
   const out: RawProfile = { ...parent };
-  for (const key of ['approval', 'templates', 'hosts', 'caches', 'cache_max_bytes'] as const) {
+  for (const key of [
+    'approval',
+    'templates',
+    'skills',
+    'hosts',
+    'caches',
+    'cache_max_bytes',
+  ] as const) {
     if (child[key] !== undefined) (out as Record<string, unknown>)[key] = child[key];
   }
   for (const key of [
@@ -444,6 +454,7 @@ function applyDefaults(name: string, p: RawProfile): ResolvedProfile {
     name,
     approval: p.approval ?? 'medium',
     templates: [...(p.templates ?? [])],
+    skills: [...(p.skills ?? [])],
     limits: {
       sandboxes: p.limits?.sandboxes ?? 3,
       cpus: p.limits?.cpus ?? 4,
