@@ -41,6 +41,8 @@ const shortText = z.string().min(1).max(200);
 const duration = z.string().regex(/^\d{1,6}(ms|s|m|h|d)$/, 'duration like 30m, 2h or 1d');
 const sizeText = z.string().regex(/^\d{1,6}(\.\d+)?[kmgt]?b?$/i, 'size like 512m or 4g');
 const absPath = z.string().min(1).max(4096);
+/** A skill name (the folder name of the skill), the same rules as a template name. */
+const skillName = z.string().regex(/^[a-z0-9]([a-z0-9-]{0,62})$/, 'skill name');
 /**
  * A project folder (the directory whose `.sandbox/*.yaml` are project templates): an absolute path, as a
  * native dialog or a recent-folders entry delivers it. The main process canonicalises it and checks it
@@ -145,6 +147,8 @@ export const createRequestSchema = z
       .optional(),
     /** `false`: do not mount the template's package caches (clean install). Absent: use them where allowed. */
     cache: z.boolean().optional(),
+    /** Skills on top of the template's own (names from `skills:list`); the manager checks each one. */
+    skills: z.array(skillName).max(32).optional(),
     /** The human saw the `confirmation_required` summary and confirmed it. */
     confirmed: z.boolean().optional(),
     /** Correlates `evt:progress` lines with this call. */
@@ -372,6 +376,10 @@ export const IPC = {
       projectDir: projectDir.optional(),
     })
     .strict(),
+  /** `projectDir`: also list the project skills of that folder (`.sandbox/skills/<name>/`); builtin and user ones always. */
+  'skills:list': z.object({ projectDir: projectDir.optional() }).strict().optional(),
+  /** One skill with its files and the text of its SKILL.md (shown as plain text, never rendered). */
+  'skills:show': z.object({ name: skillName, projectDir: projectDir.optional() }).strict(),
   /** Recently used project folders (per user of the app, kept in the app's settings, not in any repository). */
   'projects:recent': none,
   /** Checks a folder like a human `--project` (absolute, exists, a directory) and remembers it as recent. */

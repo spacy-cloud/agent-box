@@ -6,6 +6,8 @@
 export const TOOL_NAMES = [
   'template_list',
   'template_show',
+  'skill_list',
+  'skill_show',
   'sandbox_create',
   'sandbox_list',
   'sandbox_inspect',

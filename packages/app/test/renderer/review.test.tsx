@@ -125,6 +125,8 @@ describe('new sandbox dialog: confirmation', () => {
   function open(items: unknown[], onReview: (input: unknown) => unknown = () => REVIEW) {
     const calls = installBridge((channel, input) => {
       switch (channel) {
+        case 'skills:list':
+          return { skills: [], problems: [] };
         case 'templates:list':
           return { templates: [TEMPLATE], problems: [] };
         case 'policy:get':
@@ -248,6 +250,8 @@ describe('templates view: Review for project templates', () => {
   function open() {
     return installBridge((channel, input) => {
       switch (channel) {
+        case 'skills:list':
+          return { skills: [], problems: [] };
         case 'templates:list':
           return {
             templates: [entry('proj-tpl', 'project'), entry('node-dev', 'builtin')],

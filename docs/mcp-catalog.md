@@ -2,7 +2,7 @@
 
 # MCP tool catalog
 
-The abox MCP server offers **22 tools**. This page is generated from the tool definitions in the code (the zod input schemas, the annotations and the documentation each tool carries), so it cannot drift from what `tools/list` returns. The prose around the tools, the approval flow and the limits are in the [MCP server reference](mcp.md); the error codes are in the [error catalog](errors.md).
+The abox MCP server offers **24 tools**. This page is generated from the tool definitions in the code (the zod input schemas, the annotations and the documentation each tool carries), so it cannot drift from what `tools/list` returns. The prose around the tools, the approval flow and the limits are in the [MCP server reference](mcp.md); the error codes are in the [error catalog](errors.md).
 
 - Every tool returns `structuredContent` `{ ok, message, ... }` with `snake_case` keys; fields that end in `_at` are ISO timestamps. A failure is `ok: false` with a `code` and `isError: true` (see the [error envelope](errors.md#error-envelope)).
 - `pending_approval` is `ok: false` **without** `code` and without `isError`: a human has to decide, see [approval flow](mcp.md#approval-flow-for-agents).
@@ -15,6 +15,8 @@ The abox MCP server offers **22 tools**. This page is generated from the tool de
 | ------------------------------------------------- | ----------------------------------- | ------------- | --------------------- |
 | [`template_list`](#template_list)                 | List templates                      | no            | never                 |
 | [`template_show`](#template_show)                 | Show template                       | no            | never                 |
+| [`skill_list`](#skill_list)                       | List skills                         | no            | never                 |
+| [`skill_show`](#skill_show)                       | Show skill                          | no            | never                 |
 | [`sandbox_create`](#sandbox_create)               | Create sandbox                      | yes           | depends on the policy |
 | [`sandbox_list`](#sandbox_list)                   | List sandboxes                      | no            | never                 |
 | [`sandbox_inspect`](#sandbox_inspect)             | Inspect sandbox                     | no            | never                 |
@@ -71,6 +73,39 @@ The abox MCP server offers **22 tools**. This page is generated from the tool de
 | `name`           | string (1 to 64 chars)   | yes      | Template name from template_list.                                                                                                                          |
 | `workspace_path` | string (1 to 4096 chars) | no       | Host project path, the same as workspace.path of sandbox_create: also looks for the template in &lt;path&gt;/.sandbox. Must be below your workspace roots. |
 
+### `skill_list`
+
+**List skills.** List skills: SKILL.md folders (task instructions) abox copies read-only into a sandbox at /skills. Add them with sandbox_create skills=[...]; the template's skills come on their own. Lists the skills your profile lets you add (all=true: every one). workspace_path adds the project's .sandbox/skills; those need human approval until trusted.
+
+- **Who may call it:** Any agent context defined in `policy.yaml` (never `human`). The answer depends on the caller's own profile.
+- **Approval:** None.
+- **Behaviour:** read-only, idempotent.
+- **Result:** `skills[]` (`name`, `description`, `source`, `project`, `trusted`, `needs_approval`, `shadows`, `allowed`, `file_count`), `hidden_count`.
+
+**Parameters**
+
+| Parameter        | Type                       | Required | Description                                                                                                                                                                              |
+| ---------------- | -------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filter`         | string (at most 100 chars) | no       | Case-insensitive text to match in name or description.                                                                                                                                   |
+| `all`            | boolean                    | no       | Also list skills your profile does not let you add (default: only those).                                                                                                                |
+| `workspace_path` | string (1 to 4096 chars)   | no       | Host project path, the same as workspace.path of sandbox_create: also lists the skills of that project (&lt;path&gt;/.sandbox/skills/&lt;name&gt;/). Must be below your workspace roots. |
+
+### `skill_show`
+
+**Show skill.** Show one skill: its description, files and the instructions of its SKILL.md. Inside a sandbox that has the skill, the same files are in /skills/&lt;name&gt;/. For a skill of a project pass the same workspace_path as for skill_list.
+
+- **Who may call it:** Any agent context defined in `policy.yaml` (never `human`). The answer depends on the caller's own profile.
+- **Approval:** None.
+- **Behaviour:** read-only, idempotent.
+- **Result:** `skill` (`name`, `description`, `source`, `trusted`, `allowed`, `files`, `sandbox_path`, `front_matter`), `body`, `truncated`.
+
+**Parameters**
+
+| Parameter        | Type                     | Required | Description                                                                                                                                                    |
+| ---------------- | ------------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`           | string (1 to 64 chars)   | yes      | Skill name from skill_list.                                                                                                                                    |
+| `workspace_path` | string (1 to 4096 chars) | no       | Host project path, the same as workspace.path of sandbox_create: also looks for the skill in &lt;path&gt;/.sandbox/skills. Must be below your workspace roots. |
+
 ### `sandbox_create`
 
 **Create sandbox.** Create an isolated sandbox from a template (without workspace the sandbox starts empty; pass workspace.path to share a project). Pass a fresh request_id so a retry returns the same sandbox. If it answers status=pending_approval, tell the human to approve, then repeat the identical call.
@@ -108,6 +143,7 @@ The abox MCP server offers **22 tools**. This page is generated from the tool de
 | `overrides.mounts[].target`            | string (1 to 4096 chars)                                                    | yes, within its parent |                                                                                                                                                                                                                                                |
 | `overrides.mounts[].access`            | `"ro"` or `"rw"`                                                            | no                     |                                                                                                                                                                                                                                                |
 | `ttl`                                  | number (> 0) or string (1 to 32 chars)                                      | no                     | Lifetime: duration string like "2h" or seconds (same as overrides.ttl).                                                                                                                                                                        |
+| `skills`                               | array of string (1 to 64 chars) (at most 32 items)                          | no                     | Skills from skill_list to copy read-only into the sandbox (/skills/&lt;name&gt;/, index in /skills/INDEX.md, path in $ABOX_SKILLS_DIR), on top of the skills of the template.                                                                  |
 | `cache`                                | boolean                                                                     | no                     | false: do not mount the package caches (pnpm store, Cargo registry, ...) the template declares, for a clean install. Default: used when a project is shared (workspace.path) and the policy allows it. You cannot list, read or remove caches. |
 | `request_id`                           | string (at most 128 chars)                                                  | no                     | Idempotency key: the same request_id returns the same sandbox. Also used to retry after approval.                                                                                                                                              |
 
@@ -128,12 +164,12 @@ The abox MCP server offers **22 tools**. This page is generated from the tool de
 
 ### `sandbox_inspect`
 
-**Inspect sandbox.** Show state, effective limits (what policy granted vs. what the backend reports), network, mounts, TTL, processes, port forwards and pending approvals of one of your sandboxes.
+**Inspect sandbox.** Show state, effective limits (what policy granted vs. what the backend reports), network, mounts, skills, TTL, processes, port forwards and pending approvals of one of your sandboxes.
 
 - **Who may call it:** Any agent context, for its own sandboxes only (another context's sandbox answers `not_found`).
 - **Approval:** None.
 - **Behaviour:** read-only, idempotent.
-- **Result:** `sandbox`, `processes[]`, `pending_approvals`, `ports[]`.
+- **Result:** `sandbox` (with `skills[]` when it has some), `processes[]`, `pending_approvals`, `ports[]`.
 
 **Parameters**
 

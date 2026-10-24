@@ -105,9 +105,10 @@ All backends run against the same contract suite in `packages/contract-tests`.
   `policy.yaml`. There is no separate `agents.yaml`. The database uses the built-in `node:sqlite`
   module in WAL mode so the CLI, one or more MCP servers and the GUI can use the same database at
   the same time.
-- **Paths follow XDG:** configuration in `~/.config/abox` (including `policy.yaml` and user
-  templates in `~/.config/abox/templates`), data in `~/.local/share/abox` (state database, logs,
-  caches). Project templates live in the repository under `.sandbox/`.
+- **Paths follow XDG:** configuration in `~/.config/abox` (including `policy.yaml`, user
+  templates in `~/.config/abox/templates` and user skills in `~/.config/abox/skills`), data in
+  `~/.local/share/abox` (state database, logs, caches). Project templates live in the repository
+  under `.sandbox/`, project skills under `.sandbox/skills/`.
 - **No daemon in the MVP.** Container engines are daemons already. The CLI is short-lived, the
   MCP server (stdio) is one process per agent session started by the agent itself, and the GUI's
   main process uses the core directly. Shared state goes through SQLite. A background service is
@@ -191,6 +192,16 @@ logs every decision (surfaced as `networkEvents`). The proxy is a dependency-fre
 in `packages/proxy`. The wiring and configuration contract between the proxy and the backends is
 described in `docs/internal/proxy-contract.md`; user-facing limits are in
 [security.md](security.md#network-modes-and-the-egress-proxy).
+
+## Skills
+
+The skill catalog (`packages/core/src/skill`) reads skill folders like the template catalog reads
+templates (project, user, builtin) and checks them strictly. At create the manager resolves the
+template's `skills:` and the request's, checks the policy (`skills` of the profile for added ones,
+trust for project skills) and hands them to the provider as ordinary spec files marked `readonly`
+below `/skills`, plus `INDEX.md` and the environment variable `ABOX_SKILLS_DIR`. The backends
+place read-only files owned by root (the process backend: modes only). Nothing is mounted, so the
+same works for remote hosts. See [skills](skills.md).
 
 ## Port forwards
 

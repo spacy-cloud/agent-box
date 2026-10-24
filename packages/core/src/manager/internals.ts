@@ -23,7 +23,14 @@ import {
 } from '../policy/index.js';
 import type { AgentContext, HostInfo, HostUsage, Policy } from '../policy/index.js';
 import { DEFAULT_POLICY_YAML } from '../policy/load.js';
-import type { BackendKind, SandboxId, SandboxInfo, SandboxState } from '../types.js';
+import { SKILLS_DIR } from '../types.js';
+import type {
+  BackendKind,
+  SandboxId,
+  SandboxInfo,
+  SandboxState,
+  TemplateSourceKind,
+} from '../types.js';
 import type { WorkspaceRecord } from '../workspace/index.js';
 import type {
   AboxEvent,
@@ -94,6 +101,8 @@ export interface StoredEffective {
   clonedFrom?: { sandboxId: string; snapshotId: string };
   /** Package caches: why they are (not) mounted, and which ones. */
   caches?: { status: string; mounts: Array<{ key: string; name: string; path: string }> };
+  /** Skills placed below `SKILLS_DIR` (from the template unless `requested`). */
+  skills?: Array<{ name: string; source: string; contentHash: string; requested: boolean }>;
 }
 
 /**
@@ -801,6 +810,17 @@ export class Internals {
         inject: s.inject,
         hosts: s.hosts,
       })),
+      ...(eff?.skills?.length
+        ? {
+            skills: eff.skills.map((k) => ({
+              name: k.name,
+              source: k.source as TemplateSourceKind,
+              contentHash: k.contentHash,
+              path: `${SKILLS_DIR}/${k.name}`,
+              requested: k.requested,
+            })),
+          }
+        : {}),
       effective: {
         ...(eff?.policy ? { policy: eff.policy } : {}),
         ...(providerEffective ? { provider: providerEffective } : {}),

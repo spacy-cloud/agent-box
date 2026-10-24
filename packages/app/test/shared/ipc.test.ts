@@ -235,6 +235,14 @@ describe('IPC contract', () => {
       expect(ok('sandboxes:create', { template: 'a', cache: false })).toBe(true);
       expect(ok('sandboxes:create', { template: 'a', cache: true })).toBe(true);
       expect(ok('sandboxes:create', { template: 'a', cache: 'no' })).toBe(false);
+      expect(ok('sandboxes:create', { template: 'a', skills: ['run-tests'] })).toBe(true);
+      expect(ok('sandboxes:create', { template: 'a', skills: ['Bad Name'] })).toBe(false);
+      expect(
+        ok('sandboxes:create', {
+          template: 'a',
+          skills: Array.from({ length: 33 }, (_, i) => `s${i}`),
+        }),
+      ).toBe(false);
     });
   });
 
@@ -374,6 +382,19 @@ describe('project folders in the IPC surface', () => {
       expect(ok('templates:list', { projectDir: bad }), JSON.stringify(bad)).toBe(false);
     expect(ok('templates:list', { projectDir: '/p', glob: '*' })).toBe(false);
     expect(ok('templates:list', { path: '/p' })).toBe(false);
+  });
+
+  it('skills:list and skills:show take a skill name and an optional absolute project folder', () => {
+    expect(ok('skills:list', undefined)).toBe(true);
+    expect(ok('skills:list', { projectDir: '/home/u/project' })).toBe(true);
+    expect(ok('skills:list', { projectDir: '~/project' })).toBe(false);
+    expect(ok('skills:list', { path: '/p' })).toBe(false);
+    expect(ok('skills:show', { name: 'run-tests' })).toBe(true);
+    expect(ok('skills:show', { name: 'run-tests', projectDir: '/p' })).toBe(true);
+    for (const bad of ['', 'Run-Tests', '../x', 'a/b', '-x', 'a'.repeat(64), 5])
+      expect(ok('skills:show', { name: bad }), JSON.stringify(bad)).toBe(false);
+    expect(ok('skills:show', { name: 'x', projectDir: 'relative' })).toBe(false);
+    expect(ok('skills:show', { name: 'x', body: 'y' })).toBe(false);
   });
 
   it('show, review, source, create and remember validate the folder the same way', () => {

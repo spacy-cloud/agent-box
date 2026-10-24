@@ -20,8 +20,9 @@ import {
   buildProxyInjections,
   normalizeHost,
 } from '../secrets/inject.js';
+import { SKILLS_DIR_ENV, skillSpecFiles } from '../skill/index.js';
 import { expandNetworkPresets } from '../template/network-presets.js';
-import { isolationAtLeast, makeSandboxId, parseSandboxId } from '../types.js';
+import { SKILLS_DIR, isolationAtLeast, makeSandboxId, parseSandboxId } from '../types.js';
 import type {
   AccessMode,
   NetworkMode,
@@ -49,6 +50,7 @@ import { collectNetworkEvents } from './network-audit.js';
 import type { Internals, StoredEffective } from './internals.js';
 import { auditPortsClosing, portsOf } from './ports.js';
 import { createRequestSchema } from './schemas.js';
+import { resolveCreateSkills } from './skills.js';
 import { resolveCloneSource, validateSnapshotSource } from './snapshots.js';
 import { requireNotTakenOver } from './takeover.js';
 import {
@@ -317,11 +319,14 @@ export async function createSandbox(
 
   // 3. template, provider, capabilities
   const wsRequested = req.workspace;
-  const { template } = await loadTemplate(
+  const projectDirs = projectDirCandidates(I, ctx, req.projectDir, wsRequested?.path);
+  const { template } = await loadTemplate(I, ctx, req.template, projectDirs);
+  // Skills: the template's and the request's, looked up like the template (project, user, builtin).
+  const { skills, policy: skillPolicy } = await resolveCreateSkills(
     I,
-    ctx,
-    req.template,
-    projectDirCandidates(I, ctx, req.projectDir, wsRequested?.path),
+    template,
+    req.skills ?? [],
+    projectDirs,
   );
   const trusted = isTrusted(I, template);
   if (!host.backends.includes(template.backend) || !I.providerFactories[template.backend]) {
@@ -408,6 +413,26 @@ export async function createSandbox(
   }));
   // As typed, for the policy check of a human's explicit roots only (see `lexicalPath`).
   const mountsLexical = mountSpecs.map((m) => lexicalPath(m.source, { home: I.home, cwd: base }));
+  if (skills.length > 0) {
+    // The skills directory is placed as files at create; nothing else may claim that path.
+    const overlaps = (a: string, b: string): boolean =>
+      a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+    const clash = [
+      { what: 'the workspace', path: template.workspace.path },
+      ...mounts.map((m) => ({ what: 'a mount', path: m.target })),
+      ...template.caches.map((c) => ({ what: `the cache ${c.name}`, path: c.path })),
+      ...template.secrets.flatMap((x) =>
+        x.path ? [{ what: `the secret ${x.ref}`, path: x.path }] : [],
+      ),
+    ].find((c) => overlaps(c.path, SKILLS_DIR));
+    if (clash) {
+      throw new AboxError(
+        'invalid_input',
+        `${clash.what} (${clash.path}) overlaps ${SKILLS_DIR}, where the skills of the sandbox go`,
+        { hint: `Move it out of ${SKILLS_DIR}, or create the sandbox without skills.` },
+      );
+    }
+  }
   if (mounts.length > 0 && !caps.mounts) {
     throw new AboxError(
       'unsupported',
@@ -483,6 +508,10 @@ export async function createSandbox(
     // only the deviation from the default, so requests that did not use it keep their key
     ...(cachePlan.status === 'opted_out' ? { cache: false } : {}),
     ...(fromSnapshot ? { fromSnapshot } : {}),
+    // only when there are some, so requests without skills keep their key
+    ...(skillPolicy.length > 0
+      ? { skills: skillPolicy.map((x) => `${x.name}\0${x.contentHash}`).sort() }
+      : {}),
   });
   if (req.requestId) {
     const existing = await waitForPeer(I, owner, req.requestId, {
@@ -560,6 +589,7 @@ export async function createSandbox(
       }),
       network: { mode: netMode, allow, privateExceptions },
       secrets: secretDecl,
+      ...(skillPolicy.length > 0 ? { skills: skillPolicy } : {}),
       resources: { cpus, memoryBytes },
       ttlMs,
       currentSandboxCount: I.countActive(owner),
@@ -708,6 +738,16 @@ export async function createSandbox(
     requestHash,
     effectiveRequestHash,
     creator: I.creatorStamp(),
+    ...(skillPolicy.length > 0
+      ? {
+          skills: skillPolicy.map((x) => ({
+            name: x.name,
+            source: x.source.kind,
+            contentHash: x.contentHash,
+            requested: x.requested,
+          })),
+        }
+      : {}),
   };
   // The claim is the one place where every quota is decided for good: the check runs in the same
   // write transaction as the insert, so parallel creates (also from other processes) cannot all pass
@@ -924,8 +964,14 @@ export async function createSandbox(
       })),
       resources: { ...template.resources, cpus, memoryBytes, ttlMs },
       network,
-      env: { ...template.env, ...cachePlan.env, ...envSecrets },
-      files,
+      env: {
+        ...template.env,
+        ...cachePlan.env,
+        ...envSecrets,
+        ...(skills.length > 0 ? { [SKILLS_DIR_ENV]: SKILLS_DIR } : {}),
+      },
+      // Skills are read-only files of their own (root-owned where the backend can).
+      files: [...files, ...skillSpecFiles(skills)],
       user: template.user,
       // Secrets inside the sandbox end up in its snapshots; the backend records it on them.
       secretMaterial: template.secrets.some((x) => x.inject !== 'proxy'),
@@ -1028,6 +1074,7 @@ export async function createSandbox(
         mounts,
         resources: { cpus, memoryBytes, ttlMs },
         keyringRefs: effective.keyringRefs,
+        ...(effective.skills ? { skills: effective.skills } : {}),
         ...(cachePlan.status !== 'none'
           ? { caches: { status: cachePlan.status, keys: cachePlan.mounts.map((m) => m.key) } }
           : {}),

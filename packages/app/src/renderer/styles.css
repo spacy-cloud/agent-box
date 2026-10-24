@@ -1226,6 +1226,30 @@ dialog.modal h2 {
   margin: 0.4rem 0;
 }
 
+/* ---- skills -------------------------------------------------------------------------------------- */
+/* a front matter key and its value inside the two-column .kv-list grid */
+.kv-row {
+  display: contents;
+}
+/* the text of a SKILL.md: plain text, wrapped, scrolls inside its box */
+.skill-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 60vh;
+  overflow: auto;
+}
+.opt-skills {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.opt-skill {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 /* ---- template editor ------------------------------------------------------------------------------- */
 .tpl-layout {
   display: grid;

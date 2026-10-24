@@ -107,6 +107,7 @@ export function renderTemplateSnapshot(t: ResolvedTemplate): string {
             ...(Object.keys(c.env).length > 0 ? { env: sortedRecord(c.env) } : {}),
           }))
         : undefined,
+    skills: t.skills?.length ? [...t.skills] : undefined,
     python: t.python,
     vm: t.vm,
   };
@@ -158,6 +159,10 @@ export function templateRisks(t: ResolvedTemplate): string[] {
       s.inject === 'proxy'
         ? `uses secret ${s.ref} (injected by the proxy for ${s.hosts.join(', ') || 'no host'})`
         : `uses secret ${s.ref} injected as ${s.inject === 'env' ? 'an environment variable' : 'a file'}: code in the sandbox can read it`,
+    );
+  if (t.skills?.length)
+    out.push(
+      `gives the agent the skill${t.skills.length === 1 ? '' : 's'} ${t.skills.join(', ')}: instructions it reads and may follow (a skill of the project needs its own approval)`,
     );
   return out;
 }

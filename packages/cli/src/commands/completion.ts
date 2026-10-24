@@ -18,7 +18,7 @@ interface Node {
 
 const HIDDEN = new Set(['__ids']);
 const FILE_FLAGS = new Set(['--out', '--workspace', '--path']);
-const FILE_COMMANDS = new Set(['cp', 'template validate', 'policy validate']);
+const FILE_COMMANDS = new Set(['cp', 'template validate', 'skill validate', 'policy validate']);
 
 export function collectNodes(program: Command): Node[] {
   const globalFlags = program.options.flatMap((o) =>

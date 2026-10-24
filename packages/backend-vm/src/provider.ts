@@ -830,6 +830,7 @@ export class VmProvider implements SandboxProvider {
               path: f.sandboxPath,
               mode: f.mode & 0o7777,
               content: f.content.toString('base64'),
+              ...(f.readonly ? { readonly: true } : {}),
             })),
           ),
           { mode: 0o600 },
@@ -1309,9 +1310,22 @@ export class VmProvider implements SandboxProvider {
     }
     const filesJson = await readFile(join(initDir, 'files.json'), 'utf8').catch(() => undefined);
     if (filesJson) {
-      const list = JSON.parse(filesJson) as Array<{ path: string; mode: number; content: string }>;
+      const list = JSON.parse(filesJson) as Array<{
+        path: string;
+        mode: number;
+        content: string;
+        readonly?: boolean;
+      }>;
+      // Read-only files (skills) and the directories made for them belong to root in the guest.
       for (const f of list)
-        await this.placeFile(qga, meta, f.path, Buffer.from(f.content, 'base64'), f.mode);
+        await this.placeFile(
+          qga,
+          meta,
+          f.path,
+          Buffer.from(f.content, 'base64'),
+          f.mode,
+          f.readonly ? 0 : meta.user.uid,
+        );
     }
   }
 

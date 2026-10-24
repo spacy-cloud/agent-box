@@ -57,6 +57,8 @@ function bridge(extra: (channel: string, input: unknown) => unknown = () => unde
     const x = extra(channel, input);
     if (x !== undefined) return x;
     switch (channel) {
+      case 'skills:list':
+        return { skills: [], problems: [] };
       case 'templates:list':
         return {
           templates: (input as { projectDir?: string } | undefined)?.projectDir

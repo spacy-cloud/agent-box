@@ -92,6 +92,7 @@ export function registerPolicy(program: Command, cli: Cli): void {
                 [
                   ['approval', prof.approval],
                   ['templates', prof.templates.join(', ')],
+                  ['skills', prof.skills.join(', ') || "none beyond the template's"],
                   [
                     'limits',
                     `${prof.limits.sandboxes} sandboxes, ${prof.limits.cpus} cpu, ${prof.limits.memory}, ttl ${prof.limits.ttl}`,

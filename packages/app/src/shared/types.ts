@@ -52,6 +52,10 @@ import type {
   WorkspaceEstimate,
   TemplateDetails,
   TemplateList,
+  SkillDetails,
+  SkillList,
+  SkillListEntry,
+  SandboxSkillView,
   TemplateDraft,
   TemplateSavePlan,
   TemplateSuggestion,
@@ -114,6 +118,10 @@ export type {
   DeleteSnapshotsResult,
   TemplateDetails,
   TemplateList,
+  SkillDetails,
+  SkillList,
+  SkillListEntry,
+  SandboxSkillView,
   TemplateDraft,
   TemplateSavePlan,
   TemplateSuggestion,
@@ -468,6 +476,8 @@ export interface Outputs {
   'templates:review': TemplateReview;
   'templates:draft': TemplateDraft;
   'templates:savePlan': TemplateSavePlanView;
+  'skills:list': SkillList;
+  'skills:show': SkillDetails;
   'projects:recent': string[];
   'projects:remember': ProjectFolder;
   'files:list': DirEntry[];

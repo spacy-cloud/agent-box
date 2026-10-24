@@ -65,6 +65,8 @@ function bridge(extra: (channel: string, input: unknown) => unknown = () => unde
         return [row(LOCAL), row(LAB), row(BARE)];
       case 'hosts:forwards':
         return [];
+      case 'skills:list':
+        return { skills: [], problems: [] };
       case 'templates:list':
         return { templates: [NODE], problems: [] };
       case 'templates:show':

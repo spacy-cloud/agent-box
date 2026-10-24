@@ -55,6 +55,7 @@ machine.
 | Component          | Description                                                                                                                              | Status                                                                                                                                                     |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Core (`core`)      | domain model, template engine, lifecycle, policy and approvals, audit log, SQLite state                                                  | implemented                                                                                                                                                |
+| Skill catalog      | `SKILL.md` folders (built-in, user, project) chosen per template and per sandbox, copied read-only to `/skills` with an index            | implemented; verified against Docker and the process backend, **not** on the VM backend, see [skills](docs/skills.md)                                      |
 | Docker backend     | OCI containers through the engine API, hardened defaults, egress proxy sidecar                                                           | implemented; tested against a rootful Docker engine                                                                                                        |
 | Podman backend     | same code, Podman's Docker-compatible socket                                                                                             | implemented; **not verified** against a real Podman                                                                                                        |
 | Python backend     | container with `uv` (lock file baked into the image), or a host venv (no isolation)                                                      | implemented                                                                                                                                                |
@@ -73,6 +74,9 @@ Highlights of the design:
 
 - **Templates** in YAML describe base OS, packages, tools, resources, network and mounts.
   Project templates from a repository are untrusted until you approve their content hash.
+- **Skills** (folders with a `SKILL.md`, the Claude Code / Agent Skills format) are picked per
+  template and per sandbox and copied read-only to `/skills` with an index, so an agent reads only
+  what it needs. Project skills are trusted by content hash like project templates.
 - **Isolation levels** `none`, `container`, `hardened`, `vm`. Templates and policy can demand a
   minimum level. `hardened` (a stronger container runtime) is not verified.
 - **Network modes** `none` (default), `allowlist` (domain allowlist via an egress proxy) and
@@ -152,6 +156,7 @@ are internal workspace names.
 
 - [Quickstart](docs/quickstart.md): install from source, first sandbox, workspace modes, approvals, connecting an agent.
 - [Template handbook](docs/templates.md): every field, defaults, presets, validation, trust, examples.
+- [Skills](docs/skills.md): the `SKILL.md` format, where skills live, trust, policy and what an agent finds in `/skills`.
 - [CLI reference](docs/cli.md): all commands, JSON output, exit codes, files.
 - [MCP server](docs/mcp.md): transports, identity, tokens, the approval flow; the [tool catalog](docs/mcp-catalog.md) and the [error catalog](docs/errors.md) are generated from the code.
 - [Setting up agents](docs/setup.md): `abox setup` registers the MCP server and rules with Claude Code, Claude Desktop, Codex, Cursor and Gemini CLI.

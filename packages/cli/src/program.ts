@@ -18,6 +18,7 @@ import { registerRun } from './commands/run.js';
 import { registerSandbox } from './commands/sandbox.js';
 import { registerSecret } from './commands/secret.js';
 import { registerSetup } from './commands/setup.js';
+import { registerSkill } from './commands/skill.js';
 import { registerTemplate } from './commands/template.js';
 import { cliVersion } from './version.js';
 
@@ -67,6 +68,7 @@ export function buildProgram(cli: Cli): Command {
   });
 
   registerTemplate(program, cli);
+  registerSkill(program, cli);
   registerSandbox(program, cli);
   registerRun(program, cli);
   registerData(program, cli);

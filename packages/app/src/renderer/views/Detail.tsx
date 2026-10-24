@@ -331,6 +331,30 @@ function OverviewTab(props: {
             <th scope="row">{t('detail.opt.processes')}</th>
             <td>{s.processes.length}</td>
           </tr>
+          {s.skills?.length ? (
+            <tr>
+              <th scope="row">{t('detail.opt.skills')}</th>
+              <td>
+                <ul className="plain-list">
+                  {s.skills.map((k) => (
+                    <li key={k.name}>
+                      <Safe text={k.name} max={80} /> <code>{k.path}</code>
+                      {k.source === 'project' ? (
+                        <>
+                          {' '}
+                          <Badge tone="neutral">{t('tpl.source.project')}</Badge>
+                        </>
+                      ) : null}
+                      {k.requested ? (
+                        <span className="muted small"> ({t('detail.skillRequested')})</span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                <div className="muted small">{t('detail.skillsHint')}</div>
+              </td>
+            </tr>
+          ) : null}
         </tbody>
       </table>
       <PortsPanel sandbox={s} />

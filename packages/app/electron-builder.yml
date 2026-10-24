@@ -16,7 +16,9 @@ files:
   - '!**/node_modules/node-pty/build/Release/{obj.target,.deps}/**'
   - '!**/node_modules/node-pty/binding.gyp'
   - '!**/node_modules/**/{test,tests,__tests__}/**'
-  - '!**/node_modules/**/*.{ts,d.ts,md,markdown}'
+  - '!**/node_modules/**/*.{ts,d.ts,markdown}'
+  # Markdown of dependencies is documentation, except the built-in skills of @abox/core (SKILL.md)
+  - '!**/node_modules/**/!(SKILL).md'
 asar: true
 # native addons cannot be dlopen()ed from inside the archive
 asarUnpack:

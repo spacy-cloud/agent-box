@@ -15,6 +15,7 @@ can never grant itself more than the policy allows.
 - [Tool presets](#tool-presets)
 - [Network presets](#network-presets)
 - [Package caches](#package-caches)
+- [Skills](#skills)
 - [Choosing the operating system](#choosing-the-operating-system)
 - [Image cache and digest pinning](#image-cache-and-digest-pinning)
 - [Validation](#validation)
@@ -87,6 +88,7 @@ have to be quoted.
 | `secrets`     | list                                      | none                         | no       | references into your keyring                             |
 | `labels`      | map of strings                            | none                         | no       | free metadata; `use-for` is shown to agents              |
 | `caches`      | list                                      | none                         | no       | per-project package caches, see [below](#package-caches) |
+| `skills`      | list of skill names                       | none                         | no       | copied read-only to `/skills`, see [skills](#skills)     |
 | `extends`     | template name                             | none                         | no       | see [inheritance](#inheritance-with-extends)             |
 | `python`      | object                                    | none                         | no       | only for `backend: python`                               |
 | `vm`          | object                                    | none                         | no       | only for `backend: vm`                                   |
@@ -391,6 +393,7 @@ conditions, no templating):
 - `mounts` are keyed by `target` and `secrets` by `ref`; the child wins on a clash. `caches` are
   keyed by `name` the same way (a child entry replaces the parent's entry of that name).
 - `env` and `labels` merge by key.
+- `skills` are a **union**, parent first, without duplicates (a child cannot remove a skill of its parent).
 - At most five levels, no cycles. A template may extend a template of the **same or a lower**
   precedence level only (project > user > builtin), never itself. A user template called
   `node-dev` that extends `node-dev` customises the built-in one.
@@ -565,6 +568,24 @@ cache sits on another file system than the workspace: pnpm and uv fall back from
 copies (the install is a little slower, the download is what is saved). The `go` preset has no cache
 declared yet; add one to a template of your own if you need it (`path: ~/go/pkg/mod`, with `GOMODCACHE`
 as `${path}`).
+
+## Skills
+
+`skills:` lists [skills](skills.md) (folders with a `SKILL.md`) that every sandbox of the template
+gets, copied read-only to `/skills/<name>/` with an index in `/skills/INDEX.md`:
+
+```yaml
+skills: [run-tests, minimal-change]
+```
+
+Names follow the template name rules; at most 32, each once. They are looked up like templates
+(the project's `.sandbox/skills/`, then `~/.config/abox/skills/`, then the built-in ones) when a
+sandbox is created, and `abox template validate` reports a name that no catalog has. The skills a
+template lists need no policy right of their own (an agent's request that adds more does), but a
+**project skill** needs its content approved like a project template. Changing `skills:` does not
+rebuild the environment image (it is not part of the build hash); it does change the content hash
+of a project template. See [skills](skills.md) for the format, the rules and what read-only means
+on each backend.
 
 ## Choosing the operating system
 
