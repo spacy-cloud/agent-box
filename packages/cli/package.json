@@ -30,7 +30,7 @@
     "@abox/core": "workspace:*",
     "@abox/mcp": "workspace:*",
     "@abox/runtime": "workspace:*",
-    "commander": "^15.0.0"
+    "commander": "^15.1.0"
   },
   "bin": {
     "abox": "./dist/bin.js"
